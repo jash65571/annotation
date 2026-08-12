@@ -39,6 +39,10 @@ class _Counter:
 #: Resolve an annotation time to the containing ledger frame index (AA).
 FrameResolver = Callable[[Fraction], int | None]
 
+#: An unresolved camera phase is only "material" without a seed once it spans at
+#: least this many frames (brief unresolved phases are not flagged on clean clips).
+_MATERIAL_CAMERA_FRAMES = 15
+
 
 def build_review_queue(
     comparison: ComparisonResult,
@@ -188,8 +192,19 @@ def build_machine_review_items(
                 f"Unresolved final state: {check.entity_id}@shot{check.shot_number}",
                 check.review_reason or "final object state unresolved",
                 ReviewerAction.VERIFY, check.final_visible_frame))
-    # Camera-unresolved is only surfaced when it is MATERIAL to a seed claim
-    # (handled in comparison); a clean clip's unresolved phases are not flagged.
+    # Camera-unresolved is surfaced only when MATERIAL by magnitude (a long
+    # unresolved phase), so a clean clip's brief unresolved phases stay silent
+    # while a genuinely ambiguous sweep is flagged even without a seed.
+    for cand in evidence.camera_candidates:
+        span = cand.last_supporting_frame - cand.start_frame + 1
+        if cand.review_required and cand.motion_class.value == "UNRESOLVED" \
+                and span >= _MATERIAL_CAMERA_FRAMES:
+            items.append(_mitem(
+                counter, ReviewPriority.HIGH,
+                f"Unresolved camera motion: {cand.candidate_id}",
+                f"global-motion model did not resolve a {span}-frame phase",
+                ReviewerAction.VERIFY, cand.start_frame, cand.last_supporting_frame,
+                cand.shot_number))
     if ocr_status in ("DEGRADED",):
         items.append(_mitem(counter, ReviewPriority.HIGH, "OCR degraded",
                             "a meaningful fraction of frames failed OCR", ReviewerAction.VERIFY))
@@ -203,7 +218,8 @@ def build_machine_review_items(
                                 ReviewerAction.VERIFY, shot=ev_speed.shot_number))
     actions_by_shot: dict[int | None, int] = {}
     for a in evidence.action_candidates:
-        actions_by_shot[a.shot_number] = actions_by_shot.get(a.shot_number, 0) + 1
+        if a.review_required:  # a human-resolved action no longer needs review
+            actions_by_shot[a.shot_number] = actions_by_shot.get(a.shot_number, 0) + 1
     for shot, n in sorted(actions_by_shot.items(), key=lambda kv: (kv[0] is None, kv[0])):
         items.append(_mitem(counter, ReviewPriority.NORMAL,
                             f"Semantic action review: shot {shot}",

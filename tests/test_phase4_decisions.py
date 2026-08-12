@@ -100,12 +100,23 @@ def test_conflicting_decisions_are_flagged_not_applied() -> None:
 
 
 def test_invalid_value_for_typed_decision() -> None:
+    # A claim-evidence decision whose value is not an EvidenceStatus is rejected.
     res, claim = _ost_claim()
     apps = apply_decisions_to_claims(
-        [_decision(claim.claim_id, DecisionType.PLAYBACK_SPEED, "super_fast")],
+        [_decision(claim.claim_id, DecisionType.CLAIM_EVIDENCE, "TOTALLY_SURE")],
         res.claims, _SHA, _RULES,
     )
     assert apps[0].outcome == DecisionOutcome.INVALID_VALUE
+
+
+def test_speed_decision_against_claim_is_invalid_subject() -> None:
+    # A speed decision can never reach a claim: wrong registry -> INVALID_SUBJECT.
+    res, claim = _ost_claim()
+    apps = apply_decisions_to_claims(
+        [_decision(claim.claim_id, DecisionType.PLAYBACK_SPEED, "regular")],
+        res.claims, _SHA, _RULES,
+    )
+    assert apps[0].outcome == DecisionOutcome.INVALID_SUBJECT
 
 
 def test_invalid_subject_decision() -> None:

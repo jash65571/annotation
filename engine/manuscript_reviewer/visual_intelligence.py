@@ -36,9 +36,12 @@ from .models.review_intelligence import (
     CharacterHypothesis,
     ContactEvent,
     ContinuityLink,
+    DecisionApplication,
+    DecisionType,
     EntityTrack,
     FinalStateCheck,
     FrameObservation,
+    HumanReviewDecision,
     ObjectHypothesis,
     OCRObservation,
     OCRStatus,
@@ -52,7 +55,8 @@ from .ocr.pipeline import run_ocr
 from .ocr.tesseract_adapter import TesseractAdapter
 from .review.decisions import (
     DecisionLoadError,
-    apply_decisions_to_claims,
+    DecisionTargets,
+    apply_decisions,
     load_decisions,
 )
 from .review.evidence_bundles import extract_evidence_bundles
@@ -204,6 +208,26 @@ def run_visual_intelligence(
     evidence = _build_visual_evidence(
         ledger, ocr_text_tracks, camera_candidates, speed_evidence, track_out, shot_truth
     )
+
+    # --- human decisions, phase 0: machine-evidence targets (identity/camera/
+    # action/speed). Applied BEFORE machine items so a resolved item disappears;
+    # runs with or without a seed (item 8 + item 17). ---
+    loaded_decisions: list[HumanReviewDecision] = []
+    decision_applications: list[DecisionApplication] = []
+    if review_decisions_path is not None and video_sha256 is not None:
+        try:
+            loaded_decisions = load_decisions(review_decisions_path)
+        except DecisionLoadError as exc:
+            issues.append(ValidatorIssue(
+                rule_id="P4-REVIEW-001", severity=Severity.FAIL,
+                location=str(review_decisions_path.name),
+                message=f"Review decisions rejected: {exc}"))
+        ev_decisions = [d for d in loaded_decisions
+                        if d.decision_type in _EVIDENCE_DECISION_TYPES]
+        decision_applications += apply_decisions(
+            ev_decisions, _evidence_decision_targets(evidence),
+            video_sha256, rules_version or "unknown")
+
     machine_items = build_machine_review_items(evidence, result.ocr_status.value)
 
     # No seed: still surface machine-evidence review items and let them drive the
@@ -216,6 +240,11 @@ def run_visual_intelligence(
         )
         review_dir = run_dir / "review"
         artifacts.append(review_writer.write_visual_review_queue(review_dir, machine_items))
+        if loaded_decisions:
+            artifacts.append(review_writer.write_review_decisions(review_dir, loaded_decisions))
+            artifacts.append(
+                review_writer.write_decision_applications(review_dir, decision_applications)
+            )
         artifacts.append(review_writer.write_visual_qc(review_dir, result))
         _timed(timings, "visual_intelligence_total", stage_start)
         return VisualIntelligenceOutput(result, issues, artifacts, timings)
@@ -264,28 +293,17 @@ def run_visual_intelligence(
     comparison = compare_seed(doc, claims, media, shot_truth, evidence)
     _timed(timings, "seed_comparison", start)
 
-    # --- human decisions: apply as an evidence-override layer, THEN recompute (F) ---
-    if review_decisions_path is not None and video_sha256 is not None:
-        try:
-            decisions = load_decisions(review_decisions_path)
-            applications = apply_decisions_to_claims(
-                decisions, comparison.claims, video_sha256, rules_version or "unknown"
-            )
-            comparison.rows = build_rows(comparison.claims)  # reflect overrides
-            review_dir = run_dir / "review"
-            artifacts.append(review_writer.write_review_decisions(review_dir, decisions))
-            artifacts.append(
-                review_writer.write_decision_applications(review_dir, applications)
-            )
-        except DecisionLoadError as exc:
-            issues.append(
-                ValidatorIssue(
-                    rule_id="P4-REVIEW-001",
-                    severity=Severity.FAIL,
-                    location=str(review_decisions_path.name),
-                    message=f"Review decisions rejected: {exc}",
-                )
-            )
+    # --- human decisions, phase 1: claim-evidence + OCR overrides, THEN recompute
+    # (F). Machine items are rebuilt so phase-0 evidence overrides are reflected. ---
+    if loaded_decisions and video_sha256 is not None:
+        claim_decisions = [d for d in loaded_decisions
+                           if d.decision_type in _CLAIM_DECISION_TYPES]
+        targets = DecisionTargets(claims={c.claim_id: c for c in comparison.claims})
+        decision_applications += apply_decisions(
+            claim_decisions, targets, video_sha256, rules_version or "unknown"
+        )
+        comparison.rows = build_rows(comparison.claims)  # reflect overrides
+        machine_items = build_machine_review_items(evidence, result.ocr_status.value)
 
     # Artifacts reflect the applied (post-override) claim state.
     artifacts.append(review_writer.write_seed_claims(seed_dir, comparison.claims))
@@ -298,13 +316,33 @@ def run_visual_intelligence(
         else None
     )
     proposals = build_proposals(comparison, feedback_directives)
+
+    # --- human decisions, phase 2: proposal-outcome overrides. Proposals are
+    # regenerated each run, so a human override of a machine proposal applies on
+    # top of the freshly built proposals (item 17). ---
+    if loaded_decisions and video_sha256 is not None:
+        prop_decisions = [d for d in loaded_decisions
+                          if d.decision_type == DecisionType.REVIEW_PROPOSAL_OUTCOME]
+        prop_targets = DecisionTargets(proposals={p.proposal_id: p for p in proposals})
+        decision_applications += apply_decisions(
+            prop_decisions, prop_targets, video_sha256, rules_version or "unknown"
+        )
+
     queue_items = build_review_queue(comparison, feedback_directives, frame_for_time)
     # Item 8: machine-evidence review items affect status even with a clean seed.
     queue_items = queue_items + machine_items
     triage = build_triage(comparison, time.perf_counter() - stage_start)
     _timed(timings, "review_aggregation", start)
 
-    # Link claim-level proposal outcomes back into the matrix rows.
+    if loaded_decisions:
+        review_dir = run_dir / "review"
+        artifacts.append(review_writer.write_review_decisions(review_dir, loaded_decisions))
+        artifacts.append(
+            review_writer.write_decision_applications(review_dir, decision_applications)
+        )
+
+    # Link claim-level proposal outcomes back into the matrix rows (reflects any
+    # phase-2 override).
     claim_outcomes = {
         p.subject_id: p.outcome for p in proposals if p.level == "claim"
     }
@@ -654,6 +692,27 @@ def _region_boxes(gray: np.ndarray) -> list[tuple[int, int, int, int]]:
     from .ocr.regions import detect_text_regions
 
     return [(r.x, r.y, r.width, r.height) for r in detect_text_regions(gray)]
+
+
+#: Decision kinds routed to each application phase (data-availability driven).
+_EVIDENCE_DECISION_TYPES = frozenset({
+    DecisionType.IDENTITY_MAPPING, DecisionType.CAMERA_CLASSIFICATION,
+    DecisionType.ACTION_SEMANTICS, DecisionType.ACTION_BOUNDARY, DecisionType.PLAYBACK_SPEED,
+})
+_CLAIM_DECISION_TYPES = frozenset({
+    DecisionType.CLAIM_EVIDENCE, DecisionType.OCR_TEXT, DecisionType.OCR_TIMING,
+})
+
+
+def _evidence_decision_targets(evidence: VisualEvidence) -> DecisionTargets:
+    """Typed registries for the machine-evidence targets a human may resolve. Speed
+    evidence has no id of its own, so it is keyed by shot (``SPEED-<shot>``)."""
+    return DecisionTargets(
+        entity_tracks={t.track_id: t for t in evidence.entity_tracks},
+        camera_candidates={c.candidate_id: c for c in evidence.camera_candidates},
+        action_candidates={a.candidate_id: a for a in evidence.action_candidates},
+        speed_evidence={f"SPEED-{s.shot_number}": s for s in evidence.speed_evidence},
+    )
 
 
 def _build_visual_evidence(
