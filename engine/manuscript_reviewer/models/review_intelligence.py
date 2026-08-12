@@ -849,7 +849,12 @@ class ActionCandidate(StrictModel):
 
 
 class SpeedConclusion(StrEnum):
+    #: Only reachable via human/source confirmation — uniform output CFR is NOT
+    #: proof of original playback speed (a retimed source re-encodes to uniform PTS).
     REGULAR_SUPPORTED = "REGULAR_SUPPORTED"
+    #: The video path's honest best: output cadence is consistent with regular
+    #: playback but original speed is unconfirmed. Never factual on its own.
+    REGULAR_CANDIDATE = "REGULAR_CANDIDATE"
     SLOW_MOTION_CANDIDATE = "SLOW_MOTION_CANDIDATE"
     ACCELERATED_CANDIDATE = "ACCELERATED_CANDIDATE"
     REVIEW_REQUIRED = "REVIEW_REQUIRED"

@@ -1,12 +1,13 @@
-"""Per-shot playback-speed evidence conclusions (Y, item 9).
+"""Per-shot playback-speed evidence conclusions (Y, item 9 + final-fix 1).
 
-Evidence-honest: REGULAR_SUPPORTED requires POSITIVE evidence consistent with
-regular playback (uniform PTS/frame cadence with no slow-motion duplication) —
-never merely the ABSENCE of slow-motion symptoms. Insufficient/ambiguous evidence
-defaults to REVIEW_REQUIRED. Fast motion is never accelerated; motion blur is
-never slow motion. ACCELERATED_CANDIDATE is reachable but needs sustained
-retiming evidence (there is no reliable per-frame accelerated signal in a
-re-encoded video, so the video path never asserts it without such evidence).
+Evidence-honest: uniform PTS/frame cadence proves the ENCODED OUTPUT cadence, NOT
+the original playback speed — a 2x/0.5x/speed-ramped source re-encodes to perfectly
+uniform CFR timestamps. So the video path NEVER asserts REGULAR_SUPPORTED; its
+honest best is REGULAR_CANDIDATE (output cadence consistent with regular, original
+speed unconfirmed, never factual). REGULAR_SUPPORTED is reachable only through
+human/source confirmation (a PLAYBACK_SPEED decision). Insufficient/ambiguous
+evidence defaults to REVIEW_REQUIRED. Fast motion is never accelerated; motion blur
+is never slow motion. ACCELERATED_CANDIDATE needs sustained retiming evidence.
 """
 
 from __future__ import annotations
@@ -54,11 +55,14 @@ def conclude_speed(
         return SpeedConclusion.SLOW_MOTION_CANDIDATE, True
     if accelerated_evidence:
         return SpeedConclusion.ACCELERATED_CANDIDATE, True
-    # REGULAR needs POSITIVE evidence: uniform PTS cadence. Frame duplication only
-    # counts against 'regular' when there is underlying motion (a static shot with
-    # identical frames is regular, not slow-motion).
+    # Uniform PTS cadence (and no slow-motion duplication under motion) is consistent
+    # with regular playback but only proves the ENCODED OUTPUT cadence — a retimed
+    # source re-encodes to uniform CFR too. The video path therefore concludes
+    # REGULAR_CANDIDATE, never REGULAR_SUPPORTED (that needs human/source evidence).
+    # It is not review-required on its own, so a clean clip is not flagged; a seed
+    # 'regular' claim it is compared against becomes PARTIALLY_SUPPORTED, not proven.
     if pts_regular and (not cadence.motion_present or cadence.duplicate_ratio < _SLOW_DUP_RATIO):
-        return SpeedConclusion.REGULAR_SUPPORTED, False
+        return SpeedConclusion.REGULAR_CANDIDATE, False
     return SpeedConclusion.REVIEW_REQUIRED, True
 
 

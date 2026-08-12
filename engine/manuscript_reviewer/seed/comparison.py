@@ -744,13 +744,20 @@ def _verify_playback_speed(claims: list[SeedClaim], ev: VisualEvidence) -> None:
         )
         claim.evidence.append(ref)
         claim.review_status = ClaimReviewStatus.REVIEW_REQUIRED
-        if seed_speed == "regular" and evidence.conclusion == SpeedConclusion.REGULAR_SUPPORTED:
+        regular_ev = evidence.conclusion in (
+            SpeedConclusion.REGULAR_SUPPORTED, SpeedConclusion.REGULAR_CANDIDATE
+        )
+        if seed_speed == "regular" and regular_ev:
+            # Output cadence is consistent with the claim, but never proof of the
+            # original speed -> partial, never SUPPORTED from the video alone.
             claim.evidence_status = EvidenceStatus.PARTIALLY_SUPPORTED
         elif (
             seed_speed in ("slowmotion", "slow")
             and evidence.conclusion == SpeedConclusion.REGULAR_SUPPORTED
         ):
-            # Strong regular cadence contradicts a slow-motion seed claim.
+            # Only HUMAN/source-confirmed regular playback contradicts a slow-motion
+            # claim. Uniform output CFR (REGULAR_CANDIDATE) is NOT proof of regular
+            # speed, so it can never contradict a slow-motion seed claim.
             claim.evidence_status = EvidenceStatus.CONTRADICTED
         else:
             # Seed asserts a speed but evidence is unresolved/ambiguous -> review.
