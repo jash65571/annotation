@@ -50,6 +50,12 @@ from .visual_intelligence import run_visual_intelligence
 logger = logging.getLogger(__name__)
 
 
+def _vi_attr(result: AuditResult, name: str) -> str | None:
+    """A string provenance field off the visual-intelligence result, or None."""
+    vi = result.visual_intelligence
+    return getattr(vi, name) if vi is not None else None
+
+
 @dataclass
 class AuditResult:
     """Everything the CLI needs to report one audit run."""
@@ -146,6 +152,15 @@ def run_audit(
         review_decisions_hash: str | None = None
         if review_decisions_path is not None:
             review_decisions_hash = writer.sha256_file(review_decisions_path)
+        # Snapshot + hash the visual anchors so tracks are never claimed
+        # reproducible without the exact anchor bytes they were seeded from.
+        visual_anchors_hash: str | None = None
+        if visual_anchors_path is not None:
+            visual_anchors_hash = writer.sha256_file(visual_anchors_path)
+            shutil.copy2(
+                visual_anchors_path,
+                run_dir / f"visual_anchors{visual_anchors_path.suffix or '.json'}",
+            )
 
         # --- MEDIA VERIFICATION ---
         try:
@@ -347,6 +362,10 @@ def run_audit(
                 str(review_decisions_path.resolve()) if review_decisions_path else None
             ),
             review_decisions_sha256=review_decisions_hash,
+            source_visual_anchors_path=(
+                str(visual_anchors_path.resolve()) if visual_anchors_path else None
+            ),
+            source_visual_anchors_sha256=visual_anchors_hash,
             visual_intelligence_version=(
                 result.visual_intelligence.visual_intelligence_version
                 if result.visual_intelligence is not None
@@ -356,6 +375,15 @@ def run_audit(
                 result.visual_intelligence.ocr_status.value
                 if result.visual_intelligence is not None
                 else None
+            ),
+            ocr_engine=_vi_attr(result, "ocr_engine"),
+            ocr_version=_vi_attr(result, "ocr_version"),
+            ocr_language=_vi_attr(result, "ocr_language"),
+            tracking_version=_vi_attr(result, "tracking_version"),
+            tracking_config=(
+                result.visual_intelligence.tracking_config
+                if result.visual_intelligence is not None
+                else {}
             ),
             app_version=__version__,
             rules_version=rules.version,

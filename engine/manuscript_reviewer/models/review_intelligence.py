@@ -957,6 +957,13 @@ class VisualIntelligenceResult(StrictModel):
     ocr_status: OCRStatus = OCRStatus.UNAVAILABLE
     ocr_track_count: int = 0
     source_verified_ocr_count: int = 0
+    #: Engine provenance (item 20): the exact OCR engine/version/language and the
+    #: tracking config a reviewer would need to reproduce this run.
+    ocr_engine: str | None = None
+    ocr_version: str | None = None
+    ocr_language: str | None = None
+    tracking_version: str | None = None
+    tracking_config: dict[str, float] = {}
     camera_phase_count: int = 0
     camera_direction_reversals: int = 0
     action_candidate_count: int = 0

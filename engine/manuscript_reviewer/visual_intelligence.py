@@ -71,7 +71,7 @@ from .shots.decode import MetricDecodeError
 from .speed.evidence import build_playback_speed_evidence
 from .tracking.anchors import AnchorLoadError, load_anchors
 from .tracking.continuity import build_continuity
-from .tracking.tracker import track_anchor
+from .tracking.tracker import TRACKING_VERSION, track_anchor, tracking_config
 from .validation import review_intelligence_validator as ri_validator
 from .validation import seed_validator, visual_validator
 from .visual.decode import FrameCache
@@ -183,6 +183,9 @@ def run_visual_intelligence(
                 run_dir, artifacts, issues, result,
             )
             entity_tracks = track_out.tracks
+            # Provenance: the config a reviewer needs to reproduce these tracks.
+            result.tracking_version = TRACKING_VERSION
+            result.tracking_config = tracking_config()
             _timed(timings, "tracking", start)
         ocr_observations: list[OCRObservation] = []
         if ocr_enabled:
@@ -647,6 +650,9 @@ def _run_ocr_stage(
     adapter = TesseractAdapter()
     info = adapter.engine_info()
     result.ocr_status = info.status
+    result.ocr_engine = info.engine
+    result.ocr_version = info.version
+    result.ocr_language = info.language_config
     artifacts.append(visual_writer.write_ocr_status(ocr_dir, info))
     if info.status == OCRStatus.UNAVAILABLE:
         return [], []

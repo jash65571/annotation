@@ -27,8 +27,18 @@ class RunManifest(StrictModel):
     source_feedback_sha256: str | None = None
     review_decisions_path: str | None = None
     review_decisions_sha256: str | None = None
+    #: Visual-anchor provenance: reproducibility is never claimed without the exact
+    #: anchor bytes the tracks were seeded from (item 20).
+    source_visual_anchors_path: str | None = None
+    source_visual_anchors_sha256: str | None = None
     visual_intelligence_version: str | None = None
     ocr_status: str | None = None
+    #: Engine provenance for the visual stage (item 20).
+    ocr_engine: str | None = None
+    ocr_version: str | None = None
+    ocr_language: str | None = None
+    tracking_version: str | None = None
+    tracking_config: dict[str, float] = {}
     app_version: str
     rules_version: str
     ffmpeg_version: str

@@ -17,6 +17,10 @@ from ..models.frame import FrameLedger
 from ..models.review_intelligence import EntityTrack, TrackObservation, TrackStatus, VisualAnchor
 from ..shots.decode import METRIC_HEIGHT, METRIC_WIDTH, GrayFrames
 
+#: Bumps whenever tracking behaviour changes; recorded in the run manifest so a
+#: result is never claimed reproducible without the tracking config it was made by.
+TRACKING_VERSION = "0.4.0"
+
 #: Normalized template-match score for a confident match.
 _TRACK_THRESHOLD = 0.55
 #: Consecutive misses tolerated as OCCLUSION before declaring LOST.
@@ -24,6 +28,18 @@ _OCCLUSION_MAX = 3
 #: Give up searching after this many consecutive LOST frames.
 _LOST_GIVEUP = 8
 _MIN_TEMPLATE = 2
+
+
+def tracking_config() -> dict[str, float]:
+    """The pinned tracking parameters (provenance for reproducibility, item 20)."""
+    return {
+        "track_threshold": _TRACK_THRESHOLD,
+        "occlusion_max": float(_OCCLUSION_MAX),
+        "lost_giveup": float(_LOST_GIVEUP),
+        "min_template": float(_MIN_TEMPLATE),
+        "metric_width": float(METRIC_WIDTH),
+        "metric_height": float(METRIC_HEIGHT),
+    }
 
 
 def _to_grid_box(
