@@ -110,6 +110,49 @@ def audit(
     asr_compute_type: Annotated[
         str, typer.Option("--asr-compute-type", help="auto|int8|float16|...")
     ] = "auto",
+    visual_intelligence: Annotated[
+        bool,
+        typer.Option(
+            "--visual-intelligence/--no-visual-intelligence",
+            help="Run the Phase 4 Visual Review Intelligence stage (seed comparison)",
+        ),
+    ] = True,
+    feedback: Annotated[
+        Path | None,
+        typer.Option(
+            "--feedback",
+            exists=True,
+            dir_okay=False,
+            help="Task-specific evaluator feedback (snapshotted and structured; higher "
+            "priority than the seed)",
+        ),
+    ] = None,
+    ocr: Annotated[
+        bool,
+        typer.Option("--ocr/--no-ocr", help="Enable local OCR text evidence (degrades safely)"),
+    ] = True,
+    visual_anchors: Annotated[
+        Path | None,
+        typer.Option(
+            "--visual-anchors",
+            exists=True,
+            dir_okay=False,
+            help="Human/detector anchors JSON for assisted local tracking",
+        ),
+    ] = None,
+    review_decisions: Annotated[
+        Path | None,
+        typer.Option(
+            "--review-decisions",
+            exists=True,
+            dir_okay=False,
+            help="Human review-decisions JSON (bound to video/rules; stale ones are skipped)",
+        ),
+    ] = None,
+    extract_visual_evidence: Annotated[
+        bool,
+        typer.Option("--extract-visual-evidence", help="Render local visual evidence bundles"),
+    ] = False,
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
 ) -> None:
     """Produce a provably correct frame ledger and audit artifacts for VIDEO."""
@@ -139,6 +182,12 @@ def audit(
             language=asr_language,
             bootstrap=asr_bootstrap,
         ),
+        visual_intelligence=visual_intelligence,
+        feedback_path=feedback,
+        visual_anchors_path=visual_anchors,
+        review_decisions_path=review_decisions,
+        ocr_enabled=ocr,
+        extract_visual_evidence=extract_visual_evidence,
     )
 
     if result.fatal_error:
@@ -294,6 +343,35 @@ def audit(
                 f"\nOverall audio status: "
                 f"[{audio_style}]{audio.overall_status}[/{audio_style}]"
             )
+
+    vi = result.visual_intelligence
+    if vi is not None and vi.seed_present:
+        console.print("\n[bold]VISUAL REVIEW INTELLIGENCE[/bold]")
+        console.print("-" * 26)
+        console.print(f"\nSeed parsed: {'PASS' if vi.seed_parsed else 'FAIL'}")
+        console.print(f"Seed claims: {vi.seed_claim_count}")
+        console.print("\nShot foundation:")
+        console.print(f"  {vi.foundation_status.value}")
+        if vi.seed_shot_count is not None or vi.verified_shot_count is not None:
+            console.print(f"  Seed shots: {vi.seed_shot_count}")
+            console.print(f"  Verified shots: {vi.verified_shot_count}")
+        if vi.triage is not None:
+            console.print(f"  Triage strategy: {vi.triage.suggested_strategy.value}")
+        counts = vi.proposal_counts
+        if counts:
+            console.print("\nSeed claim proposals:")
+            for outcome in ("KEEP", "FIX_ENRICH", "REDO_REBUILD", "HUMAN_DECISION_REQUIRED"):
+                console.print(f"  {outcome}: {counts.get(outcome, 0)}")
+        console.print(f"\nReview items: {vi.review_item_count}")
+        console.print(f"Critical review items: {vi.critical_review_item_count}")
+        vi_style = {
+            "PASS": "bold green",
+            "REVIEW_REQUIRED": "bold yellow",
+            "FAILED": "bold red",
+        }.get(vi.overall_status, "bold")
+        console.print(
+            f"\nOverall visual intelligence: [{vi_style}]{vi.overall_status}[/{vi_style}]"
+        )
 
     console.print(f"\nArtifacts:\n{result.run_dir}")
     style = _status_style(result.status)

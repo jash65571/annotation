@@ -27,6 +27,7 @@ from .media.ffmpeg_tools import FFmpegNotFoundError, ToolExecutionError, find_to
 from .models.audio import AudioQCResult
 from .models.frame import FrameLedger
 from .models.media import MediaInfo
+from .models.review_intelligence import VisualIntelligenceResult
 from .models.run import RunManifest
 from .models.shot_truth import ShotTruthResult
 from .models.validation import (
@@ -44,6 +45,7 @@ from .validation.ledger_validator import (
     validate_ledger,
 )
 from .validation.media_validator import validate_media
+from .visual_intelligence import run_visual_intelligence
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +65,7 @@ class AuditResult:
     stage_timings: dict[str, float] = field(default_factory=dict)
     shot_truth: ShotTruthResult | None = None
     audio_truth: AudioQCResult | None = None
+    visual_intelligence: VisualIntelligenceResult | None = None
 
 
 class _StageTimer:
@@ -89,6 +92,12 @@ def run_audit(
     audio_analysis: bool = False,
     asr_enabled: bool = True,
     asr_config: ASRConfig | None = None,
+    visual_intelligence: bool = True,
+    feedback_path: Path | None = None,
+    visual_anchors_path: Path | None = None,
+    review_decisions_path: Path | None = None,
+    ocr_enabled: bool = True,
+    extract_visual_evidence: bool = False,
 ) -> AuditResult:
     """Run the full audit (media verification, frame ledger, optional shot
     truth) and write all artifacts.
@@ -131,6 +140,12 @@ def run_audit(
             seed_hash = writer.sha256_file(seed_path)
             shutil.copy2(seed_path, run_dir / f"seed{seed_path.suffix or '.dat'}")
             logger.info("Seed copied and hashed: %s", seed_hash)
+        feedback_hash: str | None = None
+        if feedback_path is not None:
+            feedback_hash = writer.sha256_file(feedback_path)
+        review_decisions_hash: str | None = None
+        if review_decisions_path is not None:
+            review_decisions_hash = writer.sha256_file(review_decisions_path)
 
         # --- MEDIA VERIFICATION ---
         try:
@@ -238,6 +253,30 @@ def run_audit(
             result.audio_truth = audio_output.result
             checks_run.append("audio_truth")
 
+        # --- VISUAL REVIEW INTELLIGENCE (Phase 4) ---
+        if visual_intelligence:
+            with _StageTimer(timings, "visual_intelligence_total"):
+                vi_output = run_visual_intelligence(
+                    run_dir,
+                    media,
+                    ledger,
+                    result.shot_truth,
+                    result.audio_truth,
+                    seed_path=seed_path,
+                    feedback_path=feedback_path,
+                    visual_anchors_path=visual_anchors_path,
+                    review_decisions_path=review_decisions_path,
+                    video_sha256=source_hash_before,
+                    rules_version=rules.version,
+                    ocr_enabled=ocr_enabled,
+                    extract_visual_evidence=extract_visual_evidence,
+                )
+            timings.update(vi_output.stage_timings)
+            issues.extend(vi_output.issues)
+            artifact_paths.extend(vi_output.artifact_paths)
+            result.visual_intelligence = vi_output.result
+            checks_run.append("visual_intelligence")
+
         # --- SOURCE STABILITY ---
         with _StageTimer(timings, "rehash_source"):
             source_hash_after = writer.sha256_file(video_path)
@@ -272,6 +311,16 @@ def run_audit(
                 and status == RunStatus.PASS
             ):
                 status = RunStatus.REVIEW_REQUIRED
+        # Phase 4 is a review-preparation stage: it never upgrades to PASS, and
+        # an unresolved review queue keeps the run in REVIEW_REQUIRED.
+        if result.visual_intelligence is not None:
+            if result.visual_intelligence.overall_status == "FAILED":
+                status = RunStatus.FAILED
+            elif (
+                result.visual_intelligence.overall_status == "REVIEW_REQUIRED"
+                and status == RunStatus.PASS
+            ):
+                status = RunStatus.REVIEW_REQUIRED
         qc = QCReport(
             status=status,
             issues=issues,
@@ -291,6 +340,22 @@ def run_audit(
             source_video_sha256=source_hash_before,
             source_seed_path=str(seed_path.resolve()) if seed_path else None,
             source_seed_sha256=seed_hash,
+            source_feedback_path=str(feedback_path.resolve()) if feedback_path else None,
+            source_feedback_sha256=feedback_hash,
+            review_decisions_path=(
+                str(review_decisions_path.resolve()) if review_decisions_path else None
+            ),
+            review_decisions_sha256=review_decisions_hash,
+            visual_intelligence_version=(
+                result.visual_intelligence.visual_intelligence_version
+                if result.visual_intelligence is not None
+                else None
+            ),
+            ocr_status=(
+                result.visual_intelligence.ocr_status.value
+                if result.visual_intelligence is not None
+                else None
+            ),
             app_version=__version__,
             rules_version=rules.version,
             ffmpeg_version=ffmpeg_version,

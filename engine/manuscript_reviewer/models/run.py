@@ -22,6 +22,13 @@ class RunManifest(StrictModel):
     source_video_sha256: str
     source_seed_path: str | None = None
     source_seed_sha256: str | None = None
+    #: Phase 4 inputs (additive; None when the stage did not run).
+    source_feedback_path: str | None = None
+    source_feedback_sha256: str | None = None
+    review_decisions_path: str | None = None
+    review_decisions_sha256: str | None = None
+    visual_intelligence_version: str | None = None
+    ocr_status: str | None = None
     app_version: str
     rules_version: str
     ffmpeg_version: str

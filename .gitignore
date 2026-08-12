@@ -31,3 +31,10 @@ Thumbs.db
 # unclear); only references/README.md is committed.
 references/*
 !references/README.md
+
+# Private task media and phase prompts dropped at the repo root are local-only
+# and must never be committed (task clips carry unclear distribution rights).
+/*.mp4
+/*.mkv
+/*.mov
+/Phase*.md

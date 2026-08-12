@@ -23,6 +23,21 @@ class EvidenceType(StrEnum):
     OCR_RESULT = "OCR_RESULT"
     MODEL_OBSERVATION = "MODEL_OBSERVATION"
     HUMAN_VERIFICATION = "HUMAN_VERIFICATION"
+    # --- Phase 4 (Visual Review Intelligence) machine-candidate evidence ---
+    # These are machine observations/candidates: they can *propose* but never
+    # make a claim factual on their own, so none are in FACTUAL_EVIDENCE_TYPES.
+    CROP = "CROP"
+    FRAME_OBSERVATION = "FRAME_OBSERVATION"
+    TRACK = "TRACK"
+    TRACK_RANGE = "TRACK_RANGE"
+    OCR_OBSERVATION = "OCR_OBSERVATION"
+    OCR_TRACK = "OCR_TRACK"
+    CAMERA_METRIC = "CAMERA_METRIC"
+    ACTION_STATE_CHANGE = "ACTION_STATE_CHANGE"
+    CONTACT_STATE = "CONTACT_STATE"
+    FINAL_STATE = "FINAL_STATE"
+    SEED_LINE = "SEED_LINE"
+    STRUCTURAL_CHECK = "STRUCTURAL_CHECK"
 
 
 #: Evidence types that can, on their own, make a claim factual.

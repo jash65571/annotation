@@ -15,6 +15,12 @@ from enum import StrEnum
 
 from .common import ExactFraction, StrictModel
 from .evidence import EvidenceReference
+from .review_intelligence import (
+    ClaimImportance,
+    ClaimReviewStatus,
+    EvidenceStatus,
+    SeedClaimType,
+)
 
 
 class ReviewOutcome(StrEnum):
@@ -125,13 +131,35 @@ class OnScreenTextEvent(StrictModel):
 
 
 class SeedClaim(StrictModel):
-    """One claim extracted from the seeded caption — a hypothesis to verify."""
+    """One *atomic* claim extracted from the seeded caption — a hypothesis to
+    verify. A paragraph is never one giant claim.
+
+    Phase 4 note: ``outcome`` (a human ``ReviewOutcome``) and ``evidence_status``
+    (what the media proves) are deliberately distinct concepts and must never be
+    conflated. Phase 4 drives off ``evidence_status``; ``outcome`` is left for a
+    recorded human decision and is not set by machine claim verification.
+    """
 
     claim_id: str
     source_field: str
     text: str
     outcome: ReviewOutcome | None = None
     evidence: list[EvidenceReference] = []
+    # --- Phase 4 atomic-claim structure (all optional; additive) ---
+    claim_type: SeedClaimType | None = None
+    #: Character IDs the claim is about (subjects).
+    subject_ids: list[str] = []
+    #: Object IDs the claim is about.
+    object_ids: list[str] = []
+    shot_number: int | None = None
+    seed_source_line: int | None = None
+    seed_entry_id: str | None = None
+    seed_time_range: ExactTimeRange | None = None
+    quoted_text: str | None = None
+    #: What the media proves (never KEEP/FIX/REDO — that is a review concept).
+    evidence_status: EvidenceStatus | None = None
+    importance: ClaimImportance | None = None
+    review_status: ClaimReviewStatus | None = None
 
 
 class ConfidenceAssessment(StrictModel):
