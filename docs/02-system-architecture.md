@@ -47,6 +47,22 @@ VIDEO
   → AUDIT ARTIFACTS                 (media.json, frames.csv/jsonl, qc.json, run.log)
 ```
 
+## Phase 2 Shot Truth Engine (implemented — see docs/06)
+
+```
+FRAME LEDGER
+  → METRIC DECODE                   (shots/decode.py: 160x90 gray, ledger-aligned)
+  → ADJACENT-PAIR METRICS           (shots/metrics.py: MAD, histogram, phash, edges, flow)
+  → ffmpeg scdet EVIDENCE           (shots/scdet.py: independent signal, evidence only)
+  → LOCAL BASELINES                 (shots/baseline.py: ±0.5 s robust median/MAD windows)
+  → FLASH / FADE / BLEND REGIONS    (shots/regions.py)
+  → CANDIDATE GENERATION + MERGE    (shots/candidates.py: recall-first, multi-signal)
+  → ADVERSARIAL VERIFICATION        (shots/verifier.py: SUPPORTED/REJECTED/REVIEW_REQUIRED)
+  → SHOT PROPOSALS                  (shots/builder.py: gapless, exact frame ownership)
+  → EVIDENCE BUNDLES                (shots/evidence.py: labeled pairs/strips by frame identity)
+  → P2 VALIDATION + shot_qc.json    (validation/shot_validator.py)
+```
+
 ## Full future pipeline
 
 ```

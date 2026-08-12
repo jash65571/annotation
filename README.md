@@ -2,8 +2,10 @@
 
 A frame-accurate **Manuscript II review and evidence engine**. Give it a video and it
 produces a provably correct frame ledger with exact media metadata, SHA-256
-provenance, independent frame-count cross-checks, and audit artifacts — the
-deterministic foundation for evidence-backed Manuscript II reviewer captions.
+provenance, independent frame-count cross-checks, and audit artifacts — plus the
+**Shot Truth Engine**: deterministic adjacent-frame metrics, adversarially verified
+cut candidates, gapless shot proposals, and labeled visual evidence for every
+boundary (see `docs/06-shot-truth-engine.md`).
 
 Not a generic captioning app. Not a task-submission bot. All processing is local:
 no network calls, no telemetry, no accounts, no database.
@@ -32,8 +34,16 @@ Without uv: create a Python 3.12 venv and `pip install -e . --group dev`.
 uv run manuscript-reviewer audit input.mp4
 uv run manuscript-reviewer audit input.mp4 --seed seed.json      # hash+copy seed into the run
 uv run manuscript-reviewer audit input.mp4 --extract-frames      # every frame as PNG evidence
+uv run manuscript-reviewer audit input.mp4 --no-shot-analysis    # Phase 1 ledger only
+uv run manuscript-reviewer audit input.mp4 --candidate-sensitivity high   # max recall
 uv run manuscript-reviewer version
+uv run python scripts/benchmark.py                                # Phase 2 runtime benchmark
 ```
+
+Shot analysis runs by default and reports supported boundaries, rejected false
+positives, and review-required candidates with structured reason codes. Expert
+thresholds are intentionally not CLI flags; only `--candidate-sensitivity
+high|normal|low` is exposed.
 
 Example output:
 
@@ -76,6 +86,13 @@ Each run writes `artifacts/<video_stem>/<run_id>/`:
 | `manifest.json` | run id, source/seed SHA-256, app+rules+ffmpeg versions, timings, artifact hashes |
 | `run.log` | full debug log of the run |
 | `frames/` | (only with `--extract-frames`) `F000042_1.750000.png` — index + exact time |
+| `adjacent_metrics.csv/.jsonl` | one record per adjacent frame pair (N−1 rows): diff, histogram, phash, edges, optical flow, scdet |
+| `cut_candidates.json` | merged pre-verification candidates with sources |
+| `boundary_evidence.json` | post-verification candidates with status + reason codes |
+| `shots_proposed.json` | gapless provisional shots with exact frame ownership |
+| `transition_evidence.json` | per-boundary transition proposals, fades, blends |
+| `shot_qc.json` | full Shot Truth result: counts, statuses, every candidate |
+| `shot_evidence/candidate_NNNN/` | labeled `pair.png`, `strip_short.png`, `strip_context.png`, `evidence.json` |
 
 ## Development
 
@@ -96,3 +113,4 @@ Tests that need media are skipped with a clear message if ffmpeg is missing.
 - `docs/03-data-model.md` — the typed schema (Phase 1 and future)
 - `docs/04-development-roadmap.md` — Phases 2–5
 - `docs/05-phase-1-verification.md` — validators, thresholds, cross-check rationale
+- `docs/06-shot-truth-engine.md` — Phase 2: metrics, verifier, transition policy, failure modes

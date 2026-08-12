@@ -49,6 +49,31 @@ def audit(
         Path,
         typer.Option("--artifacts-root", help="Root folder for run artifacts"),
     ] = Path("artifacts"),
+    shot_analysis: Annotated[
+        bool,
+        typer.Option(
+            "--shot-analysis/--no-shot-analysis",
+            help="Run the Phase 2 Shot Truth Engine (adjacent metrics, cut candidates, shots)",
+        ),
+    ] = True,
+    candidate_sensitivity: Annotated[
+        str,
+        typer.Option(
+            "--candidate-sensitivity",
+            help="Candidate generation sensitivity: high (max recall) / normal / low",
+        ),
+    ] = "normal",
+    extract_shot_evidence: Annotated[
+        bool,
+        typer.Option(
+            "--extract-shot-evidence/--no-extract-shot-evidence",
+            help="Render labeled evidence bundles for supported/review candidates",
+        ),
+    ] = True,
+    scdet: Annotated[
+        bool,
+        typer.Option("--scdet/--no-scdet", help="Include the ffmpeg scdet evidence pass"),
+    ] = True,
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
 ) -> None:
     """Produce a provably correct frame ledger and audit artifacts for VIDEO."""
@@ -65,6 +90,10 @@ def audit(
         artifacts_root=artifacts_root,
         seed_path=seed,
         extract_frames=extract_frames,
+        shot_analysis=shot_analysis,
+        shot_sensitivity=candidate_sensitivity,
+        extract_shot_evidence=extract_shot_evidence,
+        use_scdet=scdet,
     )
 
     if result.fatal_error:
@@ -130,6 +159,52 @@ def audit(
                 )
             console.print()
             console.print(table)
+
+    shot = result.shot_truth
+    if shot is not None:
+        from .models.shot_truth import CandidateStatus
+
+        console.print("\n[bold]SHOT TRUTH[/bold]")
+        console.print("-" * 10)
+        console.print(f"\nFrames: {shot.frame_count}")
+        console.print(f"Adjacent pairs analyzed: {shot.adjacent_pair_count}")
+        console.print(f"\nRaw candidates: {shot.raw_candidate_count}")
+        console.print(f"Merged candidates: {shot.merged_candidate_count}")
+        console.print(f"\nSupported boundaries: {shot.supported_count}")
+        console.print(f"Rejected false positives: {shot.rejected_count}")
+        console.print(f"Review required: {shot.review_required_count}")
+
+        def _describe(candidate_status: CandidateStatus, title: str, style: str) -> None:
+            selected = [c for c in shot.candidates if c.status == candidate_status]
+            if not selected:
+                return
+            console.print(f"\n[{style}]{title}:[/{style}]")
+            for c in selected:
+                time_str = (
+                    f"{float(c.boundary_time_exact):.6f}s"
+                    if c.boundary_time_exact is not None
+                    else "unknown time"
+                )
+                console.print(f"F{c.left_frame_index} -> F{c.right_frame_index}   {time_str}")
+                if candidate_status == CandidateStatus.SUPPORTED and c.transition is not None:
+                    label = c.transition.manuscript_type or "unresolved"
+                    console.print(f"  Likely transition: {label}")
+                reasons = ", ".join(r.value for r in c.reason_codes)
+                console.print(f"  Reasons: {reasons}")
+
+        _describe(CandidateStatus.SUPPORTED, "Supported", "green")
+        _describe(CandidateStatus.REJECTED, "Rejected", "dim")
+        _describe(CandidateStatus.REVIEW_REQUIRED, "Review required", "yellow")
+
+        console.print(f"\nProvisional shots: {shot.proposed_shot_count}")
+        shot_style = {
+            "PASS": "bold green",
+            "REVIEW_REQUIRED": "bold yellow",
+            "FAILED": "bold red",
+        }.get(shot.overall_status, "bold")
+        console.print(
+            f"\nOverall shot status: [{shot_style}]{shot.overall_status}[/{shot_style}]"
+        )
 
     console.print(f"\nArtifacts:\n{result.run_dir}")
     style = _status_style(result.status)

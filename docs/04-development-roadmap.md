@@ -5,14 +5,18 @@ Video → ffprobe verification → every-frame ledger → evidence manifest → 
 audit artifacts. Exact rational timing, SHA-256 provenance, independent frame-count
 cross-check, hard FAIL/WARN semantics, full test/lint/typecheck gates.
 
-## Phase 2 — Shot truth
-- Adjacent-frame difference pass (OpenCV/PyAV): per-pair deterministic metrics
-  written as evidence artifacts.
-- Cut candidate generation with exact frame anchors; adversarial verification step
-  that must look at the actual adjacent frames (flash-frame, fade, whip-pan traps).
-- True `Shot` records with transition classification from the fixed menu; frame-strip
-  evidence for every boundary.
-- Audio extraction: waveform/energy artifacts, exact sample↔PTS anchoring.
+## Phase 2 — Shot truth (DONE — see docs/06)
+- Adjacent-pair deterministic metrics on every frame pair (MAD, histogram,
+  phash, edges, Farneback flow) + ffmpeg scdet as independent evidence.
+- Recall-first multi-signal candidate generation, ±0.5 s robust local
+  baselines, flash/fade/blend region evidence.
+- Deterministic adversarial verifier with structured reason codes →
+  SUPPORTED / REJECTED / REVIEW_REQUIRED; no minimum shot length anywhere.
+- Gapless shot proposals with exact frame ownership; Hard cut / Fade in /
+  Fade out proposed automatically, dissolves conservative, jump/match/smash/
+  L/J-cut deferred; labeled evidence bundles from exact frame identity.
+- Deferred from the original Phase 2 sketch: audio waveform/energy extraction
+  (moved into Phase 3 with the rest of the audio engine).
 
 ## Phase 3 — Event evidence
 - ASR adapter interface (faster-whisper first, local-only default); word-level

@@ -17,6 +17,9 @@ artifacts/*
 tests/fixtures/*
 !tests/fixtures/.gitkeep
 
+# Private regression media is never committed; manifests are
+tests/regression/media/
+
 # Editor / OS
 .vscode/
 .idea/

@@ -23,6 +23,7 @@ from .media.ffmpeg_tools import FFmpegNotFoundError, ToolExecutionError, find_to
 from .models.frame import FrameLedger
 from .models.media import MediaInfo
 from .models.run import RunManifest
+from .models.shot_truth import ShotTruthResult
 from .models.validation import (
     FrameCountSignal,
     QCReport,
@@ -31,6 +32,7 @@ from .models.validation import (
     ValidatorIssue,
 )
 from .rules.loader import load_rules
+from .shots.engine import run_shot_analysis
 from .validation.ledger_validator import (
     compute_run_status,
     cross_check_frame_count,
@@ -54,6 +56,7 @@ class AuditResult:
     manifest: RunManifest | None = None
     fatal_error: str | None = None
     stage_timings: dict[str, float] = field(default_factory=dict)
+    shot_truth: ShotTruthResult | None = None
 
 
 class _StageTimer:
@@ -73,6 +76,10 @@ def run_audit(
     artifacts_root: Path,
     seed_path: Path | None = None,
     extract_frames: bool = False,
+    shot_analysis: bool = False,
+    shot_sensitivity: str = "normal",
+    extract_shot_evidence: bool = True,
+    use_scdet: bool = True,
 ) -> AuditResult:
     """Run the full Phase 1 audit and write all artifacts.
 
@@ -179,6 +186,24 @@ def run_audit(
                     )
                 logger.info("Extracted %d evidence frames", len(extracted))
                 checks_run.append("frame_extraction")
+
+        # --- SHOT TRUTH (Phase 2) ---
+        if shot_analysis and ledger is not None and media is not None:
+            with _StageTimer(timings, "shot_analysis_total"):
+                shot_output = run_shot_analysis(
+                    video_path,
+                    run_dir,
+                    media,
+                    ledger,
+                    sensitivity_name=shot_sensitivity,
+                    extract_evidence=extract_shot_evidence,
+                    use_scdet=use_scdet,
+                )
+            timings.update(shot_output.stage_timings)
+            issues.extend(shot_output.issues)
+            artifact_paths.extend(shot_output.artifact_paths)
+            result.shot_truth = shot_output.result
+            checks_run.append("shot_truth")
 
         # --- SOURCE STABILITY ---
         with _StageTimer(timings, "rehash_source"):
