@@ -25,12 +25,14 @@ from ..models.media import MediaInfo
 from ..models.review_intelligence import (
     ClaimEvidenceRow,
     ClaimImportance,
+    ClaimReviewStatus,
     EvidenceStatus,
     FoundationCheck,
     FoundationStatus,
     ProposalReasonCode,
     SeedClaimType,
     SeedDocument,
+    TextTrack,
 )
 from ..models.shot_truth import ShotProposal, ShotTruthResult
 from ..rules.loader import load_rules
@@ -101,6 +103,7 @@ def compare_seed(
     claims: list[SeedClaim],
     media: MediaInfo | None,
     shot_truth: ShotTruthResult | None,
+    text_tracks: list[TextTrack] | None = None,
 ) -> ComparisonResult:
     checks: list[FoundationCheck] = []
     conflicts: list[str] = []
@@ -120,6 +123,7 @@ def compare_seed(
     _verify_transitions(claims, shots_by_index, checks)
     _verify_timestamp_containment(claims, shots_by_index)
     _verify_entity_references(doc, claims, checks, conflicts)
+    _verify_on_screen_text(claims, text_tracks or [])
     _mark_semantic_unresolved(claims)
 
     foundation_status = _overall_foundation(checks)
@@ -216,7 +220,9 @@ def _verify_media_identity(
         )
         return
     matches = doc.video_id.lower() in filename.lower()
-    ref = _struct_ref("EV-MEDIAID", "media", f"source_path={filename}")
+    ref = _struct_ref(
+        "EV-MEDIAID", "media", f"source file_name={filename}", artifact_paths=["media.json"]
+    )
     if matches:
         claim.evidence_status = EvidenceStatus.SUPPORTED
         claim.evidence.append(ref)
@@ -487,6 +493,52 @@ def _verify_entity_references(
                 detail=f"{gid} defined but never referenced (ghost id).",
             )
         )
+
+
+def _verify_on_screen_text(claims: list[SeedClaim], text_tracks: list[TextTrack]) -> None:
+    """Compare seed ON_SCREEN_TEXT claims with machine OCR text tracks (N).
+
+    Machine OCR NEVER makes text factual: a match yields PARTIALLY_SUPPORTED +
+    review-required, never final SUPPORTED. A disagreement stays UNRESOLVED (the
+    seed may be right and OCR wrong). Task feedback about lyrics stays audio-side.
+    """
+    if not text_tracks:
+        return
+    from ..ocr.timing import text_similarity
+
+    tracks_with_text = [t for t in text_tracks if t.consensus is not None]
+    for claim in claims:
+        if claim.claim_type != SeedClaimType.ON_SCREEN_TEXT:
+            continue
+        seed_text = claim.quoted_text or claim.text
+        best: TextTrack | None = None
+        best_sim = 0.0
+        for track in tracks_with_text:
+            assert track.consensus is not None
+            sim = text_similarity(seed_text, track.consensus.consensus_text)
+            if sim > best_sim:
+                best_sim = sim
+                best = track
+        if best is None:
+            continue
+        ref = EvidenceReference(
+            evidence_id=f"EV-OCR-{claim.claim_id}",
+            evidence_type=EvidenceType.OCR_TRACK,
+            start_frame=best.first_candidate_frame,
+            end_frame=best.last_stable_frame,
+            source="ocr",
+            notes=(
+                f"machine OCR consensus '{best.consensus.consensus_text}' "  # type: ignore[union-attr]
+                f"similarity {best_sim:.2f} (UNVERIFIED machine evidence)"
+            ),
+        )
+        claim.evidence.append(ref)
+        if best_sim >= 0.6:
+            # Agreement is only ever PARTIAL — human source verification required.
+            claim.evidence_status = EvidenceStatus.PARTIALLY_SUPPORTED
+        else:
+            claim.evidence_status = EvidenceStatus.UNRESOLVED
+        claim.review_status = ClaimReviewStatus.REVIEW_REQUIRED
 
 
 def _mark_semantic_unresolved(claims: list[SeedClaim]) -> None:

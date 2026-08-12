@@ -620,6 +620,32 @@ class OCRStatus(StrEnum):
     AVAILABLE = "AVAILABLE"
     UNAVAILABLE = "UNAVAILABLE"
     LANGUAGE_UNAVAILABLE = "LANGUAGE_UNAVAILABLE"
+    #: OCR ran but a meaningful portion of frames failed to execute (M).
+    DEGRADED = "DEGRADED"
+
+
+class OCRFrameStatus(StrEnum):
+    """Per-frame OCR execution accounting (M) — a failure is never silently
+    converted into 'no text'."""
+
+    OCR_PRESENT = "OCR_PRESENT"  # OCR ran on this frame (may or may not find text)
+    OCR_NOT_READ = "OCR_NOT_READ"  # frame not submitted to OCR
+    OCR_ENGINE_FAILED = "OCR_ENGINE_FAILED"  # OCR raised on this frame
+
+
+class TextDisappearanceStatus(StrEnum):
+    """Whether/why a text region stopped being read (K) — disappearance is never
+    invented from 'last observation + 1'."""
+
+    DISAPPEARANCE_SUPPORTED = "DISAPPEARANCE_SUPPORTED"
+    PERSISTS_TO_END = "PERSISTS_TO_END"
+    REGION_PRESENT_TEXT_UNREADABLE = "REGION_PRESENT_TEXT_UNREADABLE"
+    UNRESOLVED = "UNRESOLVED"
+
+
+class TextDetectionProvenance(StrEnum):
+    REGION_DETECTOR = "REGION_DETECTOR"
+    WHOLE_FRAME = "WHOLE_FRAME"
 
 
 class OCREngineInfo(StrictModel):
@@ -644,6 +670,7 @@ class OCRObservation(StrictModel):
     height: int
     raw_text: str
     confidence: float | None = None
+    provenance: TextDetectionProvenance = TextDetectionProvenance.WHOLE_FRAME
 
 
 class TextConsensus(StrictModel):
@@ -662,6 +689,13 @@ class TextTrack(StrictModel):
     fully_legible_frame: int | None = None
     last_stable_frame: int | None = None
     disappearance_frame: int | None = None
+    disappearance_status: TextDisappearanceStatus = TextDisappearanceStatus.UNRESOLVED
+    #: True only when the text is still present in the last inspected frame (K).
+    text_persists_to_shot_end: bool = False
+    #: Real stability accounting (L).
+    consecutive_support_frames: int = 0
+    total_support_frames: int = 0
+    missed_frames: int = 0
     bbox_path: list[list[int]] = []  # per-frame [frame_index, x, y, w, h]
     observations: list[OCRObservation] = []
     consensus: TextConsensus | None = None

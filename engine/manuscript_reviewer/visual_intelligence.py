@@ -18,6 +18,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .artifacts import review_writer, visual_writer
 from .camera.segmentation import analyze_camera_motion
@@ -28,6 +29,7 @@ from .models.media import MediaInfo
 from .models.review_intelligence import (
     FrameObservation,
     OCRStatus,
+    TextTrack,
     VisualIntelligenceResult,
 )
 from .models.shot_truth import ShotTruthResult
@@ -47,6 +49,9 @@ from .validation import review_intelligence_validator as ri_validator
 from .validation import seed_validator, visual_validator
 from .visual.decode import FrameCache
 from .visual.observations import build_frame_observations
+
+if TYPE_CHECKING:
+    import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +98,7 @@ def run_visual_intelligence(
     )
 
     # --- visual frame observations + OCR (media-driven; run with or without a seed) ---
+    ocr_text_tracks: list[TextTrack] = []
     if ledger is not None and media is not None and video_path is not None:
         cache = FrameCache(video_path, ledger)
         clock = AnnotationClock.from_ledger(ledger)
@@ -107,7 +113,9 @@ def run_visual_intelligence(
         _timed(timings, "camera_motion", start)
         if ocr_enabled:
             start = time.perf_counter()
-            _run_ocr_stage(cache, ledger, clock, run_dir, artifacts, issues, result)
+            ocr_text_tracks = _run_ocr_stage(
+                cache, ledger, clock, run_dir, artifacts, issues, result
+            )
             _timed(timings, "ocr", start)
 
     # No seed: Phase 4 has no claims to compare, so it produces no findings and
@@ -161,7 +169,7 @@ def run_visual_intelligence(
 
     # --- structural comparison (zero new CV) ---
     start = time.perf_counter()
-    comparison = compare_seed(doc, claims, media, shot_truth)
+    comparison = compare_seed(doc, claims, media, shot_truth, ocr_text_tracks)
     _timed(timings, "seed_comparison", start)
     artifacts.append(review_writer.write_seed_claims(seed_dir, comparison.claims))
 
@@ -305,25 +313,27 @@ def _run_ocr_stage(
     artifacts: list[Path],
     issues: list[ValidatorIssue],
     result: VisualIntelligenceResult,
-) -> None:
+) -> list[TextTrack]:
     """Optional local OCR. Degrades safely: if Tesseract is unavailable only
-    ocr_status.json is written (no fake artifacts) and OCR status is UNAVAILABLE."""
+    ocr_status.json is written (no fake artifacts) and OCR status is UNAVAILABLE.
+    Returns the text tracks so seed ON_SCREEN_TEXT claims can be compared (N)."""
     ocr_dir = run_dir / "visual" / "ocr"
     adapter = TesseractAdapter()
     info = adapter.engine_info()
     result.ocr_status = info.status
     artifacts.append(visual_writer.write_ocr_status(ocr_dir, info))
     if info.status == OCRStatus.UNAVAILABLE:
-        return
+        return []
     try:
-        # One shared sequential color decode feeds OCR (H) — never one ffmpeg
-        # process per frame.
+        # One shared sequential color decode feeds OCR (H); candidate text
+        # regions focus recognition with a whole-frame fallback (I).
         ocr_result = run_ocr(
             cache.iter_color_frames(),
             ledger,
             clock,
             adapter,
             total_frames=ledger.frame_count,
+            region_detector=_region_boxes,
         )
     except (MetricDecodeError, ValueError) as exc:
         issues.append(
@@ -334,7 +344,10 @@ def _run_ocr_stage(
                 message=f"OCR pass failed: {exc}",
             )
         )
-        return
+        return []
+    # Re-write the (possibly DEGRADED) engine info from the pass (M).
+    result.ocr_status = ocr_result.engine_info.status
+    artifacts.append(visual_writer.write_ocr_status(ocr_dir, ocr_result.engine_info))
     issues.extend(ri_validator.validate_text_tracks(ocr_result.text_tracks))
     result.ocr_track_count = len(ocr_result.text_tracks)
     result.source_verified_ocr_count = sum(
@@ -345,3 +358,10 @@ def _run_ocr_stage(
     artifacts.append(
         visual_writer.write_watermark_candidates(ocr_dir, ocr_result.watermark_candidates)
     )
+    return ocr_result.text_tracks
+
+
+def _region_boxes(gray: np.ndarray) -> list[tuple[int, int, int, int]]:
+    from .ocr.regions import detect_text_regions
+
+    return [(r.x, r.y, r.width, r.height) for r in detect_text_regions(gray)]
