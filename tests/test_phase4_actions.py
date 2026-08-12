@@ -115,12 +115,60 @@ def test_action_candidates_have_no_semantic_label() -> None:
     obj = _track("O", "OBJECT", boxes)
     candidates = build_action_candidates([], [obj])
     assert candidates
-    # Semantic labels are never forced from generic motion.
+    # Semantic labels are never forced from generic motion; every candidate is
+    # review-required and carries evidence.
     assert all(c.semantic_label is None for c in candidates)
     assert all(c.review_required for c in candidates)
+    assert all(c.evidence_refs for c in candidates)
     classes = {c.action_class for c in candidates}
-    assert ActionStateClass.ENTITY_APPEARS in classes
     assert ActionStateClass.MOTION_BEGINS in classes
+    # Tracker start is NOT proof of appearance (item 7): no ENTITY_APPEARS.
+    assert ActionStateClass.ENTITY_APPEARS not in classes
+
+
+def test_no_action_from_occluded_or_gapped_observations() -> None:
+    # A track that is OCCLUDED in the middle must not produce motion across the gap.
+    obs = [
+        TrackObservation(frame_index=0, x=10, y=10, width=20, height=20,
+                         status=TrackStatus.TRACKED),
+        TrackObservation(frame_index=1, x=10, y=10, width=20, height=20,
+                         status=TrackStatus.OCCLUDED),
+        TrackObservation(frame_index=2, x=80, y=10, width=20, height=20,
+                         status=TrackStatus.TRACKED),
+    ]
+    track = EntityTrack(track_id="O", entity_type="OBJECT", first_frame_index=0,
+                        last_frame_index=2, observations=obs, status=TrackStatus.REVIEW_REQUIRED)
+    candidates = build_action_candidates([], [track])
+    # No MOTION_BEGINS across the occluded frame (0->2 jump is not consecutive).
+    assert not any(c.action_class == ActionStateClass.MOTION_BEGINS for c in candidates)
+    # Occlusion boundaries ARE defensible.
+    classes = {c.action_class for c in candidates}
+    assert ActionStateClass.OCCLUSION_BEGINS in classes
+    assert ActionStateClass.OCCLUSION_ENDS in classes
+
+
+def test_contact_ignores_occluded_observations() -> None:
+    # Character and object overlap, but the object is OCCLUDED there -> no contact.
+    char = _track("C", "CHARACTER", dict.fromkeys(range(0, 6), (40, 50)))
+    obj_obs = [
+        TrackObservation(frame_index=f, x=40, y=50, width=20, height=20,
+                         status=TrackStatus.OCCLUDED)
+        for f in range(0, 6)
+    ]
+    obj = EntityTrack(track_id="O", entity_type="OBJECT", first_frame_index=0,
+                      last_frame_index=5, observations=obj_obs, status=TrackStatus.REVIEW_REQUIRED)
+    events = build_contact_events([char], [obj])
+    assert not events  # untrusted observations never infer contact
+
+
+def test_missing_final_state_check_fails_validator() -> None:
+    from manuscript_reviewer.validation.visual_validator import validate_final_states
+
+    obj = _track("O", "OBJECT", dict.fromkeys(range(0, 11), (40, 50)))
+    truth = _shot_truth([(1, 0, 10)])
+    # No checks supplied though the object appears in shot 1 -> coverage FAIL.
+    issues = validate_final_states([], [obj], truth)
+    assert any(i.rule_id == "P4-FINAL-001" for i in issues)
 
 
 def test_action_candidate_boundaries_are_ordered() -> None:

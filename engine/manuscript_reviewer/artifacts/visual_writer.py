@@ -57,6 +57,9 @@ _OBS_COLUMNS = [
     "global_camera_motion",
     "raw_interframe_motion",
     "text_region_count",
+    "active_track_ids",
+    "occluded_track_ids",
+    "contact_state_ids",
     "visual_concern_candidates",
 ]
 
@@ -85,6 +88,9 @@ def _obs_row(obs: FrameObservation) -> list[object]:
         obs.global_camera_motion,
         obs.raw_interframe_motion,
         obs.text_region_count,
+        ";".join(obs.active_track_ids),
+        ";".join(obs.occluded_track_ids),
+        ";".join(obs.contact_state_ids),
         ";".join(obs.visual_concern_codes),
     ]
 

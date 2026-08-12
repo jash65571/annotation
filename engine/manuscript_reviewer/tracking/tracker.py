@@ -72,15 +72,24 @@ def track_anchor(
     anchor: VisualAnchor,
     full_w: int,
     full_h: int,
+    shot_bounds: tuple[int, int] | None = None,
 ) -> EntityTrack:
+    """Track an anchor forward/backward, bounded to its verified shot (item 3).
+
+    Local tracking never crosses an editorial cut; ``shot_bounds`` is the
+    anchor's shot frame range. OCCLUDED frames carry the LAST KNOWN position with
+    explicit uncertainty — never the original anchor coordinates.
+    """
     frame_count = gray.shape[0]
+    lo = 0 if shot_bounds is None else max(0, shot_bounds[0])
+    hi = frame_count - 1 if shot_bounds is None else min(frame_count - 1, shot_bounds[1])
     gx, gy, gw, gh = _to_grid_box(anchor, full_w, full_h)
     template = gray[anchor.frame_index][gy : gy + gh, gx : gx + gw].copy()
     template_hist = _hist(template)
 
     observations: dict[int, TrackObservation] = {}
     observations[anchor.frame_index] = _observation(
-        anchor.frame_index, gx, gy, gw, gh, 1.0, TrackStatus.TRACKED, ledger, clock, full_w, full_h
+        anchor.frame_index, gx, gy, gw, gh, 1.0, TrackStatus.TRACKED, full_w, full_h
     )
     reacquired = False
     saw_loss = False
@@ -88,8 +97,9 @@ def track_anchor(
     for direction in (1, -1):
         miss = 0
         lost = False
+        last_gx, last_gy = gx, gy  # last KNOWN position for occlusion frames
         f = anchor.frame_index + direction
-        while 0 <= f < frame_count:
+        while lo <= f <= hi:
             mx, my, score = _match(gray[f], template)
             if score >= _TRACK_THRESHOLD:
                 hist_corr = float(
@@ -105,14 +115,18 @@ def track_anchor(
                     reacquired = True
                     lost = False
                 observations[f] = _observation(
-                    f, mx, my, gw, gh, hist_corr, status, ledger, clock, full_w, full_h
+                    f, mx, my, gw, gh, hist_corr, status, full_w, full_h
                 )
+                last_gx, last_gy = mx, my
                 miss = 0
             else:
                 miss += 1
                 if miss <= _OCCLUSION_MAX:
+                    # Uncertain: last-known position, no trustworthy box, no score.
                     observations[f] = _observation(
-                        f, gx, gy, gw, gh, 0.0, TrackStatus.OCCLUDED, ledger, clock, full_w, full_h
+                        f, last_gx, last_gy, gw, gh, None, TrackStatus.OCCLUDED,
+                        full_w, full_h,
+                        note="occluded: last-known position, uncertain (not a verified box)",
                     )
                 else:
                     saw_loss = True
@@ -148,12 +162,11 @@ def _observation(
     gy: int,
     gw: int,
     gh: int,
-    similarity: float,
+    similarity: float | None,
     status: TrackStatus,
-    ledger: FrameLedger,
-    clock: AnnotationClock,
     full_w: int,
     full_h: int,
+    note: str | None = None,
 ) -> TrackObservation:
     fx, fy, fw, fh = _to_full_box(gx, gy, gw, gh, full_w, full_h)
     return TrackObservation(
@@ -163,5 +176,6 @@ def _observation(
         width=fw,
         height=fh,
         status=status,
-        appearance_similarity=round(similarity, 4),
+        appearance_similarity=round(similarity, 4) if similarity is not None else None,
+        notes=[note] if note else [],
     )

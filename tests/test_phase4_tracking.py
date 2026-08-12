@@ -131,6 +131,47 @@ def test_track_follows_moving_template(tmp_path: Path) -> None:
     assert len(track.observations) >= 10
 
 
+def _grid_ledger(n: int) -> FrameLedger:
+    from fractions import Fraction
+
+    from manuscript_reviewer.models.frame import FrameRecord
+    frames = [
+        FrameRecord(frame_index=i, pts=i, pts_time_seconds=Fraction(i, 24),
+                    key_frame=(i == 0), width=160, height=90)
+        for i in range(n)
+    ]
+    return FrameLedger(stream_index=0, time_base=Fraction(1, 24), frames=frames)
+
+
+def _grid_clip_gray(n: int = 12) -> np.ndarray:
+    rng = np.random.default_rng(5)
+    bg = rng.integers(0, 120, size=(90, 160), dtype=np.uint8)
+    patch = np.random.default_rng(9).integers(160, 256, size=(12, 12), dtype=np.uint8)
+    frames = []
+    for i in range(n):
+        f = bg.copy()
+        x = 10 + i * 4
+        f[40:52, x : x + 12] = patch
+        frames.append(f)
+    return np.stack(frames, axis=0)
+
+
+def test_tracking_is_bounded_to_shot() -> None:
+    # The patch is trackable across all 12 frames, but the anchor's shot is [0,5]:
+    # tracking must not cross the cut into later frames (item 3).
+    from manuscript_reviewer.media.clock import AnnotationClock
+
+    gray = _grid_clip_gray(12)
+    ledger = _grid_ledger(12)
+    clock = AnnotationClock.from_ledger(ledger)
+    anchor = VisualAnchor(
+        anchor_id="a", frame_index=0, x=10, y=40, width=12, height=12, entity_type="OBJECT",
+    )
+    track = track_anchor(gray, ledger, clock, anchor, 160, 90, shot_bounds=(0, 5))
+    assert max(o.frame_index for o in track.observations) <= 5
+    assert min(o.frame_index for o in track.observations) >= 0
+
+
 @requires_ffmpeg
 def test_occlusion_then_reacquire_is_review_required(tmp_path: Path) -> None:
     frames = []
@@ -153,3 +194,8 @@ def test_occlusion_then_reacquire_is_review_required(tmp_path: Path) -> None:
     # A loss/reacquisition is never silently verified.
     assert track.status == TrackStatus.REVIEW_REQUIRED
     assert not validate_tracks([track], frame_count=ledger.frame_count)
+    # OCCLUDED observations carry uncertainty and never the anchor's score of 1.0.
+    occluded = [o for o in track.observations if o.status == TrackStatus.OCCLUDED]
+    assert occluded
+    assert all(o.appearance_similarity is None for o in occluded)
+    assert all(o.notes for o in occluded)

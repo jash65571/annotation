@@ -31,8 +31,10 @@ from .models.frame import FrameLedger
 from .models.media import MediaInfo
 from .models.review_intelligence import (
     CameraMotionCandidate,
+    ContactEvent,
     EntityTrack,
     FrameObservation,
+    OCRObservation,
     OCRStatus,
     TextTrack,
     VisualIntelligenceResult,
@@ -143,19 +145,30 @@ def run_visual_intelligence(
                 )
             )
             _timed(timings, "playback_speed", start)
+        contact_events: list[ContactEvent] = []
         if visual_anchors_path is not None:
             start = time.perf_counter()
-            entity_tracks = _run_tracking_stage(
+            entity_tracks, contact_events = _run_tracking_stage(
                 cache, ledger, clock, media, shot_truth, visual_anchors_path,
                 run_dir, artifacts, issues, result,
             )
             _timed(timings, "tracking", start)
+        ocr_observations: list[OCRObservation] = []
         if ocr_enabled:
             start = time.perf_counter()
-            ocr_text_tracks = _run_ocr_stage(
+            ocr_text_tracks, ocr_observations = _run_ocr_stage(
                 cache, ledger, clock, run_dir, artifacts, issues, result
             )
             _timed(timings, "ocr", start)
+        # Item 18: enrich the observation ledger with track/OCR/contact context,
+        # then write the (derived) observation artifacts. Phase 1 files untouched.
+        _enrich_observations(observations, entity_tracks, contact_events, ocr_observations)
+        visual_dir = run_dir / "visual"
+        artifacts.append(visual_writer.write_frame_observations_csv(visual_dir, observations))
+        artifacts.append(visual_writer.write_frame_observations_jsonl(visual_dir, observations))
+        artifacts.append(
+            visual_writer.write_enriched_frame_ledger(visual_dir, ledger, observations)
+        )
 
     # No seed: Phase 4 has no claims to compare, so it produces no findings and
     # does not downgrade the run. Emit a real (not fake) visual QC reflecting the
@@ -325,8 +338,12 @@ def _build_observations(
     artifacts: list[Path],
     issues: list[ValidatorIssue],
 ) -> list[FrameObservation]:
-    """Decode once (shared cache) and build the per-frame observation ledger."""
-    visual_dir = run_dir / "visual"
+    """Decode once (shared cache) and build the per-frame observation ledger.
+
+    The artifacts are written later by ``_rewrite_observations`` AFTER enrichment
+    with tracking/OCR/contact context (item 18); ``_ = run_dir`` reserved.
+    """
+    _ = run_dir
     try:
         observations = build_frame_observations(cache, ledger, clock, shot_truth)
     except (MetricDecodeError, ValueError) as exc:
@@ -340,10 +357,40 @@ def _build_observations(
         )
         return []
     issues.extend(visual_validator.validate_frame_observations(observations, ledger))
-    artifacts.append(visual_writer.write_frame_observations_csv(visual_dir, observations))
-    artifacts.append(visual_writer.write_frame_observations_jsonl(visual_dir, observations))
-    artifacts.append(visual_writer.write_enriched_frame_ledger(visual_dir, ledger, observations))
     return observations
+
+
+def _enrich_observations(
+    observations: list[FrameObservation],
+    tracks: list[EntityTrack],
+    contact_events: list[ContactEvent],
+    ocr_observations: list[OCRObservation],
+) -> None:
+    """Item 18: fill active/occluded track ids, contact-state ids, and text
+    region counts per frame from the stages that ran."""
+    from .models.review_intelligence import TrackStatus
+
+    by_index = {o.frame_index: o for o in observations}
+    text_counts: dict[int, int] = {}
+    for oo in ocr_observations:
+        text_counts[oo.frame_index] = text_counts.get(oo.frame_index, 0) + 1
+    contacts_by_frame: dict[int, list[str]] = {}
+    for ev in contact_events:
+        contacts_by_frame.setdefault(ev.frame_index, []).append(ev.event_id)
+    for track in tracks:
+        for to in track.observations:
+            obs = by_index.get(to.frame_index)
+            if obs is None:
+                continue
+            if to.status == TrackStatus.OCCLUDED:
+                obs.occluded_track_ids.append(track.track_id)
+            elif to.status in (TrackStatus.TRACKED, TrackStatus.REACQUIRED):
+                obs.active_track_ids.append(track.track_id)
+    for obs in observations:
+        obs.text_region_count = text_counts.get(obs.frame_index, 0)
+        obs.contact_state_ids = contacts_by_frame.get(obs.frame_index, [])
+
+
 
 
 def _run_camera_stage(
@@ -384,6 +431,37 @@ def _run_camera_stage(
     return candidates
 
 
+def _make_frame_to_shot(shot_truth: ShotTruthResult | None) -> Callable[[int], int | None]:
+    """Resolve a frame index to its verified shot index (for contact/action
+    shot_number tagging)."""
+    ranges = (
+        [(s.start_frame_index, s.end_frame_index, s.shot_index) for s in shot_truth.shots]
+        if shot_truth is not None
+        else []
+    )
+
+    def resolve(frame_index: int) -> int | None:
+        for lo, hi, idx in ranges:
+            if lo <= frame_index <= hi:
+                return idx
+        return None
+
+    return resolve
+
+
+def _shot_bounds_for_frame(
+    shot_truth: ShotTruthResult | None, frame_index: int
+) -> tuple[int, int] | None:
+    """The verified-shot frame range containing ``frame_index`` — tracking never
+    crosses an editorial cut (item 3). None => track the whole clip."""
+    if shot_truth is None:
+        return None
+    for shot in shot_truth.shots:
+        if shot.start_frame_index <= frame_index <= shot.end_frame_index:
+            return shot.start_frame_index, shot.end_frame_index
+    return None
+
+
 def _run_tracking_stage(
     cache: FrameCache,
     ledger: FrameLedger,
@@ -395,15 +473,21 @@ def _run_tracking_stage(
     artifacts: list[Path],
     issues: list[ValidatorIssue],
     result: VisualIntelligenceResult,
-) -> list[EntityTrack]:
-    """Anchor-seeded local tracking + continuity hypotheses (S/T/U)."""
+) -> tuple[list[EntityTrack], list[ContactEvent]]:
+    """Anchor-seeded local tracking + continuity + contacts/final-state/actions."""
     entities_dir = run_dir / "visual" / "entities"
     stream = media.video_streams[0]
     full_w, full_h = stream.width, stream.height
     try:
         anchors = load_anchors(anchors_path)
         gray = cache.gray_frames()
-        tracks = [track_anchor(gray, ledger, clock, a, full_w, full_h) for a in anchors]
+        tracks = [
+            track_anchor(
+                gray, ledger, clock, a, full_w, full_h,
+                shot_bounds=_shot_bounds_for_frame(shot_truth, a.frame_index),
+            )
+            for a in anchors
+        ]
     except (AnchorLoadError, MetricDecodeError, ValueError) as exc:
         issues.append(
             ValidatorIssue(
@@ -413,7 +497,7 @@ def _run_tracking_stage(
                 message=f"Tracking pass failed: {exc}",
             )
         )
-        return []
+        return [], []
     characters, objects, links = build_continuity(tracks)
     issues.extend(visual_validator.validate_tracks(tracks, ledger.frame_count))
     issues.extend(visual_validator.validate_hypotheses(characters, objects))
@@ -427,20 +511,25 @@ def _run_tracking_stage(
     char_tracks = [t for t in tracks if t.entity_type.upper() == "CHARACTER"]
     obj_tracks = [t for t in tracks if t.entity_type.upper() == "OBJECT"]
 
-    # V: ownership/contact events.
-    contact_events = build_contact_events(char_tracks, obj_tracks)
+    frame_time = _frame_to_time(ledger, clock)
+    frame_shot = _make_frame_to_shot(shot_truth)
+    shots_exist = shot_truth is not None and bool(shot_truth.shots)
+
+    # V: ownership/contact events (visible-only, consecutive, shot + evidence).
+    contact_events = build_contact_events(char_tracks, obj_tracks, frame_shot)
     issues.extend(visual_validator.validate_contact_events(contact_events))
     # W: final object-state checks (removal never inferred from a shot ending).
     final_checks = build_final_state_checks(obj_tracks, shot_truth, contact_events)
-    issues.extend(visual_validator.validate_final_states(final_checks, shot_truth))
+    issues.extend(visual_validator.validate_final_states(final_checks, obj_tracks, shot_truth))
     artifacts.append(visual_writer.write_final_state_checks(entities_dir, final_checks))
     # X: atomic action-boundary candidates (semantic label stays None).
-    frame_time = _frame_to_time(ledger, clock)
     action_candidates = build_action_candidates(
-        char_tracks, obj_tracks, contact_events, frame_time
+        char_tracks, obj_tracks, contact_events, frame_time, frame_shot
     )
     issues.extend(
-        visual_validator.validate_action_candidates(action_candidates, ledger.frame_count)
+        visual_validator.validate_action_candidates(
+            action_candidates, ledger.frame_count, shots_exist
+        )
     )
     result.action_candidate_count = len(action_candidates)
     result.semantic_review_required_count = sum(
@@ -449,7 +538,7 @@ def _run_tracking_stage(
     actions_dir = run_dir / "visual" / "actions"
     artifacts.append(visual_writer.write_contact_events(actions_dir, contact_events))
     artifacts.append(visual_writer.write_action_candidates(actions_dir, action_candidates))
-    return tracks
+    return tracks, contact_events
 
 
 def _run_ocr_stage(
@@ -460,7 +549,7 @@ def _run_ocr_stage(
     artifacts: list[Path],
     issues: list[ValidatorIssue],
     result: VisualIntelligenceResult,
-) -> list[TextTrack]:
+) -> tuple[list[TextTrack], list[OCRObservation]]:
     """Optional local OCR. Degrades safely: if Tesseract is unavailable only
     ocr_status.json is written (no fake artifacts) and OCR status is UNAVAILABLE.
     Returns the text tracks so seed ON_SCREEN_TEXT claims can be compared (N)."""
@@ -470,7 +559,7 @@ def _run_ocr_stage(
     result.ocr_status = info.status
     artifacts.append(visual_writer.write_ocr_status(ocr_dir, info))
     if info.status == OCRStatus.UNAVAILABLE:
-        return []
+        return [], []
     try:
         # One shared sequential color decode feeds OCR (H); candidate text
         # regions focus recognition with a whole-frame fallback (I).
@@ -491,7 +580,7 @@ def _run_ocr_stage(
                 message=f"OCR pass failed: {exc}",
             )
         )
-        return []
+        return [], []
     # Re-write the (possibly DEGRADED) engine info from the pass (M).
     result.ocr_status = ocr_result.engine_info.status
     artifacts.append(visual_writer.write_ocr_status(ocr_dir, ocr_result.engine_info))
@@ -505,7 +594,7 @@ def _run_ocr_stage(
     artifacts.append(
         visual_writer.write_watermark_candidates(ocr_dir, ocr_result.watermark_candidates)
     )
-    return ocr_result.text_tracks
+    return ocr_result.text_tracks, ocr_result.observations
 
 
 def _region_boxes(gray: np.ndarray) -> list[tuple[int, int, int, int]]:

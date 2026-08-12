@@ -564,6 +564,9 @@ class ObjectStateKind(StrEnum):
     IN_CONTACT_WITH_CHARACTER = "IN_CONTACT_WITH_CHARACTER"
     ON_SURFACE = "ON_SURFACE"
     MOVING_INDEPENDENTLY = "MOVING_INDEPENDENTLY"
+    #: Present/visible but the contact/surface state is not determined (item 5) —
+    #: never assume ON_SURFACE merely because the object is not held.
+    VISIBLE = "VISIBLE"
     OCCLUDED = "OCCLUDED"
     OUT_OF_FRAME = "OUT_OF_FRAME"
     REVIEW_REQUIRED = "REVIEW_REQUIRED"
@@ -621,7 +624,12 @@ class FinalStateCheck(StrictModel):
 
     shot_number: int
     entity_id: str
+    #: Last frame the entity was actually VISIBLE (TRACKED) in this shot. An
+    #: OCCLUDED frame is NOT a visible frame (item 5).
     final_visible_frame: int | None = None
+    #: Last observation of any kind (may be OCCLUDED) — kept separate.
+    last_observation_frame: int | None = None
+    still_visible_at_shot_end: bool = False
     final_state: ObjectStateKind
     resolved: bool = False
     evidence_refs: list[EvidenceReference] = []

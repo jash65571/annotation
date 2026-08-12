@@ -207,7 +207,7 @@ def validate_hypotheses(
 
 
 def validate_action_candidates(
-    candidates: list[ActionCandidate], frame_count: int
+    candidates: list[ActionCandidate], frame_count: int, shots_exist: bool = False
 ) -> list[ValidatorIssue]:
     issues: list[ValidatorIssue] = []
     for cand in candidates:
@@ -230,6 +230,26 @@ def validate_action_candidates(
                     severity=Severity.FAIL,
                     location=cand.candidate_id,
                     message="Semantic action label marked verified from generic motion.",
+                )
+            )
+        # P4-ACTION-004: shot_number must be set when Shot Truth exists.
+        if shots_exist and cand.shot_number is None:
+            issues.append(
+                ValidatorIssue(
+                    rule_id="P4-ACTION-004",
+                    severity=Severity.FAIL,
+                    location=cand.candidate_id,
+                    message="Action candidate missing shot_number while Shot Truth exists.",
+                )
+            )
+        # P4-ACTION-005: a candidate must carry evidence refs.
+        if not cand.evidence_refs:
+            issues.append(
+                ValidatorIssue(
+                    rule_id="P4-ACTION-005",
+                    severity=Severity.FAIL,
+                    location=cand.candidate_id,
+                    message="Action candidate has no evidence references.",
                 )
             )
     return issues
@@ -255,23 +275,67 @@ def validate_contact_events(events: list[ContactEvent]) -> list[ValidatorIssue]:
 
 
 def validate_final_states(
-    checks: list[FinalStateCheck], shot_result: object
+    checks: list[FinalStateCheck],
+    object_tracks: list[EntityTrack],
+    shot_result: ShotTruthResult | None,
 ) -> list[ValidatorIssue]:
-    """P4-FINAL-001: a final state is never resolved as removed/released without
-    evidence (removal is never inferred merely because the shot ends)."""
+    """P4-FINAL-001: coverage + evidence integrity for final states.
+
+    * exactly one FinalStateCheck per anchored object that appears in a shot;
+    * a resolved state must carry graded (frame/artifact) evidence;
+    * removal/exit is never resolved without evidence.
+    """
     issues: list[ValidatorIssue] = []
+    have = {(c.shot_number, c.entity_id) for c in checks}
+    counts: dict[tuple[int, str], int] = {}
+    for c in checks:
+        counts[(c.shot_number, c.entity_id)] = counts.get((c.shot_number, c.entity_id), 0) + 1
+
+    if shot_result is not None:
+        for shot in shot_result.shots:
+            lo, hi = shot.start_frame_index, shot.end_frame_index
+            for track in object_tracks:
+                appears = any(lo <= o.frame_index <= hi for o in track.observations)
+                if appears and (shot.shot_index, track.track_id) not in have:
+                    issues.append(
+                        ValidatorIssue(
+                            rule_id="P4-FINAL-001",
+                            severity=Severity.FAIL,
+                            location=f"{track.track_id}@shot{shot.shot_index}",
+                            message="Missing final-state check for an object in a shot.",
+                        )
+                    )
+    for (shot_num, entity), n in counts.items():
+        if n != 1:
+            issues.append(
+                ValidatorIssue(
+                    rule_id="P4-FINAL-001",
+                    severity=Severity.FAIL,
+                    location=f"{entity}@shot{shot_num}",
+                    message=f"{n} final-state checks for one object/shot (expected 1).",
+                )
+            )
     for check in checks:
-        removed = check.final_state.value in ("OUT_OF_FRAME",)
-        if removed and check.resolved and not check.evidence_refs:
+        if check.resolved and not _graded_refs(check.evidence_refs):
             issues.append(
                 ValidatorIssue(
                     rule_id="P4-FINAL-001",
                     severity=Severity.FAIL,
                     location=f"{check.entity_id}@shot{check.shot_number}",
-                    message="Final state 'removed' resolved without evidence.",
+                    message="Resolved final state without graded evidence.",
                 )
             )
     return issues
+
+
+def _graded_refs(refs: list) -> bool:  # type: ignore[type-arg]
+    return any(
+        r.start_frame is not None
+        or r.start_pts is not None
+        or bool(r.artifact_paths)
+        or r.is_factual
+        for r in refs
+    )
 
 
 def validate_speed_evidence(evidence: list[PlaybackSpeedEvidence]) -> list[ValidatorIssue]:
