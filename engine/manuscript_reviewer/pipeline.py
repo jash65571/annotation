@@ -262,6 +262,7 @@ def run_audit(
                     ledger,
                     result.shot_truth,
                     result.audio_truth,
+                    video_path=video_path,
                     seed_path=seed_path,
                     feedback_path=feedback_path,
                     visual_anchors_path=visual_anchors_path,

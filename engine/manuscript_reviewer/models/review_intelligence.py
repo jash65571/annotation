@@ -850,6 +850,7 @@ class VisualIntelligenceResult(StrictModel):
     seed_present: bool = False
     seed_parsed: bool = False
     seed_claim_count: int = 0
+    frame_observation_count: int = 0
     foundation_status: FoundationStatus = FoundationStatus.NOT_EVALUATED
     seed_shot_count: int | None = None
     verified_shot_count: int | None = None

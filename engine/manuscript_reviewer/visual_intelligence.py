@@ -19,11 +19,12 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .artifacts import review_writer
+from .artifacts import review_writer, visual_writer
+from .media.clock import AnnotationClock
 from .models.audio import AudioQCResult
 from .models.frame import FrameLedger
 from .models.media import MediaInfo
-from .models.review_intelligence import VisualIntelligenceResult
+from .models.review_intelligence import FrameObservation, VisualIntelligenceResult
 from .models.shot_truth import ShotTruthResult
 from .models.validation import Severity, ValidatorIssue
 from .review.decisions import DecisionLoadError, apply_decisions, load_decisions
@@ -34,8 +35,11 @@ from .seed import snapshot as snapshot_mod
 from .seed.claims import extract_claims
 from .seed.comparison import compare_seed
 from .seed.parser import parse_seed_text
+from .shots.decode import MetricDecodeError
 from .validation import review_intelligence_validator as ri_validator
-from .validation import seed_validator
+from .validation import seed_validator, visual_validator
+from .visual.decode import FrameCache
+from .visual.observations import build_frame_observations
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +64,7 @@ def run_visual_intelligence(
     ledger: FrameLedger | None,
     shot_truth: ShotTruthResult | None,
     audio_truth: AudioQCResult | None,
+    video_path: Path | None = None,
     seed_path: Path | None = None,
     feedback_path: Path | None = None,
     visual_anchors_path: Path | None = None,
@@ -80,9 +85,18 @@ def run_visual_intelligence(
         seed_present=seed_path is not None,
     )
 
-    # No seed: Phase 4 has no claims to compare in this slice, so it produces no
-    # findings and does not downgrade the run. Emit a real (not fake) visual QC
-    # reflecting that, so the manifest still records the stage.
+    # --- visual frame observations (media-driven; runs with or without a seed) ---
+    if ledger is not None and media is not None and video_path is not None:
+        start = time.perf_counter()
+        observations = _build_observations(
+            video_path, ledger, shot_truth, run_dir, artifacts, issues
+        )
+        result.frame_observation_count = len(observations)
+        _timed(timings, "frame_observations", start)
+
+    # No seed: Phase 4 has no claims to compare, so it produces no findings and
+    # does not downgrade the run. Emit a real (not fake) visual QC reflecting the
+    # observations that did run, so the manifest still records the stage.
     if seed_path is None:
         result.overall_status = ri_validator.compute_overall_status([])
         review_dir = run_dir / "review"
@@ -197,6 +211,37 @@ def run_visual_intelligence(
     artifacts.append(review_writer.write_visual_qc(review_dir, result))
 
     _timed(timings, "visual_intelligence_total", stage_start)
-    # Reserved for later slices (frame observations, tracking, OCR, anchors).
-    _ = (ledger, audio_truth, visual_anchors_path, ocr_enabled, extract_visual_evidence)
+    # Reserved for later slices (tracking, OCR, anchors, evidence bundles).
+    _ = (audio_truth, visual_anchors_path, ocr_enabled, extract_visual_evidence)
     return VisualIntelligenceOutput(result, issues, artifacts, timings)
+
+
+def _build_observations(
+    video_path: Path,
+    ledger: FrameLedger,
+    shot_truth: ShotTruthResult | None,
+    run_dir: Path,
+    artifacts: list[Path],
+    issues: list[ValidatorIssue],
+) -> list[FrameObservation]:
+    """Decode once (shared cache) and build the per-frame observation ledger."""
+    visual_dir = run_dir / "visual"
+    try:
+        cache = FrameCache(video_path, ledger)
+        clock = AnnotationClock.from_ledger(ledger)
+        observations = build_frame_observations(cache, ledger, clock, shot_truth)
+    except (MetricDecodeError, ValueError) as exc:
+        issues.append(
+            ValidatorIssue(
+                rule_id="P4-OBS-000",
+                severity=Severity.WARN,
+                location=video_path.name,
+                message=f"Frame observation pass failed: {exc}",
+            )
+        )
+        return []
+    issues.extend(visual_validator.validate_frame_observations(observations, ledger))
+    artifacts.append(visual_writer.write_frame_observations_csv(visual_dir, observations))
+    artifacts.append(visual_writer.write_frame_observations_jsonl(visual_dir, observations))
+    artifacts.append(visual_writer.write_enriched_frame_ledger(visual_dir, ledger, observations))
+    return observations
