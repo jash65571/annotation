@@ -14,6 +14,7 @@ always ``UNRESOLVED`` (never visually inferable).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from decimal import Decimal
 from fractions import Fraction
@@ -23,6 +24,8 @@ from ..models.caption import SeedClaim
 from ..models.evidence import EvidenceReference, EvidenceType
 from ..models.media import MediaInfo
 from ..models.review_intelligence import (
+    CameraMotionCandidate,
+    CameraMotionClass,
     ClaimEvidenceRow,
     ClaimImportance,
     ClaimReviewStatus,
@@ -104,6 +107,7 @@ def compare_seed(
     media: MediaInfo | None,
     shot_truth: ShotTruthResult | None,
     text_tracks: list[TextTrack] | None = None,
+    camera_candidates: list[CameraMotionCandidate] | None = None,
 ) -> ComparisonResult:
     checks: list[FoundationCheck] = []
     conflicts: list[str] = []
@@ -124,6 +128,7 @@ def compare_seed(
     _verify_timestamp_containment(claims, shots_by_index)
     _verify_entity_references(doc, claims, checks, conflicts)
     _verify_on_screen_text(claims, text_tracks or [])
+    _verify_camera_movement(claims, camera_candidates or [])
     _mark_semantic_unresolved(claims)
 
     foundation_status = _overall_foundation(checks)
@@ -539,6 +544,86 @@ def _verify_on_screen_text(claims: list[SeedClaim], text_tracks: list[TextTrack]
         else:
             claim.evidence_status = EvidenceStatus.UNRESOLVED
         claim.review_status = ClaimReviewStatus.REVIEW_REQUIRED
+
+
+#: Seed movement words that 2D global motion can NEVER prove (need depth/3D).
+_CAMERA_3D_TERMS = re.compile(
+    r"\b(dolly|track(?:ing)?|push(?:-?in)?|pull(?:-?back)?|truck)\b", re.I
+)
+_SCALE_TERMS = re.compile(r"\b(zoom|scale)\b", re.I)
+_HORIZONTAL_TERMS = re.compile(r"\bpan|screen-(?:left|right)\b", re.I)
+_VERTICAL_TERMS = re.compile(r"\btilt|upward|downward\b", re.I)
+
+
+def _verify_camera_movement(
+    claims: list[SeedClaim], candidates: list[CameraMotionCandidate]
+) -> None:
+    """Compare seed CAMERA_MOVEMENT claims with camera evidence (R).
+
+    2D global motion may support horizontal/vertical movement, a direction
+    reversal, or a scale-change *candidate* — it NEVER proves dolly/track/push/
+    pull (those need 3D evidence). Machine support is only ever PARTIAL + review.
+    """
+    if not candidates:
+        return
+    by_shot: dict[int | None, list[CameraMotionCandidate]] = {}
+    for cand in candidates:
+        by_shot.setdefault(cand.shot_number, []).append(cand)
+
+    for claim in claims:
+        if claim.claim_type != SeedClaimType.CAMERA_MOVEMENT:
+            continue
+        text = claim.text or ""
+        shot_cands = by_shot.get(claim.shot_number, [])
+        # A 3D movement word cannot be proven from 2D global motion.
+        if _CAMERA_3D_TERMS.search(text):
+            claim.evidence_status = EvidenceStatus.UNRESOLVED
+            claim.review_status = ClaimReviewStatus.REVIEW_REQUIRED
+            claim.evidence.append(
+                _struct_ref(
+                    f"EV-CAM-{claim.claim_id}",
+                    "camera",
+                    "seed states a 3D move (dolly/track/push/pull); 2D global "
+                    "motion cannot prove it",
+                )
+            )
+            continue
+        wanted: CameraMotionClass | None = None
+        if _HORIZONTAL_TERMS.search(text):
+            wanted = CameraMotionClass.HORIZONTAL_GLOBAL_MOTION
+        elif _VERTICAL_TERMS.search(text):
+            wanted = CameraMotionClass.VERTICAL_GLOBAL_MOTION
+        elif _SCALE_TERMS.search(text):
+            wanted = CameraMotionClass.SCALE_INCREASE  # or DECREASE; treated together
+        match = _find_camera_match(shot_cands, wanted)
+        if match is not None:
+            claim.evidence.append(
+                _struct_ref(
+                    f"EV-CAM-{claim.claim_id}",
+                    "camera",
+                    f"matching {match.motion_class.value} phase "
+                    f"frames {match.start_frame}-{match.last_supporting_frame}",
+                    start_frame=match.start_frame,
+                    end_frame=match.last_supporting_frame,
+                    artifact_paths=["visual/camera/camera_events.json"],
+                )
+            )
+            claim.evidence_status = EvidenceStatus.PARTIALLY_SUPPORTED
+            claim.review_status = ClaimReviewStatus.REVIEW_REQUIRED
+
+
+def _find_camera_match(
+    candidates: list[CameraMotionCandidate], wanted: CameraMotionClass | None
+) -> CameraMotionCandidate | None:
+    if wanted is None:
+        return None
+    scale_classes = {CameraMotionClass.SCALE_INCREASE, CameraMotionClass.SCALE_DECREASE}
+    for cand in candidates:
+        if cand.motion_class == wanted:
+            return cand
+        if wanted in scale_classes and cand.motion_class in scale_classes:
+            return cand
+    return None
 
 
 def _mark_semantic_unresolved(claims: list[SeedClaim]) -> None:

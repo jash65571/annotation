@@ -27,6 +27,7 @@ from .models.audio import AudioQCResult
 from .models.frame import FrameLedger
 from .models.media import MediaInfo
 from .models.review_intelligence import (
+    CameraMotionCandidate,
     FrameObservation,
     OCRStatus,
     TextTrack,
@@ -99,6 +100,7 @@ def run_visual_intelligence(
 
     # --- visual frame observations + OCR (media-driven; run with or without a seed) ---
     ocr_text_tracks: list[TextTrack] = []
+    camera_candidates: list[CameraMotionCandidate] = []
     if ledger is not None and media is not None and video_path is not None:
         cache = FrameCache(video_path, ledger)
         clock = AnnotationClock.from_ledger(ledger)
@@ -109,7 +111,9 @@ def run_visual_intelligence(
         result.frame_observation_count = len(observations)
         _timed(timings, "frame_observations", start)
         start = time.perf_counter()
-        _run_camera_stage(cache, ledger, clock, shot_truth, run_dir, artifacts, issues, result)
+        camera_candidates = _run_camera_stage(
+            cache, ledger, clock, shot_truth, run_dir, artifacts, issues, result
+        )
         _timed(timings, "camera_motion", start)
         if ocr_enabled:
             start = time.perf_counter()
@@ -169,7 +173,9 @@ def run_visual_intelligence(
 
     # --- structural comparison (zero new CV) ---
     start = time.perf_counter()
-    comparison = compare_seed(doc, claims, media, shot_truth, ocr_text_tracks)
+    comparison = compare_seed(
+        doc, claims, media, shot_truth, ocr_text_tracks, camera_candidates
+    )
     _timed(timings, "seed_comparison", start)
     artifacts.append(review_writer.write_seed_claims(seed_dir, comparison.claims))
 
@@ -282,11 +288,15 @@ def _run_camera_stage(
     artifacts: list[Path],
     issues: list[ValidatorIssue],
     result: VisualIntelligenceResult,
-) -> None:
-    """Per-shot global camera-motion phases from the shared gray grid."""
+) -> list[CameraMotionCandidate]:
+    """Per-shot global camera-motion phases from the shared gray grid.
+
+    Returns the smoothed phases so seed CAMERA_MOVEMENT claims can be compared (R).
+    """
+    camera_dir = run_dir / "visual" / "camera"
     try:
         gray = cache.gray_frames()
-        candidates = analyze_camera_motion(gray, ledger, clock, shot_truth)
+        candidates, raw_pairs = analyze_camera_motion(gray, ledger, clock, shot_truth)
     except (MetricDecodeError, ValueError) as exc:
         issues.append(
             ValidatorIssue(
@@ -296,13 +306,15 @@ def _run_camera_stage(
                 message=f"Camera-motion pass failed: {exc}",
             )
         )
-        return
+        return []
     issues.extend(
         visual_validator.validate_camera_candidates(candidates, shot_truth, ledger.frame_count)
     )
     result.camera_phase_count = len(candidates)
     result.camera_direction_reversals = visual_validator.count_direction_reversals(candidates)
-    artifacts.append(visual_writer.write_camera_events(run_dir / "visual" / "camera", candidates))
+    artifacts.append(visual_writer.write_camera_events(camera_dir, candidates))
+    artifacts.append(visual_writer.write_camera_pair_metrics(camera_dir, raw_pairs))
+    return candidates
 
 
 def _run_ocr_stage(

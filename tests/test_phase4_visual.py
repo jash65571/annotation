@@ -102,7 +102,7 @@ def _obs(i: int, with_time: bool = True) -> FrameObservation:
         sharpness=0.01,
         motion_magnitude=0.0,
         global_camera_motion=0.0,
-        foreground_motion=0.0,
+        raw_interframe_motion=0.0,
     )
 
 

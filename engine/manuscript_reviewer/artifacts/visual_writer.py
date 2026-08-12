@@ -12,6 +12,7 @@ import csv
 import json
 from pathlib import Path
 
+from ..camera.global_motion import PairMotion
 from ..media.timestamps import seconds_to_decimal
 from ..models.frame import FrameLedger
 from ..models.review_intelligence import (
@@ -46,7 +47,7 @@ _OBS_COLUMNS = [
     "sharpness",
     "motion_magnitude",
     "global_camera_motion",
-    "foreground_motion",
+    "raw_interframe_motion",
     "text_region_count",
     "visual_concern_candidates",
 ]
@@ -74,7 +75,7 @@ def _obs_row(obs: FrameObservation) -> list[object]:
         obs.sharpness,
         obs.motion_magnitude,
         obs.global_camera_motion,
-        obs.foreground_motion,
+        obs.raw_interframe_motion,
         obs.text_region_count,
         ";".join(obs.visual_concern_codes),
     ]
@@ -141,6 +142,35 @@ def write_camera_events(camera_dir: Path, candidates: list[CameraMotionCandidate
     )
 
 
+_PAIR_COLUMNS = ["left_frame", "right_frame", "dx", "dy", "response", "scale", "scale_response"]
+
+
+def write_camera_pair_metrics(camera_dir: Path, pairs: list[PairMotion]) -> Path:
+    """Raw per-pair global-motion metrics (kept separate so smoothing never loses
+    the sensitive evidence)."""
+    camera_dir.mkdir(parents=True, exist_ok=True)
+    path = camera_dir / "camera_pair_metrics.csv"
+    try:
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(_PAIR_COLUMNS)
+            for pm in pairs:
+                writer.writerow(
+                    [
+                        pm.left_frame,
+                        pm.right_frame,
+                        round(pm.dx, 4),
+                        round(pm.dy, 4),
+                        round(pm.response, 5),
+                        round(pm.scale, 5),
+                        round(pm.scale_response, 5),
+                    ]
+                )
+    except OSError as exc:
+        raise ArtifactWriteError(f"Failed to write {path}: {exc}") from exc
+    return path
+
+
 #: Column -> provenance tag (documented in docs/08).
 _ENRICHED_SOURCES = {
     "frame_index": "DETERMINISTIC",
@@ -153,7 +183,7 @@ _ENRICHED_SOURCES = {
     "sharpness": "DETERMINISTIC",
     "motion_magnitude": "DETERMINISTIC",
     "global_camera_motion": "CANDIDATE",
-    "foreground_motion": "CANDIDATE",
+    "raw_interframe_motion": "CANDIDATE",
     "visual_concern_candidates": "CANDIDATE",
 }
 
@@ -187,7 +217,7 @@ def write_enriched_frame_ledger(
                         obs.sharpness if obs else "",
                         obs.motion_magnitude if obs else "",
                         obs.global_camera_motion if obs else "",
-                        obs.foreground_motion if obs else "",
+                        obs.raw_interframe_motion if obs else "",
                         ";".join(obs.visual_concern_codes) if obs else "",
                     ]
                 )

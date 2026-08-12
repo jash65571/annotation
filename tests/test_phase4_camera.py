@@ -56,7 +56,8 @@ def _analyze(path: Path) -> list[CameraMotionCandidate]:
     ledger = _build_ledger(path)
     cache = FrameCache(path, ledger)
     clock = AnnotationClock.from_ledger(ledger)
-    return analyze_camera_motion(cache.gray_frames(), ledger, clock, None)
+    candidates, _raw_pairs = analyze_camera_motion(cache.gray_frames(), ledger, clock, None)
+    return candidates
 
 
 @requires_ffmpeg
@@ -121,6 +122,93 @@ def test_uniform_scale_is_scale_change_not_pan(tmp_path: Path) -> None:
     # Never a pan; a scale-change candidate is expected.
     assert CameraMotionClass.HORIZONTAL_GLOBAL_MOTION not in classes
     assert CameraMotionClass.SCALE_INCREASE in classes, [c.motion_class.value for c in candidates]
+
+
+@requires_ffmpeg
+def test_short_reversal_survives_smoothing(tmp_path: Path) -> None:
+    base = _texture()[:, :, 0]
+    positions = []
+    pos = 0
+    for i in range(22):
+        if i < 8:
+            pos += 3  # pan one way
+        elif i < 12:
+            pos -= 3  # short reversal (4 frames)
+        else:
+            pos += 3  # pan back
+        positions.append(pos)
+    frames = [_to_bgr(np.roll(base, shift=p, axis=1)) for p in positions]
+    clip = synth_clip(tmp_path / "short_reversal.mp4", frames)
+    candidates = _analyze(clip)
+    horiz = [c for c in candidates if c.motion_class == CameraMotionClass.HORIZONTAL_GLOBAL_MOTION]
+    directions = {c.direction for c in horiz}
+    assert len(directions) >= 2  # the short reversal was not smoothed away
+
+
+@requires_ffmpeg
+def test_phase_endpoint_is_frame_after_last_supporting(tmp_path: Path) -> None:
+    base = _texture()[:, :, 0]
+    frames = [_to_bgr(np.roll(base, shift=i * 3, axis=1)) for i in range(18)]
+    clip = synth_clip(tmp_path / "endpoint.mp4", frames)
+    ledger = _build_ledger(clip)
+    cache = FrameCache(clip, ledger)
+    clock = AnnotationClock.from_ledger(ledger)
+    candidates, _ = analyze_camera_motion(cache.gray_frames(), ledger, clock, None)
+    for cand in candidates:
+        if cand.last_supporting_frame < ledger.frame_count - 1:
+            # Interval end boundary is the frame AFTER the last supporting frame.
+            assert cand.end_frame == cand.last_supporting_frame + 1
+
+
+def _camera_candidate(motion_class: CameraMotionClass, direction: str | None) -> object:
+    return CameraMotionCandidate(
+        candidate_id="CAM-0001",
+        shot_number=1,
+        start_frame=0,
+        last_supporting_frame=4,
+        end_frame=5,
+        motion_class=motion_class,
+        direction=direction,
+        strength=1.0,
+        inlier_ratio=0.9,
+    )
+
+
+def test_seed_pan_partially_supported_by_horizontal_evidence() -> None:
+    from manuscript_reviewer.models.review_intelligence import EvidenceStatus, SeedClaimType
+    from manuscript_reviewer.seed.claims import extract_claims
+    from manuscript_reviewer.seed.comparison import compare_seed
+    from manuscript_reviewer.seed.parser import parse_seed_text
+
+    seed = (
+        "[Shot 1: 0.0-5.0]\nCut: Opening shot\n"
+        "Camera Movements: 0.0-1.0: Camera pans screen-left.\n"
+    )
+    doc = parse_seed_text(seed)
+    claims = extract_claims(doc)
+    cand = _camera_candidate(CameraMotionClass.HORIZONTAL_GLOBAL_MOTION, "screen-left")
+    res = compare_seed(doc, claims, None, None, None, [cand])  # type: ignore[list-item]
+    cm = next(c for c in res.claims if c.claim_type == SeedClaimType.CAMERA_MOVEMENT)
+    assert cm.evidence_status == EvidenceStatus.PARTIALLY_SUPPORTED
+
+
+def test_seed_dolly_never_proven_by_2d_motion() -> None:
+    from manuscript_reviewer.models.review_intelligence import EvidenceStatus, SeedClaimType
+    from manuscript_reviewer.seed.claims import extract_claims
+    from manuscript_reviewer.seed.comparison import compare_seed
+    from manuscript_reviewer.seed.parser import parse_seed_text
+
+    seed = (
+        "[Shot 1: 0.0-5.0]\nCut: Opening shot\n"
+        "Camera Movements: 0.0-1.0: Camera dollies in toward the subject.\n"
+    )
+    doc = parse_seed_text(seed)
+    claims = extract_claims(doc)
+    cand = _camera_candidate(CameraMotionClass.SCALE_INCREASE, None)
+    res = compare_seed(doc, claims, None, None, None, [cand])  # type: ignore[list-item]
+    cm = next(c for c in res.claims if c.claim_type == SeedClaimType.CAMERA_MOVEMENT)
+    # 2D motion cannot prove a dolly -> stays UNRESOLVED (never SUPPORTED).
+    assert cm.evidence_status == EvidenceStatus.UNRESOLVED
 
 
 @requires_ffmpeg

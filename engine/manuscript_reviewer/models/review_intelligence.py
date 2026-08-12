@@ -454,7 +454,10 @@ class FrameObservation(StrictModel):
     sharpness: float
     motion_magnitude: float
     global_camera_motion: float
-    foreground_motion: float
+    #: Raw inter-frame difference motion (NOT a global-compensated residual).
+    #: Renamed from the misleading "foreground_motion"; the action engine
+    #: computes its own residual rather than trusting this as foreground-only.
+    raw_interframe_motion: float
     text_region_count: int = 0
     active_track_ids: list[str] = []
     occluded_track_ids: list[str] = []
@@ -748,6 +751,11 @@ class CameraMotionCandidate(StrictModel):
     candidate_id: str
     shot_number: int | None
     start_frame: int
+    #: The last frame that actually shows the motion (the right frame of the last
+    #: supporting pair). Distinct from the interval end boundary below (P).
+    last_supporting_frame: int
+    #: Interval end boundary = presentation start of the frame AFTER the last
+    #: supporting frame (or the media endpoint), mirroring shot interval ends.
     end_frame: int
     start_exact: ExactFraction | None = None
     end_exact: ExactFraction | None = None

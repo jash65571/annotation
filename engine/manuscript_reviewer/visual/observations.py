@@ -70,9 +70,8 @@ def build_frame_observations(
             motion_magnitude = float(np.abs(frame_f - prev_f).mean()) / 255.0
             (dx, dy), _response = cv2.phaseCorrelate(prev_f, frame_f)
             global_motion = float(np.hypot(dx, dy)) / grid_diag
-        # Foreground motion is the raw residual for now; the camera slice refines
-        # the camera-vs-subject separation.
-        foreground_motion = max(0.0, motion_magnitude)
+        # Raw inter-frame motion only — NOT a global-compensated residual.
+        raw_interframe_motion = max(0.0, motion_magnitude)
 
         concerns = detect_frame_concerns(
             FrameConcernInputs(
@@ -99,7 +98,7 @@ def build_frame_observations(
                 sharpness=round(sharpness, 8),
                 motion_magnitude=round(motion_magnitude, 6),
                 global_camera_motion=round(global_motion, 6),
-                foreground_motion=round(foreground_motion, 6),
+                raw_interframe_motion=round(raw_interframe_motion, 6),
                 visual_concern_codes=concerns,
             )
         )

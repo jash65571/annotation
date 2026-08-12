@@ -87,21 +87,23 @@ def validate_camera_candidates(
         }
 
     for cand in candidates:
-        # P4-ACTION/CAMERA start<end and valid frames.
-        if not (0 <= cand.start_frame < cand.end_frame < frame_count + 1):
+        # Valid ordered frames: start <= last supporting, and the interval end
+        # boundary is the frame after the last supporting frame (P).
+        if not (0 <= cand.start_frame <= cand.last_supporting_frame < frame_count):
             issues.append(
                 ValidatorIssue(
                     rule_id="P4-CAMERA-001",
                     severity=Severity.FAIL,
                     location=cand.candidate_id,
                     message=f"Camera phase frame range invalid: "
-                    f"{cand.start_frame}->{cand.end_frame}.",
+                    f"{cand.start_frame}->{cand.last_supporting_frame}.",
                 )
             )
-        # P4-CAMERA-001: a phase must stay inside one shot.
+        # P4-CAMERA-001: the SUPPORTING frames must stay inside one shot (the
+        # interval-end boundary may legitimately be the next shot's first frame).
         if cand.shot_number is not None and cand.shot_number in shot_ranges:
             lo, hi = shot_ranges[cand.shot_number]
-            if cand.start_frame < lo or cand.end_frame > hi:
+            if cand.start_frame < lo or cand.last_supporting_frame > hi:
                 issues.append(
                     ValidatorIssue(
                         rule_id="P4-CAMERA-001",
