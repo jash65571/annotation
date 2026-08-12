@@ -14,8 +14,25 @@ from pathlib import Path
 
 from ..media.timestamps import seconds_to_decimal
 from ..models.frame import FrameLedger
-from ..models.review_intelligence import FrameObservation
+from ..models.review_intelligence import (
+    FrameObservation,
+    OCREngineInfo,
+    OCRObservation,
+    TextTrack,
+    WatermarkCandidate,
+)
 from .writer import ArtifactWriteError
+
+
+def _write_json(path: Path, payload: object) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with path.open("w", encoding="utf-8", newline="\n") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True, ensure_ascii=False)
+            handle.write("\n")
+    except OSError as exc:
+        raise ArtifactWriteError(f"Failed to write {path}: {exc}") from exc
+    return path
 
 _OBS_COLUMNS = [
     "frame_index",
@@ -86,6 +103,34 @@ def write_frame_observations_jsonl(visual_dir: Path, observations: list[FrameObs
     except OSError as exc:
         raise ArtifactWriteError(f"Failed to write {path}: {exc}") from exc
     return path
+
+
+# --- OCR artifacts (ensure_ascii=False so non-Latin text is never corrupted) ---
+
+
+def write_ocr_status(ocr_dir: Path, info: OCREngineInfo) -> Path:
+    return _write_json(ocr_dir / "ocr_status.json", info.model_dump(mode="json"))
+
+
+def write_ocr_observations(ocr_dir: Path, observations: list[OCRObservation]) -> Path:
+    return _write_json(
+        ocr_dir / "ocr_observations.json",
+        {"observations": [o.model_dump(mode="json") for o in observations]},
+    )
+
+
+def write_text_tracks(ocr_dir: Path, tracks: list[TextTrack]) -> Path:
+    return _write_json(
+        ocr_dir / "text_tracks.json",
+        {"text_tracks": [t.model_dump(mode="json") for t in tracks]},
+    )
+
+
+def write_watermark_candidates(ocr_dir: Path, candidates: list[WatermarkCandidate]) -> Path:
+    return _write_json(
+        ocr_dir / "watermark_candidates.json",
+        {"watermark_candidates": [c.model_dump(mode="json") for c in candidates]},
+    )
 
 
 #: Column -> provenance tag (documented in docs/08).

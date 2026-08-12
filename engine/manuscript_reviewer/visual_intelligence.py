@@ -24,9 +24,15 @@ from .media.clock import AnnotationClock
 from .models.audio import AudioQCResult
 from .models.frame import FrameLedger
 from .models.media import MediaInfo
-from .models.review_intelligence import FrameObservation, VisualIntelligenceResult
+from .models.review_intelligence import (
+    FrameObservation,
+    OCRStatus,
+    VisualIntelligenceResult,
+)
 from .models.shot_truth import ShotTruthResult
 from .models.validation import Severity, ValidatorIssue
+from .ocr.pipeline import run_ocr
+from .ocr.tesseract_adapter import TesseractAdapter
 from .review.decisions import DecisionLoadError, apply_decisions, load_decisions
 from .review.proposals import build_proposals, count_by_outcome
 from .review.queue import build_review_queue, build_triage
@@ -85,14 +91,20 @@ def run_visual_intelligence(
         seed_present=seed_path is not None,
     )
 
-    # --- visual frame observations (media-driven; runs with or without a seed) ---
+    # --- visual frame observations + OCR (media-driven; run with or without a seed) ---
     if ledger is not None and media is not None and video_path is not None:
+        cache = FrameCache(video_path, ledger)
+        clock = AnnotationClock.from_ledger(ledger)
         start = time.perf_counter()
         observations = _build_observations(
-            video_path, ledger, shot_truth, run_dir, artifacts, issues
+            cache, ledger, clock, shot_truth, run_dir, artifacts, issues
         )
         result.frame_observation_count = len(observations)
         _timed(timings, "frame_observations", start)
+        if ocr_enabled:
+            start = time.perf_counter()
+            _run_ocr_stage(cache, ledger, clock, run_dir, artifacts, issues, result)
+            _timed(timings, "ocr", start)
 
     # No seed: Phase 4 has no claims to compare, so it produces no findings and
     # does not downgrade the run. Emit a real (not fake) visual QC reflecting the
@@ -217,8 +229,9 @@ def run_visual_intelligence(
 
 
 def _build_observations(
-    video_path: Path,
+    cache: FrameCache,
     ledger: FrameLedger,
+    clock: AnnotationClock,
     shot_truth: ShotTruthResult | None,
     run_dir: Path,
     artifacts: list[Path],
@@ -227,15 +240,13 @@ def _build_observations(
     """Decode once (shared cache) and build the per-frame observation ledger."""
     visual_dir = run_dir / "visual"
     try:
-        cache = FrameCache(video_path, ledger)
-        clock = AnnotationClock.from_ledger(ledger)
         observations = build_frame_observations(cache, ledger, clock, shot_truth)
     except (MetricDecodeError, ValueError) as exc:
         issues.append(
             ValidatorIssue(
                 rule_id="P4-OBS-000",
                 severity=Severity.WARN,
-                location=video_path.name,
+                location="frame_observations",
                 message=f"Frame observation pass failed: {exc}",
             )
         )
@@ -245,3 +256,52 @@ def _build_observations(
     artifacts.append(visual_writer.write_frame_observations_jsonl(visual_dir, observations))
     artifacts.append(visual_writer.write_enriched_frame_ledger(visual_dir, ledger, observations))
     return observations
+
+
+def _run_ocr_stage(
+    cache: FrameCache,
+    ledger: FrameLedger,
+    clock: AnnotationClock,
+    run_dir: Path,
+    artifacts: list[Path],
+    issues: list[ValidatorIssue],
+    result: VisualIntelligenceResult,
+) -> None:
+    """Optional local OCR. Degrades safely: if Tesseract is unavailable only
+    ocr_status.json is written (no fake artifacts) and OCR status is UNAVAILABLE."""
+    ocr_dir = run_dir / "visual" / "ocr"
+    adapter = TesseractAdapter()
+    info = adapter.engine_info()
+    result.ocr_status = info.status
+    artifacts.append(visual_writer.write_ocr_status(ocr_dir, info))
+    if info.status == OCRStatus.UNAVAILABLE:
+        return
+    try:
+        ocr_result = run_ocr(
+            list(range(ledger.frame_count)),
+            cache.color_frame,
+            ledger,
+            clock,
+            adapter,
+            total_frames=ledger.frame_count,
+        )
+    except (MetricDecodeError, ValueError) as exc:
+        issues.append(
+            ValidatorIssue(
+                rule_id="P4-OCR-000",
+                severity=Severity.WARN,
+                location="ocr",
+                message=f"OCR pass failed: {exc}",
+            )
+        )
+        return
+    issues.extend(ri_validator.validate_text_tracks(ocr_result.text_tracks))
+    result.ocr_track_count = len(ocr_result.text_tracks)
+    result.source_verified_ocr_count = sum(
+        1 for t in ocr_result.text_tracks if t.caption_text_eligible
+    )
+    artifacts.append(visual_writer.write_ocr_observations(ocr_dir, ocr_result.observations))
+    artifacts.append(visual_writer.write_text_tracks(ocr_dir, ocr_result.text_tracks))
+    artifacts.append(
+        visual_writer.write_watermark_candidates(ocr_dir, ocr_result.watermark_candidates)
+    )
