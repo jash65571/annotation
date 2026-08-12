@@ -35,8 +35,10 @@ def _make(name: str, args: list[str]) -> Path:
         return path
     FIXTURES_DIR.mkdir(exist_ok=True)
     ffmpeg = find_tool("ffmpeg")
-    run_tool(ffmpeg, ["-v", "error", *args, "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                      "-y", str(path)])
+    # -crf 18: high-fidelity encode so low-contrast structural differences
+    # survive across encoder generations (CI vs local FFmpeg builds).
+    run_tool(ffmpeg, ["-v", "error", *args, "-c:v", "libx264", "-crf", "18",
+                      "-pix_fmt", "yuv420p", "-y", str(path)])
     return path
 
 

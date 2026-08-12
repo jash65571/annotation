@@ -10,10 +10,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install FFmpeg (with libx264)
+      - name: Install FFmpeg (recent static build with libx264)
+        # apt's ffmpeg (6.x) diverges from the tested FFmpeg generation on
+        # synthetic sources; use a current static GPL build instead.
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          curl -fsSL -o /tmp/ffmpeg.tar.xz \
+            https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
+          mkdir -p /tmp/ffmpeg
+          tar -xf /tmp/ffmpeg.tar.xz -C /tmp/ffmpeg --strip-components=1
+          sudo cp /tmp/ffmpeg/bin/ffmpeg /tmp/ffmpeg/bin/ffprobe /usr/local/bin/
           ffmpeg -version | head -1
           ffmpeg -hide_banner -encoders 2>/dev/null | grep -q libx264
 

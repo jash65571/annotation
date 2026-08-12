@@ -143,20 +143,29 @@ def detect_blends(
     pairs: list[PairMetrics], baselines_diff_median: list[float], ledger: FrameLedger
 ) -> list[BlendEvidence]:
     """Sustained elevated-change runs without a single dominant spike —
-    the conservative cross-dissolve signature. Always REVIEW_REQUIRED."""
+    the conservative cross-dissolve signature. Always REVIEW_REQUIRED.
+
+    The elevation reference is the CLIP-GLOBAL median pair difference, not the
+    local window median: a sustained dissolve raises its own local baseline,
+    so a local reference can never fire inside the very pattern it should
+    detect (baseline self-contamination).
+    """
     blends: list[BlendEvidence] = []
     n = len(pairs)
+    if n == 0:
+        return blends
+    ordered = sorted(p.mean_abs_diff for p in pairs)
+    global_median = ordered[n // 2]
+    threshold = max(2.5 * global_median, 4.0)
     i = 0
     while i < n:
-        median = baselines_diff_median[i]
-        threshold = max(3.0 * median, 4.0)
         if pairs[i].mean_abs_diff < threshold or pairs[i].flow_coherence > 0.75:
             i += 1
             continue
         j = i
         while (
             j + 1 < n
-            and pairs[j + 1].mean_abs_diff >= max(3.0 * baselines_diff_median[j + 1], 4.0)
+            and pairs[j + 1].mean_abs_diff >= threshold
             and pairs[j + 1].flow_coherence <= 0.75
         ):
             j += 1

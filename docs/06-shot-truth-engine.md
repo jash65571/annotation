@@ -155,8 +155,10 @@ Proposed transitions: `Fade in` / `Fade out` only when the pattern is proven.
 
 ## Cross-dissolve detection (conservative)
 
-Sustained elevated-change runs (≥3 pairs above 3× local median) without a
-dominant single spike (peak < 2.5× run mean) and without coherent motion →
+Sustained elevated-change runs (≥3 pairs above 2.5× the CLIP-GLOBAL median
+pair difference — global, because a sustained dissolve raises its own local
+baseline and would hide from a local reference) without a dominant single
+spike (peak < 2.5× run mean) and without coherent motion →
 `BlendEvidence`, always REVIEW_REQUIRED. If no generator flagged the region, a
 review candidate is synthesized at the blend's peak pair so a missed dissolve
 can never produce a false PASS. Dissolves are never auto-classified.
