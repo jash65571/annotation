@@ -34,7 +34,7 @@ def extract_evidence_bundles(
     high_risk = [
         i for i in queue_items
         if i.priority in (ReviewPriority.CRITICAL, ReviewPriority.HIGH)
-        and i.start_frame is not None
+        and _bundle_range(i) is not None
     ]
     for index, item in enumerate(high_risk, start=1):
         bundle = out_dir / f"review_{index:04d}"
@@ -43,9 +43,28 @@ def extract_evidence_bundles(
     return written
 
 
+def _bundle_range(item: ReviewQueueItem) -> tuple[int, int] | None:
+    """Prefer the item's own frame range; else fall back to the widest frame range
+    across its evidence refs (item 19 — precise ranges come from evidence, not a
+    single anchor). Returns None when no frame anchor exists at all."""
+    if item.start_frame is not None:
+        end = item.end_frame if item.end_frame is not None else item.start_frame
+        return item.start_frame, end
+    frames = [
+        (r.start_frame, r.end_frame if r.end_frame is not None else r.start_frame)
+        for r in (*item.supporting_evidence_refs, *item.contradicting_evidence_refs)
+        if r.start_frame is not None
+    ]
+    if not frames:
+        return None
+    return min(f[0] for f in frames), max(f[1] for f in frames)
+
+
 def _role_frames(item: ReviewQueueItem, frame_count: int) -> dict[str, int]:
-    start = max(0, min(frame_count - 1, item.start_frame or 0))
-    end = max(start, min(frame_count - 1, item.end_frame if item.end_frame is not None else start))
+    span = _bundle_range(item)
+    raw_start, raw_end = span if span is not None else (0, 0)
+    start = max(0, min(frame_count - 1, raw_start))
+    end = max(start, min(frame_count - 1, raw_end))
     middle = (start + end) // 2
     roles = {
         "before": max(0, start - 1),
@@ -95,6 +114,13 @@ def _write_bundle(
         "recommended_action": item.recommended_action.value,
         "shows_contradiction_context": True,
         "images": images,
+        # The frame ranges the bundle was derived from (item 19).
+        "evidence_ref_frames": [
+            {"evidence_id": r.evidence_id, "start_frame": r.start_frame,
+             "end_frame": r.end_frame, "notes": r.notes}
+            for r in (*item.supporting_evidence_refs, *item.contradicting_evidence_refs)
+            if r.start_frame is not None
+        ],
     }
     ev_path = bundle / "evidence.json"
     with ev_path.open("w", encoding="utf-8", newline="\n") as handle:

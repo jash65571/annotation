@@ -95,6 +95,45 @@ def test_no_seed_identity_collision_is_critical_review() -> None:
 
 
 # --------------------------------------------------------------------------
+# Item 19: high-risk items carry graded frame-range evidence -> bundle range
+# --------------------------------------------------------------------------
+
+
+def test_collision_item_carries_both_track_frame_ranges() -> None:
+    from manuscript_reviewer.review.evidence_bundles import _bundle_range
+
+    a = _track("TRK-a", "CHARACTER", 0, 5)
+    b = _track("TRK-b", "CHARACTER", 40, 60)
+    item = next(i for i in build_machine_review_items(VisualEvidence(
+        entity_by_seed_id={"C1": [a, b]})) if i.priority == ReviewPriority.CRITICAL)
+    # A graded FRAME_RANGE ref per colliding track, each is_factual as a pointer.
+    spans = {(r.start_frame, r.end_frame) for r in item.supporting_evidence_refs}
+    assert spans == {(0, 5), (40, 60)}
+    assert all(r.is_factual for r in item.supporting_evidence_refs)
+    # The bundle spans both tracks the reviewer must disambiguate.
+    assert _bundle_range(item) == (0, 60)
+
+
+def test_bundle_range_falls_back_to_evidence_refs() -> None:
+    from manuscript_reviewer.models.evidence import EvidenceReference, EvidenceType
+    from manuscript_reviewer.models.review_intelligence import (
+        ReviewerAction,
+        ReviewQueueItem,
+    )
+    from manuscript_reviewer.review.evidence_bundles import _bundle_range
+
+    item = ReviewQueueItem(
+        item_id="RQ-1", priority=ReviewPriority.HIGH, title="t", reason="r",
+        recommended_action=ReviewerAction.VERIFY,
+        supporting_evidence_refs=[EvidenceReference(
+            evidence_id="EV-1", evidence_type=EvidenceType.FRAME_RANGE,
+            start_frame=12, end_frame=20)],
+    )
+    assert item.start_frame is None
+    assert _bundle_range(item) == (12, 20)  # derived from the ref, not the (absent) anchor
+
+
+# --------------------------------------------------------------------------
 # Item 2: entity foundation checks
 # --------------------------------------------------------------------------
 

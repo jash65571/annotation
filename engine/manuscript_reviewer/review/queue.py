@@ -11,6 +11,7 @@ from collections.abc import Callable
 from fractions import Fraction
 
 from ..models.caption import SeedClaim
+from ..models.evidence import EvidenceReference, EvidenceType
 from ..models.review_intelligence import (
     ClaimImportance,
     EvidenceStatus,
@@ -172,26 +173,43 @@ def build_machine_review_items(
             for i, a in enumerate(tracks)
             for b in tracks[i + 1 :]
         ):
+            # One graded frame-range ref per colliding track so the evidence bundle
+            # renders BOTH spans the reviewer must disambiguate (item 19).
+            refs = [
+                _frame_ref(f"EV-IDENT-{seed_id}-{t.track_id}", t.first_frame_index,
+                           t.last_frame_index, f"{t.track_id} span")
+                for t in tracks
+            ]
+            lo = min(t.first_frame_index for t in tracks)
+            hi = max(t.last_frame_index for t in tracks)
             items.append(_mitem(
                 counter, ReviewPriority.CRITICAL,
                 f"Identity collision: {seed_id}",
-                f"{seed_id} spans two distinct tracks", ReviewerAction.CHOOSE_IDENTITY))
+                f"{seed_id} spans two distinct tracks", ReviewerAction.CHOOSE_IDENTITY,
+                lo, hi, refs=refs))
 
     # HIGH: reacquired identities, unresolved final states, unresolved camera, OCR degraded.
     for track in evidence.entity_tracks:
         if track.reacquired:
+            ref = _frame_ref(f"EV-REACQ-{track.track_id}", track.first_frame_index,
+                             track.last_frame_index, "reacquired track span")
             items.append(_mitem(counter, ReviewPriority.HIGH,
                                 f"Reacquired identity: {track.track_id}",
                                 "track was lost and reacquired; identity not proven",
                                 ReviewerAction.VERIFY,
-                                track.first_frame_index, track.last_frame_index))
+                                track.first_frame_index, track.last_frame_index, refs=[ref]))
     for check in evidence.final_state_checks:
         if not check.resolved:
+            refs = []
+            if check.final_visible_frame is not None:
+                refs = [_frame_ref(f"EV-FINAL-{check.entity_id}-{check.shot_number}",
+                                   check.final_visible_frame, check.final_visible_frame,
+                                   "last trusted-visible frame")]
             items.append(_mitem(
                 counter, ReviewPriority.HIGH,
                 f"Unresolved final state: {check.entity_id}@shot{check.shot_number}",
                 check.review_reason or "final object state unresolved",
-                ReviewerAction.VERIFY, check.final_visible_frame))
+                ReviewerAction.VERIFY, check.final_visible_frame, refs=refs))
     # Camera-unresolved is surfaced only when MATERIAL by magnitude (a long
     # unresolved phase), so a clean clip's brief unresolved phases stay silent
     # while a genuinely ambiguous sweep is flagged even without a seed.
@@ -228,13 +246,22 @@ def build_machine_review_items(
     return items
 
 
+def _frame_ref(evidence_id: str, start: int, end: int, note: str) -> EvidenceReference:
+    """A graded FRAME_RANGE evidence pointer (where to look — not a semantic claim)."""
+    return EvidenceReference(
+        evidence_id=evidence_id, evidence_type=EvidenceType.FRAME_RANGE,
+        start_frame=start, end_frame=end, source="tracking", notes=note,
+    )
+
+
 def _mitem(
     counter: _Counter, priority: ReviewPriority, title: str, reason: str,
     action: ReviewerAction, start_frame: int | None = None, end_frame: int | None = None,
-    shot: int | None = None,
+    shot: int | None = None, refs: list[EvidenceReference] | None = None,
 ) -> ReviewQueueItem:
     return ReviewQueueItem(
         item_id=counter.next(), priority=priority, title=title, reason=reason,
+        supporting_evidence_refs=refs or [],
         shot_number=shot, start_frame=start_frame, end_frame=end_frame,
         recommended_action=action,
     )
