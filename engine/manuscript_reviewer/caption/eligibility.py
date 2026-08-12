@@ -509,14 +509,18 @@ def assess_human_fact(
                 and fact.end_frame is not None
                 and (
                     fact.start_frame < shot.start_frame
-                    or fact.end_frame > shot.end_frame + 1
+                    or fact.end_frame > shot.end_frame
                 )
             ):
+                # Frame ownership is INCLUSIVE: shot.end_frame + 1 belongs to
+                # the NEXT shot and is never an event-owned frame (§5.3). A
+                # temporal interval may still end at shot.end_exact — exact
+                # boundaries and frame ownership are separate concepts.
                 return (
                     CaptionEligibility.REVIEW_REQUIRED,
                     None,
                     f"timed human fact frame range falls outside verified shot "
-                    f"{fact.shot_number}",
+                    f"{fact.shot_number} (frame ownership is inclusive)",
                 )
     if fact.fact_type in _TEXT_HUMAN_FACTS and not (fact.text_value or "").strip():
         return (

@@ -207,10 +207,14 @@ def _apply_action_boundary(
         raise ValueError(f"frames {lo}-{hi} do not exist in the frame ledger")
     if target.shot_number is not None:
         shot_range = targets.shot_frame_ranges.get(target.shot_number)
-        if shot_range is not None and (lo < shot_range[0] or hi > shot_range[1] + 1):
+        # Frame ownership is INCLUSIVE (§5.3): shot_end + 1 is the NEXT shot's
+        # first owned frame and is never accepted. An action ending exactly at
+        # the shot boundary is expressed temporally (end_exact == shot end),
+        # never by claiming the next shot's frame.
+        if shot_range is not None and (lo < shot_range[0] or hi > shot_range[1]):
             raise ValueError(
                 f"frames {lo}-{hi} fall outside shot {target.shot_number} "
-                f"(frames {shot_range[0]}-{shot_range[1]})"
+                f"(owned frames {shot_range[0]}-{shot_range[1]}, inclusive)"
             )
     target.start_frame, target.end_frame = lo, hi
     target.start_exact, target.end_exact = start_exact, end_exact
@@ -304,10 +308,12 @@ def _apply_text_timing(
         )
         if owning is None:
             raise ValueError(f"frame {lo} is not inside any verified shot")
-        if hi > owning[1][1] + 1:
+        # Inclusive frame ownership (§5.3): the next shot's first owned frame
+        # is never a valid last_stable_frame for a track inside this shot.
+        if hi > owning[1][1]:
             raise ValueError(
                 f"text range {lo}-{hi} spans beyond shot {owning[0]} "
-                f"(frames {owning[1][0]}-{owning[1][1]})"
+                f"(owned frames {owning[1][0]}-{owning[1][1]}, inclusive)"
             )
     target.first_stable_frame = lo
     target.last_stable_frame = hi
