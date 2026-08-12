@@ -1,0 +1,187 @@
+# Manuscript II rule set, version 1.
+#
+# Every rule carries provenance: which reference document it came from.
+# Sources (./references/):
+#   MASTER-REF  = manuscript-ii-master-reference.md (Master Reference, compiled from Learning Hub)
+#   HANDBOOK    = MANUSCRIPT-II-REVIEWER-HANDBOOK-v1.2 (1).md (Reviewer Handbook v1.2)
+#   GOLDEN-PDF  = Manuscript II.pdf (31-page Golden Examples export, 2026-08-10)
+#
+# Conflict policy (docs/01-rule-hierarchy.md): newest live-tool rule wins over
+# older example syntax. Conflicts are recorded under `known_conflicts`.
+
+rules_version: "1.0.0"
+sources:
+  - id: MASTER-REF
+    file: references/manuscript-ii-master-reference.md
+  - id: HANDBOOK
+    file: "references/MANUSCRIPT-II-REVIEWER-HANDBOOK-v1.2 (1).md"
+  - id: GOLDEN-PDF
+    file: "references/Manuscript II.pdf"
+
+timing:
+  # MASTER-REF §1/§5, HANDBOOK §20 Rule 1: graded literally at 0.1 s.
+  timestamp_precision_seconds: 0.1
+  # HANDBOOK §20 Rule 2, MASTER-REF check 16: timestamps precede descriptions.
+  timestamps_before_description: true
+  # MASTER-REF §8, HANDBOOK §20 Rule 3: entries must fall inside the shot window.
+  timestamp_inside_shot_window: true
+  # MASTER-REF §8, HANDBOOK §20 Rule 4: no duplicated full start/end pair per shot.
+  action_audio_unique_full_window: true
+  # HANDBOOK §20 Rule 4: sharing only a start OR only an end is allowed.
+  shared_single_endpoint_allowed: true
+  # MASTER-REF §5, HANDBOOK §17: split speech at pauses longer than 0.5 s.
+  speech_pause_split_seconds: 0.5
+  # MASTER-REF §5, HANDBOOK §20 Rule 5 / §17: overlap is allowed and often required.
+  overlapping_entries_allowed: true
+  overlapping_speech_separate_entries: true
+  # HANDBOOK §20 Rule 6: never force "nice" round ranges.
+  forced_round_timestamps_forbidden: true
+  # GOLDEN-PDF p.17: an entry may be as short as 0.1 s (7.3s-7.4s hand release).
+  minimum_entry_duration_seconds: 0.1
+
+characters:
+  # HANDBOOK §21 (current critical rule), MASTER-REF §8 tool validation.
+  no_pronouns_outside_dialogue: true
+  pronoun_blocklist: [he, she, they, his, her, him, them]
+  # MASTER-REF §4: C1, C2... in order of appearance; O1, O2... for prominent objects.
+  character_id_prefix: "C"
+  object_id_prefix: "O"
+  ids_in_order_of_appearance: true
+  # MASTER-REF §4: once defined, refer by ID only.
+  reference_by_id_after_definition: true
+  # MASTER-REF §4, HANDBOOK §6: off-screen voices are characters with C-IDs.
+  off_screen_voices_are_characters: true
+  # MASTER-REF check 2, HANDBOOK §6: the filmer gets a normal C-ID when relevant.
+  cameraman_is_normal_character: true
+  # MASTER-REF §4: literal sentence when lower body never visible.
+  lower_body_not_visible_sentence: "Lower body and shoes are not visible."
+  # MASTER-REF check 1, HANDBOOK check 1: no ghost C#/O# entries.
+  ghost_ids_forbidden: true
+  # MASTER-REF check 6, HANDBOOK check 6: omit uncertain profile traits, never hedge.
+  uncertain_traits_omitted_not_hedged: true
+
+positioning:
+  # HANDBOOK §22: use screen-left / screen-right for image positions.
+  screen_relative_directions: [screen-left, screen-right]
+  bare_left_right_discouraged: true
+
+fields:
+  # MASTER-REF §13 known inconsistencies, HANDBOOK §36: live tool combines
+  # Movements + Audio into Action & Audio. Follow the tool.
+  action_audio_combined_field: true
+  one_sentence_per_action_audio_line: true          # MASTER-REF §8 tool validation
+  # HANDBOOK §15/§27: camera movement lives in Camera Movements only.
+  camera_movement_allowed_in_action_audio: false
+  camera_movements_optional_when_static: true       # MASTER-REF §8
+  # HANDBOOK §8: Scene holds stable state only; dynamic action goes elsewhere.
+  dynamic_action_allowed_in_scene: false
+  # MASTER-REF §4: speech never goes in Overview Audio.
+  speech_in_overview_audio_forbidden: true
+  # HANDBOOK §11/§12: concerns fields describe real defects, else exactly "None."
+  concerns_none_literal: "None."
+  reviewer_notes_in_caption_forbidden: true         # HANDBOOK §27
+  # MASTER-REF §8: on-screen text is its own timestamped line, text quoted.
+  on_screen_text_timestamped: true
+
+audio:
+  # HANDBOOK §18, MASTER-REF check 9: no empty-audio filler entries.
+  empty_audio_fillers_forbidden:
+    - "No speech"
+    - "No dialogue"
+    - "No music"
+    - "No ambient sound"
+    - "[no audio]"
+  # MASTER-REF check 4 + §13, HANDBOOK §36: [inaudible] is the current token;
+  # <unintelligible> is the older style and must not be produced.
+  inaudible_token: "[inaudible]"
+  deprecated_inaudible_tokens: ["<unintelligible>"]
+  never_guess_speech: true                          # MASTER-REF check 4
+  transcribe_verbatim: true                         # MASTER-REF §4, HANDBOOK §17
+  preserve_stutters_and_cutoffs: true               # MASTER-REF §4, GOLDEN-PDF p.25
+  attribute_speech_to_character_id: true            # MASTER-REF check 8
+  off_screen_speech_marked: true                    # MASTER-REF §4
+  vocal_profile_when_clear: true                    # MASTER-REF check 10
+  genuine_silence_goes_to_audio_concerns: true      # MASTER-REF check 9
+  ambient_audio_must_be_captioned: true             # MASTER-REF §4, HANDBOOK §18
+
+shots:
+  # MASTER-REF §6: Shot 1 is always Opening shot, never elsewhere.
+  shot_one_transition: "Opening shot"
+  opening_shot_only_first: true
+  # MASTER-REF §6 (fixed menu), HANDBOOK §14.
+  allowed_transition_types:
+    - Opening shot
+    - Hard cut
+    - Cross dissolve
+    - Fade in
+    - Fade out
+    - Match cut
+    - Jump cut
+    - Smash cut
+    - Wipe
+    - Iris
+    - L-cut
+    - J-cut
+    - Whip pan
+    - Swish pan
+  # MASTER-REF §6: hard cut is the overwhelming default when in doubt.
+  default_transition: "Hard cut"
+  # MASTER-REF check 11, HANDBOOK §14: a flash frame can be its own shot; verify frames.
+  flash_frames_require_frame_review: true
+  # MASTER-REF check 12, HANDBOOK check 12: fade content belongs to outgoing shot.
+  fade_frames_belong_to_outgoing_shot: true
+  # GOLDEN-PDF pp.16-30, HANDBOOK §28C: camera movement never creates a shot.
+  camera_movement_is_not_a_cut: true
+  # MASTER-REF §8: very short shots (0.4 s) can still be real shots.
+  minimum_real_shot_duration_seconds: null
+
+playback_speed:
+  # MASTER-REF §4, HANDBOOK §23. UI labels may differ; use the tool's options.
+  allowed_values: [slow_motion, regular, accelerated]
+  per_shot_required: true
+  mid_shot_speed_changes_timestamped: true
+  fast_motion_is_not_accelerated_playback: true     # HANDBOOK §23
+  motion_blur_is_not_slow_motion: true              # HANDBOOK §23
+
+review:
+  # HANDBOOK §1: the three valid reviewer outcomes.
+  outcomes: [KEEP, FIX_ENRICH, REDO_REBUILD]
+  # HANDBOOK §1/§33: media is factual truth; seed is a hypothesis.
+  media_over_seed: true
+  # HANDBOOK §26: Final Review suggestions are leads, never commands.
+  suggestions_are_leads_not_commands: true
+  # HANDBOOK §5 step 3A: do not patch a bad foundation.
+  rebuild_over_patch_when_seed_unreliable: true
+  # MASTER-REF §1: the two laws.
+  no_omissions: true
+  no_hallucinations: true
+  # HANDBOOK §1A: Golden Examples are the floor, not the ceiling.
+  golden_examples_are_quality_floor: true
+  # MASTER-REF §3: wrong-video caption is an auto-reject; check video id first.
+  video_id_sanity_check_required: true
+
+known_conflicts:
+  - id: CONFLICT-001
+    topic: inaudible token
+    older: "<unintelligible> (reference caption style)"
+    newer: "[inaudible] (Additional Checks / current spec convention)"
+    winner: "[inaudible]"
+    provenance: "MASTER-REF §13, HANDBOOK §36"
+  - id: CONFLICT-002
+    topic: field layout
+    older: "separate Movements + Audio fields (assessment wedding example)"
+    newer: "combined Action & Audio, one line per sentence (live tool)"
+    winner: "Action & Audio"
+    provenance: "MASTER-REF §13, HANDBOOK §36"
+  - id: CONFLICT-003
+    topic: pronouns
+    older: "Golden Examples contain pronouns (e.g. 'his right hand', GOLDEN-PDF p.23)"
+    newer: "no pronouns outside quoted dialogue (live-tool flag)"
+    winner: "no pronouns outside quoted dialogue"
+    provenance: "MASTER-REF §8, HANDBOOK §21/§36"
+  - id: CONFLICT-004
+    topic: playback speed labels
+    older: "docs show slow_motion / regular / accelerated"
+    newer: "UI may display human-readable labels"
+    winner: "exact option offered by the current tool"
+    provenance: "HANDBOOK §36"

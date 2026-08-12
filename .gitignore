@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+
+# Run artifacts (generated evidence output, never committed)
+artifacts/*
+!artifacts/.gitkeep
+
+# Test fixtures are generated locally with ffmpeg, never committed
+tests/fixtures/*
+!tests/fixtures/.gitkeep
+
+# Editor / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# Extracted scratch text from reference PDFs
+references/_*.txt
