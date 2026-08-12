@@ -222,7 +222,8 @@ def test_seed_on_screen_text_matched_by_ocr_is_partial_not_final() -> None:
     )
     doc = parse_seed_text(seed)
     claims = extract_claims(doc)
-    res = compare_seed(doc, claims, None, None, tracks)
+    from manuscript_reviewer.seed.comparison import VisualEvidence
+    res = compare_seed(doc, claims, None, None, VisualEvidence(text_tracks=tracks))
     ost = next(c for c in res.claims if c.claim_type == SeedClaimType.ON_SCREEN_TEXT)
     # Machine OCR agreement is PARTIAL + review-required, never final SUPPORTED.
     assert ost.evidence_status == EvidenceStatus.PARTIALLY_SUPPORTED

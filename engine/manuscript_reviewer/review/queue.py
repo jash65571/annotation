@@ -150,6 +150,80 @@ def _unresolved_priority(claim: SeedClaim) -> ReviewPriority:
     return ReviewPriority.LOW
 
 
+def build_machine_review_items(
+    evidence: object, ocr_status: str | None = None
+) -> list[ReviewQueueItem]:
+    """Review items for unresolved MACHINE visual evidence (item 8). These affect
+    Phase 4 status even when the seed is clean or absent."""
+    from ..seed.comparison import VisualEvidence
+
+    assert isinstance(evidence, VisualEvidence)
+    counter = _Counter()
+    items: list[ReviewQueueItem] = []
+
+    # CRITICAL: one seed/anchor id spanning two disjoint tracks (identity collision).
+    for seed_id, tracks in evidence.entity_by_seed_id.items():
+        if len(tracks) >= 2 and any(
+            a.last_frame_index < b.first_frame_index or b.last_frame_index < a.first_frame_index
+            for i, a in enumerate(tracks)
+            for b in tracks[i + 1 :]
+        ):
+            items.append(_mitem(
+                counter, ReviewPriority.CRITICAL,
+                f"Identity collision: {seed_id}",
+                f"{seed_id} spans two distinct tracks", ReviewerAction.CHOOSE_IDENTITY))
+
+    # HIGH: reacquired identities, unresolved final states, unresolved camera, OCR degraded.
+    for track in evidence.entity_tracks:
+        if track.reacquired:
+            items.append(_mitem(counter, ReviewPriority.HIGH,
+                                f"Reacquired identity: {track.track_id}",
+                                "track was lost and reacquired; identity not proven",
+                                ReviewerAction.VERIFY,
+                                track.first_frame_index, track.last_frame_index))
+    for check in evidence.final_state_checks:
+        if not check.resolved:
+            items.append(_mitem(
+                counter, ReviewPriority.HIGH,
+                f"Unresolved final state: {check.entity_id}@shot{check.shot_number}",
+                check.review_reason or "final object state unresolved",
+                ReviewerAction.VERIFY, check.final_visible_frame))
+    # Camera-unresolved is only surfaced when it is MATERIAL to a seed claim
+    # (handled in comparison); a clean clip's unresolved phases are not flagged.
+    if ocr_status in ("DEGRADED",):
+        items.append(_mitem(counter, ReviewPriority.HIGH, "OCR degraded",
+                            "a meaningful fraction of frames failed OCR", ReviewerAction.VERIFY))
+
+    # NORMAL: speed candidates and a per-shot semantic-action summary.
+    for ev_speed in evidence.speed_evidence:
+        if ev_speed.review_required:
+            items.append(_mitem(counter, ReviewPriority.NORMAL,
+                                f"Playback speed candidate: shot {ev_speed.shot_number}",
+                                f"speed evidence: {ev_speed.conclusion.value}",
+                                ReviewerAction.VERIFY, shot=ev_speed.shot_number))
+    actions_by_shot: dict[int | None, int] = {}
+    for a in evidence.action_candidates:
+        actions_by_shot[a.shot_number] = actions_by_shot.get(a.shot_number, 0) + 1
+    for shot, n in sorted(actions_by_shot.items(), key=lambda kv: (kv[0] is None, kv[0])):
+        items.append(_mitem(counter, ReviewPriority.NORMAL,
+                            f"Semantic action review: shot {shot}",
+                            f"{n} atomic action candidate(s) need semantic review",
+                            ReviewerAction.VERIFY, shot=shot))
+    return items
+
+
+def _mitem(
+    counter: _Counter, priority: ReviewPriority, title: str, reason: str,
+    action: ReviewerAction, start_frame: int | None = None, end_frame: int | None = None,
+    shot: int | None = None,
+) -> ReviewQueueItem:
+    return ReviewQueueItem(
+        item_id=counter.next(), priority=priority, title=title, reason=reason,
+        shot_number=shot, start_frame=start_frame, end_frame=end_frame,
+        recommended_action=action,
+    )
+
+
 def build_triage(comparison: ComparisonResult, runtime_seconds: float) -> SeedTriage:
     """The early patch-vs-rebuild recommendation ("minute-8 triage"). An early
     recommendation only — never prevents later correction."""

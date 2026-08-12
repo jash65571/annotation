@@ -15,6 +15,7 @@ performs a cloud/media upload; the default runtime is fully local.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,10 +31,15 @@ from .models.audio import AudioQCResult
 from .models.frame import FrameLedger
 from .models.media import MediaInfo
 from .models.review_intelligence import (
+    ActionCandidate,
     CameraMotionCandidate,
+    CharacterHypothesis,
     ContactEvent,
+    ContinuityLink,
     EntityTrack,
+    FinalStateCheck,
     FrameObservation,
+    ObjectHypothesis,
     OCRObservation,
     OCRStatus,
     PlaybackSpeedEvidence,
@@ -51,11 +57,11 @@ from .review.decisions import (
 )
 from .review.evidence_bundles import extract_evidence_bundles
 from .review.proposals import build_proposals, count_by_outcome
-from .review.queue import build_review_queue, build_triage
+from .review.queue import build_machine_review_items, build_review_queue, build_triage
 from .seed import feedback as feedback_mod
 from .seed import snapshot as snapshot_mod
 from .seed.claims import collect_seed_diagnostics, extract_claims
-from .seed.comparison import build_rows, compare_seed
+from .seed.comparison import VisualEvidence, build_rows, compare_seed
 from .seed.parser import parse_seed_text
 from .shots.decode import MetricDecodeError
 from .speed.evidence import build_playback_speed_evidence
@@ -78,12 +84,27 @@ logger = logging.getLogger(__name__)
 VISUAL_INTELLIGENCE_VERSION = "0.4.0"
 
 
+_SEED_CO_ID = re.compile(r"^[CO]\d+$")
+
+
 @dataclass
 class VisualIntelligenceOutput:
     result: VisualIntelligenceResult | None
     issues: list[ValidatorIssue]
     artifact_paths: list[Path]
     stage_timings: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass
+class _TrackingOutput:
+    tracks: list[EntityTrack] = field(default_factory=list)
+    contact_events: list[ContactEvent] = field(default_factory=list)
+    final_checks: list[FinalStateCheck] = field(default_factory=list)
+    action_candidates: list[ActionCandidate] = field(default_factory=list)
+    character_hypotheses: list[CharacterHypothesis] = field(default_factory=list)
+    object_hypotheses: list[ObjectHypothesis] = field(default_factory=list)
+    continuity_links: list[ContinuityLink] = field(default_factory=list)
+    entity_by_seed_id: dict[str, list[EntityTrack]] = field(default_factory=dict)
 
 
 def _timed(sink: dict[str, float], name: str, start: float) -> None:
@@ -122,6 +143,7 @@ def run_visual_intelligence(
     camera_candidates: list[CameraMotionCandidate] = []
     entity_tracks: list[EntityTrack] = []
     speed_evidence: list[PlaybackSpeedEvidence] = []
+    track_out = _TrackingOutput()
     cache: FrameCache | None = None
     if ledger is not None and media is not None and video_path is not None:
         cache = FrameCache(video_path, ledger)
@@ -149,13 +171,14 @@ def run_visual_intelligence(
                 )
             )
             _timed(timings, "playback_speed", start)
-        contact_events: list[ContactEvent] = []
+        track_out = _TrackingOutput()
         if visual_anchors_path is not None:
             start = time.perf_counter()
-            entity_tracks, contact_events = _run_tracking_stage(
+            track_out = _run_tracking_stage(
                 cache, ledger, clock, media, shot_truth, visual_anchors_path,
                 run_dir, artifacts, issues, result,
             )
+            entity_tracks = track_out.tracks
             _timed(timings, "tracking", start)
         ocr_observations: list[OCRObservation] = []
         if ocr_enabled:
@@ -166,7 +189,9 @@ def run_visual_intelligence(
             _timed(timings, "ocr", start)
         # Item 18: enrich the observation ledger with track/OCR/contact context,
         # then write the (derived) observation artifacts. Phase 1 files untouched.
-        _enrich_observations(observations, entity_tracks, contact_events, ocr_observations)
+        _enrich_observations(
+            observations, entity_tracks, track_out.contact_events, ocr_observations
+        )
         visual_dir = run_dir / "visual"
         artifacts.append(visual_writer.write_frame_observations_csv(visual_dir, observations))
         artifacts.append(visual_writer.write_frame_observations_jsonl(visual_dir, observations))
@@ -174,12 +199,23 @@ def run_visual_intelligence(
             visual_writer.write_enriched_frame_ledger(visual_dir, ledger, observations)
         )
 
-    # No seed: Phase 4 has no claims to compare, so it produces no findings and
-    # does not downgrade the run. Emit a real (not fake) visual QC reflecting the
-    # observations that did run, so the manifest still records the stage.
+    # Bundle all visual/CV evidence + resolvers for reconciliation (item 1) and
+    # for machine-evidence review items (item 8) — built before the no-seed branch.
+    evidence = _build_visual_evidence(
+        ledger, ocr_text_tracks, camera_candidates, speed_evidence, track_out, shot_truth
+    )
+    machine_items = build_machine_review_items(evidence, result.ocr_status.value)
+
+    # No seed: still surface machine-evidence review items and let them drive the
+    # Phase 4 status (item 8) — no longer a hard PASS.
     if seed_path is None:
-        result.overall_status = ri_validator.compute_overall_status([], issues)
+        result.overall_status = ri_validator.compute_overall_status(machine_items, issues)
+        result.review_item_count = len(machine_items)
+        result.critical_review_item_count = sum(
+            1 for i in machine_items if i.priority.value == "CRITICAL"
+        )
         review_dir = run_dir / "review"
+        artifacts.append(review_writer.write_visual_review_queue(review_dir, machine_items))
         artifacts.append(review_writer.write_visual_qc(review_dir, result))
         _timed(timings, "visual_intelligence_total", stage_start)
         return VisualIntelligenceOutput(result, issues, artifacts, timings)
@@ -225,9 +261,7 @@ def run_visual_intelligence(
 
     # --- structural comparison (zero new CV) ---
     start = time.perf_counter()
-    comparison = compare_seed(
-        doc, claims, media, shot_truth, ocr_text_tracks, camera_candidates
-    )
+    comparison = compare_seed(doc, claims, media, shot_truth, evidence)
     _timed(timings, "seed_comparison", start)
 
     # --- human decisions: apply as an evidence-override layer, THEN recompute (F) ---
@@ -265,6 +299,8 @@ def run_visual_intelligence(
     )
     proposals = build_proposals(comparison, feedback_directives)
     queue_items = build_review_queue(comparison, feedback_directives, frame_for_time)
+    # Item 8: machine-evidence review items affect status even with a clean seed.
+    queue_items = queue_items + machine_items
     triage = build_triage(comparison, time.perf_counter() - stage_start)
     _timed(timings, "review_aggregation", start)
 
@@ -477,7 +513,7 @@ def _run_tracking_stage(
     artifacts: list[Path],
     issues: list[ValidatorIssue],
     result: VisualIntelligenceResult,
-) -> tuple[list[EntityTrack], list[ContactEvent]]:
+) -> _TrackingOutput:
     """Anchor-seeded local tracking + continuity + contacts/final-state/actions."""
     entities_dir = run_dir / "visual" / "entities"
     stream = media.video_streams[0]
@@ -501,7 +537,13 @@ def _run_tracking_stage(
                 message=f"Tracking pass failed: {exc}",
             )
         )
-        return [], []
+        return _TrackingOutput()
+    # Link seed C/O ids to tracks where an anchor is labelled with a seed id.
+    entity_by_seed_id: dict[str, list[EntityTrack]] = {}
+    for anchor, track in zip(anchors, tracks, strict=True):
+        label = (anchor.temporary_label or "").strip().upper()
+        if _SEED_CO_ID.match(label):
+            entity_by_seed_id.setdefault(label, []).append(track)
     characters, objects, links = build_continuity(tracks)
     issues.extend(visual_validator.validate_tracks(tracks, ledger.frame_count))
     issues.extend(visual_validator.validate_hypotheses(characters, objects))
@@ -542,7 +584,12 @@ def _run_tracking_stage(
     actions_dir = run_dir / "visual" / "actions"
     artifacts.append(visual_writer.write_contact_events(actions_dir, contact_events))
     artifacts.append(visual_writer.write_action_candidates(actions_dir, action_candidates))
-    return tracks, contact_events
+    return _TrackingOutput(
+        tracks=tracks, contact_events=contact_events, final_checks=final_checks,
+        action_candidates=action_candidates, character_hypotheses=characters,
+        object_hypotheses=objects, continuity_links=links,
+        entity_by_seed_id=entity_by_seed_id,
+    )
 
 
 def _run_ocr_stage(
@@ -607,6 +654,38 @@ def _region_boxes(gray: np.ndarray) -> list[tuple[int, int, int, int]]:
     from .ocr.regions import detect_text_regions
 
     return [(r.x, r.y, r.width, r.height) for r in detect_text_regions(gray)]
+
+
+def _build_visual_evidence(
+    ledger: FrameLedger | None,
+    ocr_text_tracks: list[TextTrack],
+    camera_candidates: list[CameraMotionCandidate],
+    speed_evidence: list[PlaybackSpeedEvidence],
+    track_out: _TrackingOutput,
+    shot_truth: ShotTruthResult | None,
+) -> VisualEvidence:
+    time_to_frame = None
+    frame_to_shot = _make_frame_to_shot(shot_truth)
+    if ledger is not None:
+        time_to_frame = _make_time_to_frame(ledger, AnnotationClock.from_ledger(ledger))
+    shots_by_index = (
+        {s.shot_index: s for s in shot_truth.shots} if shot_truth is not None else {}
+    )
+    return VisualEvidence(
+        text_tracks=ocr_text_tracks,
+        camera_candidates=camera_candidates,
+        character_hypotheses=track_out.character_hypotheses,
+        object_hypotheses=track_out.object_hypotheses,
+        entity_tracks=track_out.tracks,
+        contact_events=track_out.contact_events,
+        final_state_checks=track_out.final_checks,
+        action_candidates=track_out.action_candidates,
+        speed_evidence=speed_evidence,
+        time_to_frame=time_to_frame,
+        frame_to_shot=frame_to_shot,
+        shots_by_index=shots_by_index,
+        entity_by_seed_id=track_out.entity_by_seed_id,
+    )
 
 
 def _frame_to_time(

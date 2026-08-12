@@ -15,6 +15,7 @@ always ``UNRESOLVED`` (never visually inferable).
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from decimal import Decimal
 from fractions import Fraction
@@ -24,21 +25,56 @@ from ..models.caption import SeedClaim
 from ..models.evidence import EvidenceReference, EvidenceType
 from ..models.media import MediaInfo
 from ..models.review_intelligence import (
+    ActionCandidate,
     CameraMotionCandidate,
     CameraMotionClass,
+    CharacterHypothesis,
     ClaimEvidenceRow,
     ClaimImportance,
     ClaimReviewStatus,
+    ContactEvent,
+    ContactEventKind,
+    EntityTrack,
     EvidenceStatus,
+    FinalStateCheck,
     FoundationCheck,
     FoundationStatus,
+    ObjectHypothesis,
+    PlaybackSpeedEvidence,
     ProposalReasonCode,
     SeedClaimType,
     SeedDocument,
+    SpeedConclusion,
     TextTrack,
+    TrackStatus,
 )
 from ..models.shot_truth import ShotProposal, ShotTruthResult
 from ..rules.loader import load_rules
+
+
+@dataclass
+class VisualEvidence:
+    """All machine visual/CV evidence + resolvers, threaded into reconciliation.
+
+    Machine evidence is never made factual: it can only PARTIALLY_SUPPORT (with a
+    graded reference), CONTRADICT where deterministic, or stay UNRESOLVED/review.
+    """
+
+    text_tracks: list[TextTrack] = field(default_factory=list)
+    camera_candidates: list[CameraMotionCandidate] = field(default_factory=list)
+    character_hypotheses: list[CharacterHypothesis] = field(default_factory=list)
+    object_hypotheses: list[ObjectHypothesis] = field(default_factory=list)
+    entity_tracks: list[EntityTrack] = field(default_factory=list)
+    contact_events: list[ContactEvent] = field(default_factory=list)
+    final_state_checks: list[FinalStateCheck] = field(default_factory=list)
+    action_candidates: list[ActionCandidate] = field(default_factory=list)
+    speed_evidence: list[PlaybackSpeedEvidence] = field(default_factory=list)
+    time_to_frame: Callable[[Fraction], int | None] | None = None
+    frame_to_shot: Callable[[int], int | None] | None = None
+    shots_by_index: dict[int, ShotProposal] = field(default_factory=dict)
+    #: Seed C/O id -> tracks, only when anchors are labelled with seed ids
+    #: (item 2 identity checks are only computable for anchored entities).
+    entity_by_seed_id: dict[str, list[EntityTrack]] = field(default_factory=dict)
 
 
 def _display(value: Fraction | None) -> Decimal | None:
@@ -106,9 +142,9 @@ def compare_seed(
     claims: list[SeedClaim],
     media: MediaInfo | None,
     shot_truth: ShotTruthResult | None,
-    text_tracks: list[TextTrack] | None = None,
-    camera_candidates: list[CameraMotionCandidate] | None = None,
+    evidence: VisualEvidence | None = None,
 ) -> ComparisonResult:
+    ev = evidence or VisualEvidence()
     checks: list[FoundationCheck] = []
     conflicts: list[str] = []
 
@@ -117,6 +153,8 @@ def compare_seed(
     shots_by_index: dict[int, ShotProposal] = {}
     if shot_truth is not None:
         shots_by_index = {s.shot_index: s for s in shot_truth.shots}
+    if not ev.shots_by_index:
+        ev.shots_by_index = shots_by_index
 
     shot_foundation = _verify_shot_count(
         claims, seed_shot_count, verified_shot_count, shot_truth, checks, conflicts
@@ -127,8 +165,11 @@ def compare_seed(
     _verify_transitions(claims, shots_by_index, checks)
     _verify_timestamp_containment(claims, shots_by_index)
     _verify_entity_references(doc, claims, checks, conflicts)
-    _verify_on_screen_text(claims, text_tracks or [])
-    _verify_camera_movement(claims, camera_candidates or [])
+    _verify_on_screen_text(claims, ev)  # item 13 (shot+time scoped)
+    _verify_camera_movement(claims, ev)  # item 12 (shot+time+direction)
+    _verify_playback_speed(claims, ev)  # item 9 integration
+    _verify_entity_foundation(claims, ev, checks, conflicts)  # item 2
+    _verify_object_states(claims, ev)  # item 1 (ownership/contact)
     _mark_semantic_unresolved(claims)
 
     foundation_status = _overall_foundation(checks)
@@ -500,25 +541,66 @@ def _verify_entity_references(
         )
 
 
-def _verify_on_screen_text(claims: list[SeedClaim], text_tracks: list[TextTrack]) -> None:
-    """Compare seed ON_SCREEN_TEXT claims with machine OCR text tracks (N).
+# --- scope helpers shared by OCR (13) and camera (12) matching ---------------
 
-    Machine OCR NEVER makes text factual: a match yields PARTIALLY_SUPPORTED +
-    review-required, never final SUPPORTED. A disagreement stays UNRESOLVED (the
-    seed may be right and OCR wrong). Task feedback about lyrics stays audio-side.
-    """
-    if not text_tracks:
+
+def _seed_frame_window(claim: SeedClaim, ev: VisualEvidence) -> tuple[int, int] | None:
+    sr = claim.seed_time_range
+    if sr is None or ev.time_to_frame is None:
+        return None
+    sf = ev.time_to_frame(sr.start_seconds)
+    efr = ev.time_to_frame(sr.end_seconds)
+    if sf is None or efr is None:
+        return None
+    return min(sf, efr), max(sf, efr)
+
+
+def _overlaps(a: tuple[int, int], b: tuple[int, int]) -> bool:
+    return a[0] <= b[1] and b[0] <= a[1]
+
+
+def _in_scope(
+    claim: SeedClaim, item_shot: int | None, item_start: int, item_end: int, ev: VisualEvidence
+) -> bool:
+    """An item is in a claim's scope only if it is in the seed's asserted shot
+    AND overlaps the seed's time window (items 12/13)."""
+    if claim.shot_number is not None and item_shot is not None and item_shot != claim.shot_number:
+        return False
+    window = _seed_frame_window(claim, ev)
+    if window is not None:
+        return _overlaps(window, (item_start, item_end))
+    if claim.shot_number is not None:
+        prop = ev.shots_by_index.get(claim.shot_number)
+        if prop is not None:
+            return _overlaps(
+                (prop.start_frame_index, prop.end_frame_index), (item_start, item_end)
+            )
+    return True
+
+
+def _verify_on_screen_text(claims: list[SeedClaim], ev: VisualEvidence) -> None:
+    """Compare seed ON_SCREEN_TEXT claims with OCR text tracks IN SCOPE (item 13).
+
+    A candidate must be in the seed's shot AND overlap the seed's time window
+    before text is compared ("GO" in shot 1 never supports a "GO" claim in shot
+    3). Machine OCR is only ever PARTIALLY_SUPPORTED + review, never final."""
+    tracks = [t for t in ev.text_tracks if t.consensus is not None]
+    if not tracks:
         return
     from ..ocr.timing import text_similarity
 
-    tracks_with_text = [t for t in text_tracks if t.consensus is not None]
     for claim in claims:
         if claim.claim_type != SeedClaimType.ON_SCREEN_TEXT:
             continue
         seed_text = claim.quoted_text or claim.text
+        in_scope = [
+            t for t in tracks
+            if _in_scope(claim, None, t.first_candidate_frame,
+                         t.last_stable_frame or t.first_candidate_frame, ev)
+        ]
         best: TextTrack | None = None
         best_sim = 0.0
-        for track in tracks_with_text:
+        for track in in_scope:
             assert track.consensus is not None
             sim = text_similarity(seed_text, track.consensus.consensus_text)
             if sim > best_sim:
@@ -526,23 +608,22 @@ def _verify_on_screen_text(claims: list[SeedClaim], text_tracks: list[TextTrack]
                 best = track
         if best is None:
             continue
-        ref = EvidenceReference(
-            evidence_id=f"EV-OCR-{claim.claim_id}",
-            evidence_type=EvidenceType.OCR_TRACK,
-            start_frame=best.first_candidate_frame,
-            end_frame=best.last_stable_frame,
-            source="ocr",
-            notes=(
-                f"machine OCR consensus '{best.consensus.consensus_text}' "  # type: ignore[union-attr]
-                f"similarity {best_sim:.2f} (UNVERIFIED machine evidence)"
-            ),
+        assert best.consensus is not None
+        claim.evidence.append(
+            _struct_ref(
+                f"EV-OCR-{claim.claim_id}",
+                "ocr",
+                f"machine OCR consensus '{best.consensus.consensus_text}' "
+                f"similarity {best_sim:.2f} (UNVERIFIED machine evidence)",
+                start_frame=best.first_candidate_frame,
+                end_frame=best.last_stable_frame,
+                artifact_paths=["visual/ocr/text_tracks.json"],
+                evidence_type=EvidenceType.OCR_TRACK,
+            )
         )
-        claim.evidence.append(ref)
-        if best_sim >= 0.6:
-            # Agreement is only ever PARTIAL — human source verification required.
-            claim.evidence_status = EvidenceStatus.PARTIALLY_SUPPORTED
-        else:
-            claim.evidence_status = EvidenceStatus.UNRESOLVED
+        claim.evidence_status = (
+            EvidenceStatus.PARTIALLY_SUPPORTED if best_sim >= 0.6 else EvidenceStatus.UNRESOLVED
+        )
         claim.review_status = ClaimReviewStatus.REVIEW_REQUIRED
 
 
@@ -555,34 +636,36 @@ _HORIZONTAL_TERMS = re.compile(r"\bpan|screen-(?:left|right)\b", re.I)
 _VERTICAL_TERMS = re.compile(r"\btilt|upward|downward\b", re.I)
 
 
-def _verify_camera_movement(
-    claims: list[SeedClaim], candidates: list[CameraMotionCandidate]
-) -> None:
-    """Compare seed CAMERA_MOVEMENT claims with camera evidence (R).
+def _seed_camera_direction(text: str) -> str | None:
+    lowered = text.lower()
+    if "screen-left" in lowered:
+        return "screen-left"
+    if "screen-right" in lowered:
+        return "screen-right"
+    if "upward" in lowered or "tilt up" in lowered:
+        return "up"
+    if "downward" in lowered or "tilt down" in lowered:
+        return "down"
+    return None
 
-    2D global motion may support horizontal/vertical movement, a direction
-    reversal, or a scale-change *candidate* — it NEVER proves dolly/track/push/
-    pull (those need 3D evidence). Machine support is only ever PARTIAL + review.
-    """
-    if not candidates:
+
+def _verify_camera_movement(claims: list[SeedClaim], ev: VisualEvidence) -> None:
+    """Compare seed CAMERA_MOVEMENT claims with camera evidence IN SCOPE, matching
+    direction (item 12). A screen-right phase never supports a screen-left claim;
+    2D motion never proves dolly/track/push/pull; scale never proves zoom
+    direction. Machine support is only ever PARTIAL + review."""
+    if not ev.camera_candidates:
         return
-    by_shot: dict[int | None, list[CameraMotionCandidate]] = {}
-    for cand in candidates:
-        by_shot.setdefault(cand.shot_number, []).append(cand)
-
     for claim in claims:
         if claim.claim_type != SeedClaimType.CAMERA_MOVEMENT:
             continue
         text = claim.text or ""
-        shot_cands = by_shot.get(claim.shot_number, [])
-        # A 3D movement word cannot be proven from 2D global motion.
         if _CAMERA_3D_TERMS.search(text):
             claim.evidence_status = EvidenceStatus.UNRESOLVED
             claim.review_status = ClaimReviewStatus.REVIEW_REQUIRED
             claim.evidence.append(
                 _struct_ref(
-                    f"EV-CAM-{claim.claim_id}",
-                    "camera",
+                    f"EV-CAM-{claim.claim_id}", "camera",
                     "seed states a 3D move (dolly/track/push/pull); 2D global "
                     "motion cannot prove it",
                 )
@@ -594,15 +677,22 @@ def _verify_camera_movement(
         elif _VERTICAL_TERMS.search(text):
             wanted = CameraMotionClass.VERTICAL_GLOBAL_MOTION
         elif _SCALE_TERMS.search(text):
-            wanted = CameraMotionClass.SCALE_INCREASE  # or DECREASE; treated together
-        match = _find_camera_match(shot_cands, wanted)
+            wanted = CameraMotionClass.SCALE_INCREASE
+        if wanted is None:
+            continue
+        wanted_dir = _seed_camera_direction(text)
+        scoped = [
+            c for c in ev.camera_candidates
+            if _in_scope(claim, c.shot_number, c.start_frame, c.last_supporting_frame, ev)
+        ]
+        match = _find_camera_match(scoped, wanted, wanted_dir)
         if match is not None:
             claim.evidence.append(
                 _struct_ref(
-                    f"EV-CAM-{claim.claim_id}",
-                    "camera",
-                    f"matching {match.motion_class.value} phase "
-                    f"frames {match.start_frame}-{match.last_supporting_frame}",
+                    f"EV-CAM-{claim.claim_id}", "camera",
+                    f"matching {match.motion_class.value} "
+                    f"({match.direction}) phase frames "
+                    f"{match.start_frame}-{match.last_supporting_frame}",
                     start_frame=match.start_frame,
                     end_frame=match.last_supporting_frame,
                     artifact_paths=["visual/camera/camera_events.json"],
@@ -613,17 +703,168 @@ def _verify_camera_movement(
 
 
 def _find_camera_match(
-    candidates: list[CameraMotionCandidate], wanted: CameraMotionClass | None
+    candidates: list[CameraMotionCandidate],
+    wanted: CameraMotionClass,
+    wanted_dir: str | None,
 ) -> CameraMotionCandidate | None:
-    if wanted is None:
-        return None
     scale_classes = {CameraMotionClass.SCALE_INCREASE, CameraMotionClass.SCALE_DECREASE}
     for cand in candidates:
-        if cand.motion_class == wanted:
-            return cand
-        if wanted in scale_classes and cand.motion_class in scale_classes:
-            return cand
+        same_family = cand.motion_class == wanted or (
+            wanted in scale_classes and cand.motion_class in scale_classes
+        )
+        if not same_family:
+            continue
+        # Direction must match when the seed states one (item 12).
+        if wanted_dir is not None and cand.direction != wanted_dir:
+            continue
+        return cand
     return None
+
+
+_SEED_SPEED = re.compile(r"\b(slow[\s-]?motion|slow|accelerated|sped[\s-]?up|regular)\b", re.I)
+
+
+def _verify_playback_speed(claims: list[SeedClaim], ev: VisualEvidence) -> None:
+    """Compare seed PLAYBACK_SPEED claims with per-shot speed evidence (item 9)."""
+    if not ev.speed_evidence:
+        return
+    by_shot = {e.shot_number: e for e in ev.speed_evidence}
+    for claim in claims:
+        if claim.claim_type != SeedClaimType.PLAYBACK_SPEED or claim.shot_number is None:
+            continue
+        evidence = by_shot.get(claim.shot_number)
+        if evidence is None:
+            continue
+        m = _SEED_SPEED.search(claim.text or "")
+        seed_speed = m.group(1).lower().replace(" ", "").replace("-", "") if m else None
+        ref = _struct_ref(
+            f"EV-SPEED-{claim.claim_id}", "speed",
+            f"shot {claim.shot_number} speed evidence: {evidence.conclusion.value}",
+            artifact_paths=["visual/speed/playback_speed_evidence.json"],
+        )
+        claim.evidence.append(ref)
+        claim.review_status = ClaimReviewStatus.REVIEW_REQUIRED
+        if seed_speed == "regular" and evidence.conclusion == SpeedConclusion.REGULAR_SUPPORTED:
+            claim.evidence_status = EvidenceStatus.PARTIALLY_SUPPORTED
+        elif (
+            seed_speed in ("slowmotion", "slow")
+            and evidence.conclusion == SpeedConclusion.REGULAR_SUPPORTED
+        ):
+            # Strong regular cadence contradicts a slow-motion seed claim.
+            claim.evidence_status = EvidenceStatus.CONTRADICTED
+        else:
+            # Seed asserts a speed but evidence is unresolved/ambiguous -> review.
+            claim.evidence_status = EvidenceStatus.UNRESOLVED
+
+
+_CO_ID = re.compile(r"^[CO]\d+$", re.IGNORECASE)
+
+
+def _verify_entity_foundation(
+    claims: list[SeedClaim],
+    ev: VisualEvidence,
+    checks: list[FoundationCheck],
+    conflicts: list[str],
+) -> None:
+    """Seed-vs-continuity identity checks (item 2). Only computable for anchored
+    entities (a seed id is linked to a track when an anchor is labelled with it).
+    Similar-but-unproven tracks are NEVER auto-merged — those are review links."""
+    if not ev.entity_by_seed_id:
+        return
+    for seed_id, tracks in ev.entity_by_seed_id.items():
+        # COLLISION: one seed id spans two temporally-disjoint tracks.
+        if len(tracks) >= 2:
+            disjoint = any(
+                a.last_frame_index < b.first_frame_index or b.last_frame_index < a.first_frame_index
+                for i, a in enumerate(tracks)
+                for b in tracks[i + 1 :]
+            )
+            if disjoint:
+                is_char = seed_id.upper().startswith("C")
+                reason = (
+                    ProposalReasonCode.CHARACTER_IDENTITY_COLLISION
+                    if is_char
+                    else ProposalReasonCode.OBJECT_IDENTITY_COLLISION
+                )
+                conflicts.append(f"Seed {seed_id} combines two distinct tracks")
+                checks.append(
+                    FoundationCheck(
+                        check_id=f"FC-IDENT-{seed_id}",
+                        subject=seed_id,
+                        status=FoundationStatus.CONTRADICTED,
+                        reason_codes=[reason],
+                        detail=f"Seed {seed_id} appears to combine two distinct tracked entities.",
+                    )
+                )
+                for claim in claims:
+                    ident_hit = seed_id in claim.subject_ids or seed_id in claim.object_ids
+                    if ident_hit and claim.importance == ClaimImportance.FOUNDATIONAL:
+                        claim.evidence_status = EvidenceStatus.CONTRADICTED
+                        claim.evidence.append(
+                            _struct_ref(
+                                f"EV-IDENT-{claim.claim_id}", "tracking",
+                                f"{seed_id} spans two distinct tracks",
+                                artifact_paths=["visual/entities/tracks.json"],
+                            )
+                        )
+
+    # ENTITY_NOT_VISIBLE_AT_CLAIM_TIME: a claim references an id at a time whose
+    # frame has no visible (TRACKED) observation of that id's track.
+    if ev.time_to_frame is None:
+        return
+    for claim in claims:
+        window = _seed_frame_window(claim, ev)
+        if window is None:
+            continue
+        for seed_id in list(claim.subject_ids) + list(claim.object_ids):
+            tracks = ev.entity_by_seed_id.get(seed_id, [])
+            if not tracks:
+                continue
+            visible = any(
+                o.status == TrackStatus.TRACKED and window[0] <= o.frame_index <= window[1]
+                for t in tracks
+                for o in t.observations
+            )
+            if not visible:
+                claim.evidence_status = EvidenceStatus.CONTRADICTED
+                claim.review_status = ClaimReviewStatus.REVIEW_REQUIRED
+                claim.evidence.append(
+                    _struct_ref(
+                        f"EV-NOTVIS-{claim.claim_id}", "tracking",
+                        f"{seed_id} not visibly tracked in frames {window[0]}-{window[1]}",
+                        start_frame=window[0], end_frame=window[1],
+                        artifact_paths=["visual/entities/tracks.json"],
+                    )
+                )
+                conflicts.append(f"{seed_id} not visible at claim {claim.claim_id} time")
+
+
+def _verify_object_states(claims: list[SeedClaim], ev: VisualEvidence) -> None:
+    """Object ownership/contact claims vs tracked contact continuity (item 1)."""
+    if not ev.contact_events:
+        return
+    held_ids = {
+        e.object_track_id
+        for e in ev.contact_events
+        if e.kind in (ContactEventKind.HELD_STATE_BEGINS, ContactEventKind.OBJECT_PICKUP_CANDIDATE)
+    }
+    for claim in claims:
+        if claim.claim_type not in (SeedClaimType.OBJECT_OWNERSHIP, SeedClaimType.OBJECT_CONTACT):
+            continue
+        # Link seed O-ids to tracks via anchor labels where available.
+        linked = [
+            t.track_id for oid in claim.object_ids for t in ev.entity_by_seed_id.get(oid, [])
+        ]
+        if any(tid in held_ids for tid in linked):
+            claim.evidence.append(
+                _struct_ref(
+                    f"EV-OWN-{claim.claim_id}", "contacts",
+                    "tracked HELD/contact continuity supports ownership/contact",
+                    artifact_paths=["visual/actions/contact_events.json"],
+                )
+            )
+            claim.evidence_status = EvidenceStatus.PARTIALLY_SUPPORTED
+            claim.review_status = ClaimReviewStatus.REVIEW_REQUIRED
 
 
 def _mark_semantic_unresolved(claims: list[SeedClaim]) -> None:

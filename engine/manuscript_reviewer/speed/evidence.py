@@ -11,6 +11,8 @@ re-encoded video, so the video path never asserts it without such evidence).
 
 from __future__ import annotations
 
+from itertools import pairwise
+
 from ..models.frame import FrameLedger
 from ..models.review_intelligence import PlaybackSpeedEvidence, SpeedConclusion
 from ..models.shot_truth import ShotTruthResult
@@ -33,7 +35,7 @@ def _pts_regular(ledger: FrameLedger, start: int, end: int) -> bool:
     ]
     if len(times) < 3:
         return False
-    deltas = [b - a for a, b in zip(times, times[1:], strict=False)]  # type: ignore[operator]
+    deltas = [b - a for a, b in pairwise(times)]  # type: ignore[operator]
     first = deltas[0]
     if first <= 0:
         return False
@@ -48,11 +50,14 @@ def conclude_speed(
     if cadence.pair_count < 2:
         return SpeedConclusion.REVIEW_REQUIRED, True
     if cadence.duplicate_ratio >= _SLOW_DUP_RATIO and cadence.motion_present:
+        # Frames held between real motion look like slow motion — candidate only.
         return SpeedConclusion.SLOW_MOTION_CANDIDATE, True
     if accelerated_evidence:
         return SpeedConclusion.ACCELERATED_CANDIDATE, True
-    # REGULAR needs POSITIVE evidence: uniform PTS cadence + no slow-mo duplication.
-    if pts_regular and cadence.duplicate_ratio < _SLOW_DUP_RATIO:
+    # REGULAR needs POSITIVE evidence: uniform PTS cadence. Frame duplication only
+    # counts against 'regular' when there is underlying motion (a static shot with
+    # identical frames is regular, not slow-motion).
+    if pts_regular and (not cadence.motion_present or cadence.duplicate_ratio < _SLOW_DUP_RATIO):
         return SpeedConclusion.REGULAR_SUPPORTED, False
     return SpeedConclusion.REVIEW_REQUIRED, True
 

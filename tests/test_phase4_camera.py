@@ -187,7 +187,8 @@ def test_seed_pan_partially_supported_by_horizontal_evidence() -> None:
     doc = parse_seed_text(seed)
     claims = extract_claims(doc)
     cand = _camera_candidate(CameraMotionClass.HORIZONTAL_GLOBAL_MOTION, "screen-left")
-    res = compare_seed(doc, claims, None, None, None, [cand])  # type: ignore[list-item]
+    from manuscript_reviewer.seed.comparison import VisualEvidence
+    res = compare_seed(doc, claims, None, None, VisualEvidence(camera_candidates=[cand]))
     cm = next(c for c in res.claims if c.claim_type == SeedClaimType.CAMERA_MOVEMENT)
     assert cm.evidence_status == EvidenceStatus.PARTIALLY_SUPPORTED
 
@@ -205,7 +206,8 @@ def test_seed_dolly_never_proven_by_2d_motion() -> None:
     doc = parse_seed_text(seed)
     claims = extract_claims(doc)
     cand = _camera_candidate(CameraMotionClass.SCALE_INCREASE, None)
-    res = compare_seed(doc, claims, None, None, None, [cand])  # type: ignore[list-item]
+    from manuscript_reviewer.seed.comparison import VisualEvidence
+    res = compare_seed(doc, claims, None, None, VisualEvidence(camera_candidates=[cand]))
     cm = next(c for c in res.claims if c.claim_type == SeedClaimType.CAMERA_MOVEMENT)
     # 2D motion cannot prove a dolly -> stays UNRESOLVED (never SUPPORTED).
     assert cm.evidence_status == EvidenceStatus.UNRESOLVED
