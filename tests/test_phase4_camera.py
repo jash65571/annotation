@@ -109,8 +109,8 @@ def test_uniform_scale_is_scale_change_not_pan(tmp_path: Path) -> None:
 
     base = _texture()[:, :, 0]
     frames = []
-    for i in range(16):
-        zoom = 1.0 + i * 0.03
+    for i in range(18):
+        zoom = 1.0 + i * 0.05  # sustained zoom that survives phase smoothing
         cw, ch = int(_W / zoom), int(_H / zoom)
         x0, y0 = (_W - cw) // 2, (_H - ch) // 2
         crop = base[y0 : y0 + ch, x0 : x0 + cw]
@@ -209,6 +209,97 @@ def test_seed_dolly_never_proven_by_2d_motion() -> None:
     cm = next(c for c in res.claims if c.claim_type == SeedClaimType.CAMERA_MOVEMENT)
     # 2D motion cannot prove a dolly -> stays UNRESOLVED (never SUPPORTED).
     assert cm.evidence_status == EvidenceStatus.UNRESOLVED
+
+
+def _synthetic_motion(n: int = 12) -> np.ndarray:
+    rng = np.random.default_rng(11)
+    base = rng.integers(0, 256, size=(90, 160), dtype=np.uint8)
+    return np.stack([np.roll(base, i * 3, axis=1) for i in range(n)], axis=0)
+
+
+def _ledger_at(fps: tuple[int, int], n: int):  # type: ignore[no-untyped-def]
+    from fractions import Fraction
+
+    from manuscript_reviewer.models.frame import FrameLedger, FrameRecord
+    tb = Fraction(fps[1], fps[0])  # seconds per frame as time_base-ish
+    frames = [
+        FrameRecord(frame_index=i, pts=i, pts_time_seconds=i * tb, key_frame=(i == 0),
+                    width=160, height=90)
+        for i in range(n)
+    ]
+    return FrameLedger(stream_index=0, time_base=tb, frames=frames)
+
+
+def _shot_truth_end(n: int, end_exact) -> object:  # type: ignore[no-untyped-def]
+    from manuscript_reviewer.models.shot_truth import (
+        CandidateStatus,
+        ShotProposal,
+        ShotTruthResult,
+        TransitionStatus,
+    )
+    prop = ShotProposal(
+        shot_index=1, start_frame_index=0, end_frame_index=n - 1,
+        start_exact=None, end_exact=end_exact, last_owned_frame_start_exact=None,
+        start_manuscript=None, end_manuscript=None, transition_into_shot="Opening shot",
+        transition_status=TransitionStatus.PROPOSED, supporting_boundary_id=None,
+        review_status=CandidateStatus.SUPPORTED,
+    )
+    return ShotTruthResult(
+        frame_count=n, adjacent_pair_count=0, raw_candidate_count=0, merged_candidate_count=0,
+        supported_count=0, rejected_count=0, review_required_count=0, proposed_shot_count=1,
+        overall_status="PASS", candidates=[], shots=[prop],
+        annotation_endpoint_exact=end_exact,
+    )
+
+
+def test_camera_endpoint_uses_shot_end_not_final_frame_start() -> None:
+    from fractions import Fraction
+
+    from manuscript_reviewer.camera.segmentation import analyze_camera_motion
+    from manuscript_reviewer.media.clock import AnnotationClock
+
+    for fps in [(24, 1), (60, 1), (30000, 1001)]:  # 24, 60, 59.94
+        n = 12
+        gray = _synthetic_motion(n)
+        ledger = _ledger_at(fps, n)
+        clock = AnnotationClock.from_ledger(ledger)
+        # Shot end is the media endpoint = presentation start of a frame AFTER the
+        # last owned frame (distinct from the last frame's own start time).
+        shot_end = ledger.frames[n - 1].pts_time_seconds + Fraction(fps[1], fps[0])
+        candidates, _ = analyze_camera_motion(gray, ledger, clock, _shot_truth_end(n, shot_end))
+        movement = [c for c in candidates if c.last_supporting_frame >= n - 1]
+        assert movement, fps
+        # A phase running through the final frame ends at the shot end, not the
+        # final frame's own start time (would be one frame early).
+        last = movement[-1]
+        assert last.end_exact == shot_end
+        assert last.end_exact != ledger.frames[n - 1].pts_time_seconds
+
+
+def test_smoothing_preserves_target_class_when_absorbing_short_run() -> None:
+    from manuscript_reviewer.camera.classify import PairClassification
+    from manuscript_reviewer.camera.segmentation import _group_runs, _smooth
+
+    def pair(left: int, cls: CameraMotionClass, direction: str | None) -> tuple:
+        return (left, left + 1, PairClassification(cls, direction, 1.0, 0.9))
+
+    static = CameraMotionClass.STATIC
+    horiz = CameraMotionClass.HORIZONTAL_GLOBAL_MOTION
+
+    # A: 1-pair STATIC then B: 8-pair screen-right movement. Absorbing A into B
+    # must keep the phase screen-right (item 10 regression).
+    seq_ab = [pair(0, static, None)] + [pair(i, horiz, "screen-right") for i in range(1, 9)]
+    runs_ab = _smooth(_group_runs(seq_ab))
+    assert len(runs_ab) == 1
+    assert runs_ab[0].motion_class == horiz
+    assert runs_ab[0].direction == "screen-right"
+
+    # Inverse: 8-pair movement then 1-pair static -> still screen-right movement.
+    seq_ba = [pair(i, horiz, "screen-right") for i in range(0, 8)] + [pair(8, static, None)]
+    runs_ba = _smooth(_group_runs(seq_ba))
+    assert len(runs_ba) == 1
+    assert runs_ba[0].motion_class == horiz
+    assert runs_ba[0].direction == "screen-right"
 
 
 @requires_ffmpeg
