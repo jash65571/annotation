@@ -229,6 +229,58 @@ def test_seed_on_screen_text_matched_by_ocr_is_partial_not_final() -> None:
     assert ost.review_status is not None and ost.review_status.value == "REVIEW_REQUIRED"
 
 
+def test_zero_words_is_no_text_read_not_present() -> None:
+    ledger = _ledger(4)
+    clock = AnnotationClock.from_ledger(ledger)
+    adapter = MockOCRAdapter(scripted=[[]])  # ran successfully, found nothing
+    stream = [(i, np.zeros((20, 40), dtype=np.uint8)) for i in range(4)]
+    result = run_ocr(stream, ledger, clock, adapter, total_frames=4)
+    assert all(v == "OCR_NO_TEXT_READ" for v in result.frame_status.values())
+    assert result.failed_frame_count == 0
+
+
+def test_persists_is_shot_aware_not_clip_end() -> None:
+    # Track reaches clip end (frame 9) but its shot ends at 20 -> NOT persists.
+    obs = [_obs(f, "GO") for f in range(5, 10)]
+
+    def shot_bounds(frame: int) -> tuple[int, int] | None:
+        return (5, 20) if frame >= 5 else (0, 4)
+
+    tracks = build_text_tracks(obs, last_inspected_frame=9, shot_bounds_of=shot_bounds)
+    assert tracks[0].text_persists_to_shot_end is False
+    assert tracks[0].disappearance_status.value == "UNRESOLVED"
+
+    # A track reaching its shot's final frame DOES persist.
+    obs2 = [_obs(f, "GO") for f in range(5, 21)]
+    tracks2 = build_text_tracks(obs2, last_inspected_frame=9, shot_bounds_of=shot_bounds)
+    assert tracks2[0].text_persists_to_shot_end is True
+
+
+def test_region_fallback_to_whole_frame_on_empty_regions() -> None:
+    ledger = _ledger(3)
+    clock = AnnotationClock.from_ledger(ledger)
+
+    class _WholeFrameOnly:
+        def engine_info(self):  # type: ignore[no-untyped-def]
+            from manuscript_reviewer.models.review_intelligence import OCREngineInfo
+
+            return OCREngineInfo(engine="mock", status=OCRStatus.AVAILABLE)
+
+        def recognize(self, image, language="eng"):  # type: ignore[no-untyped-def]
+            if image.shape[0] >= 20 and image.shape[1] >= 40:
+                return [OCRWord(text="GO", x=0, y=0, width=10, height=10, confidence=90.0)]
+            return []  # small region crops read nothing
+
+    def region_detector(_gray):  # type: ignore[no-untyped-def]
+        return [(0, 0, 5, 5)]  # a region that yields no words
+
+    stream = [(i, np.zeros((20, 40), dtype=np.uint8)) for i in range(3)]
+    result = run_ocr(stream, ledger, clock, _WholeFrameOnly(), total_frames=3,
+                     region_detector=region_detector)
+    assert result.observations
+    assert all(o.provenance.value == "WHOLE_FRAME_FALLBACK" for o in result.observations)
+
+
 def test_run_ocr_unavailable_degrades() -> None:
     ledger = _ledger(3)
     clock = AnnotationClock.from_ledger(ledger)

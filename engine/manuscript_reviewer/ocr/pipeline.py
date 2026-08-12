@@ -29,6 +29,7 @@ from ..models.review_intelligence import (
     TextTrack,
     WatermarkCandidate,
 )
+from ..models.shot_truth import ShotTruthResult
 from .adapter import OCRWord
 from .timing import build_text_tracks, detect_watermark_candidates
 
@@ -55,6 +56,22 @@ class OCRResult:
     failed_frame_count: int = 0
 
 
+def _shot_bounds_resolver(
+    shot_truth: ShotTruthResult | None,
+) -> Callable[[int], tuple[int, int] | None] | None:
+    if shot_truth is None or not shot_truth.shots:
+        return None
+    ranges = [(s.start_frame_index, s.end_frame_index) for s in shot_truth.shots]
+
+    def resolve(frame_index: int) -> tuple[int, int] | None:
+        for lo, hi in ranges:
+            if lo <= frame_index <= hi:
+                return lo, hi
+        return None
+
+    return resolve
+
+
 def _to_gray(image: npt.NDArray[np.uint8]) -> npt.NDArray[np.uint8]:
     if image.ndim == 3:
         return np.asarray(cv2.cvtColor(image, cv2.COLOR_RGB2GRAY), dtype=np.uint8)
@@ -69,6 +86,7 @@ def run_ocr(
     language: str = "eng",
     total_frames: int | None = None,
     region_detector: RegionDetector | None = None,
+    shot_truth: ShotTruthResult | None = None,
 ) -> OCRResult:
     info = adapter.engine_info()
     if info.status == OCRStatus.UNAVAILABLE:
@@ -87,9 +105,17 @@ def run_ocr(
         source_time = record.pts_time_seconds if record is not None else None
         annotation_time = clock.to_annotation(source_time) if source_time is not None else None
         try:
-            words, provenance = _recognize_frame(adapter, image, language, region_detector)
-            frame_status[frame_index] = OCRFrameStatus.OCR_PRESENT.value
+            words, provenance, had_region = _recognize_frame(
+                adapter, image, language, region_detector
+            )
             read_count += 1
+            # Item 14: a successful call with zero words is not "OCR present".
+            if words:
+                frame_status[frame_index] = OCRFrameStatus.OCR_READ_TEXT.value
+            elif had_region:
+                frame_status[frame_index] = OCRFrameStatus.REGION_PRESENT_TEXT_UNREADABLE.value
+            else:
+                frame_status[frame_index] = OCRFrameStatus.OCR_NO_TEXT_READ.value
         except (RuntimeError, OSError, ValueError):
             # M: record the failure explicitly; never pretend the frame had no text.
             frame_status[frame_index] = OCRFrameStatus.OCR_ENGINE_FAILED.value
@@ -117,7 +143,10 @@ def run_ocr(
     if total and failed_count / total >= _DEGRADED_FRACTION:
         info = info.model_copy(update={"status": OCRStatus.DEGRADED})
 
-    tracks = build_text_tracks(observations, last_inspected_frame=last_inspected)
+    shot_bounds_of = _shot_bounds_resolver(shot_truth)
+    tracks = build_text_tracks(
+        observations, last_inspected_frame=last_inspected, shot_bounds_of=shot_bounds_of
+    )
     watermarks = detect_watermark_candidates(
         tracks, total_frames if total_frames is not None else ledger.frame_count
     )
@@ -137,10 +166,11 @@ def _recognize_frame(
     image: npt.NDArray[np.uint8],
     language: str,
     region_detector: RegionDetector | None,
-) -> tuple[list[OCRWord], TextDetectionProvenance]:
+) -> tuple[list[OCRWord], TextDetectionProvenance, bool]:
     """OCR one frame. With a region detector, OCR each candidate region crop and
-    map boxes back to full-frame coordinates; fall back to whole-frame OCR when
-    no regions are found (I)."""
+    map boxes back to full-frame coordinates; if regions exist but yield NO words,
+    fall back to a safe whole-frame pass (item 16). Returns
+    ``(words, provenance, had_text_region)``."""
     if region_detector is not None:
         boxes = region_detector(_to_gray(image))
         if boxes:
@@ -152,13 +182,13 @@ def _recognize_frame(
                 for word in adapter.recognize(crop, language):
                     words.append(
                         OCRWord(
-                            text=word.text,
-                            x=x + word.x,
-                            y=y + word.y,
-                            width=word.width,
-                            height=word.height,
-                            confidence=word.confidence,
+                            text=word.text, x=x + word.x, y=y + word.y,
+                            width=word.width, height=word.height, confidence=word.confidence,
                         )
                     )
-            return words, TextDetectionProvenance.REGION_DETECTOR
-    return adapter.recognize(image, language), TextDetectionProvenance.WHOLE_FRAME
+            if words:
+                return words, TextDetectionProvenance.REGION_DETECTOR, True
+            # Item 16: regions found but unreadable -> safe whole-frame fallback.
+            fallback = adapter.recognize(image, language)
+            return fallback, TextDetectionProvenance.WHOLE_FRAME_FALLBACK, True
+    return adapter.recognize(image, language), TextDetectionProvenance.WHOLE_FRAME, False

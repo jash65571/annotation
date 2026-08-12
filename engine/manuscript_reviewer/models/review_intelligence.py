@@ -650,10 +650,13 @@ class OCRStatus(StrEnum):
 
 
 class OCRFrameStatus(StrEnum):
-    """Per-frame OCR execution accounting (M) — a failure is never silently
-    converted into 'no text'."""
+    """Per-frame OCR execution accounting (M, item 14). A successful call with
+    zero words is NOT 'OCR_PRESENT' — it is OCR_NO_TEXT_READ (or, when a text
+    region was detected but not decoded, REGION_PRESENT_TEXT_UNREADABLE)."""
 
-    OCR_PRESENT = "OCR_PRESENT"  # OCR ran on this frame (may or may not find text)
+    OCR_READ_TEXT = "OCR_READ_TEXT"  # OCR ran and recognized >= 1 word
+    OCR_NO_TEXT_READ = "OCR_NO_TEXT_READ"  # OCR ran, no words, no text region
+    REGION_PRESENT_TEXT_UNREADABLE = "REGION_PRESENT_TEXT_UNREADABLE"  # region, no words
     OCR_NOT_READ = "OCR_NOT_READ"  # frame not submitted to OCR
     OCR_ENGINE_FAILED = "OCR_ENGINE_FAILED"  # OCR raised on this frame
 
@@ -671,6 +674,9 @@ class TextDisappearanceStatus(StrEnum):
 class TextDetectionProvenance(StrEnum):
     REGION_DETECTOR = "REGION_DETECTOR"
     WHOLE_FRAME = "WHOLE_FRAME"
+    #: Region detector found boxes but they yielded no words, so a safe
+    #: whole-frame pass produced these observations (item 16).
+    WHOLE_FRAME_FALLBACK = "WHOLE_FRAME_FALLBACK"
 
 
 class OCREngineInfo(StrictModel):

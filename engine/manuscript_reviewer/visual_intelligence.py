@@ -157,7 +157,7 @@ def run_visual_intelligence(
         if ocr_enabled:
             start = time.perf_counter()
             ocr_text_tracks, ocr_observations = _run_ocr_stage(
-                cache, ledger, clock, run_dir, artifacts, issues, result
+                cache, ledger, clock, shot_truth, run_dir, artifacts, issues, result
             )
             _timed(timings, "ocr", start)
         # Item 18: enrich the observation ledger with track/OCR/contact context,
@@ -545,6 +545,7 @@ def _run_ocr_stage(
     cache: FrameCache,
     ledger: FrameLedger,
     clock: AnnotationClock,
+    shot_truth: ShotTruthResult | None,
     run_dir: Path,
     artifacts: list[Path],
     issues: list[ValidatorIssue],
@@ -570,6 +571,7 @@ def _run_ocr_stage(
             adapter,
             total_frames=ledger.frame_count,
             region_detector=_region_boxes,
+            shot_truth=shot_truth,
         )
     except (MetricDecodeError, ValueError) as exc:
         issues.append(

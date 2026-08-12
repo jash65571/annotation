@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import itertools
 import re
+from collections.abc import Callable
 from difflib import SequenceMatcher
 
 from ..models.review_intelligence import (
@@ -116,10 +117,12 @@ def build_text_tracks(
     observations: list[OCRObservation],
     last_inspected_frame: int | None = None,
     track_id_prefix: str = "TT",
+    shot_bounds_of: Callable[[int], tuple[int, int] | None] | None = None,
 ) -> list[TextTrack]:
     """Build TextTracks with exact phases, honest disappearance, and the
-    one-frame defense. ``last_inspected_frame`` is the last frame OCR examined;
-    a track still present there persists to the end (no invented disappearance)."""
+    one-frame defense. ``persists_to_shot_end`` is SHOT-aware (item 15): a track
+    persists only when its stable evidence reaches its containing shot's final
+    frame — clip end is never equated with shot end."""
     tracks: list[TextTrack] = []
     for i, seq in enumerate(link_observations(observations), start=1):
         seq_sorted = sorted(seq, key=lambda o: o.frame_index)
@@ -139,15 +142,24 @@ def build_text_tracks(
                     fully_legible = obs.frame_index
                     break
 
-        # Disappearance (K): never invented. Persists if still present at the
-        # last inspected frame; otherwise UNRESOLVED (no region-absence evidence).
+        # Disappearance (K): never invented. Persistence is SHOT-aware (item 15):
+        # a track persists only when its stable evidence reaches its shot's final
+        # frame — otherwise UNRESOLVED (no region-absence evidence).
         last_frame = distinct[-1]
-        if last_inspected_frame is not None and last_frame >= last_inspected_frame:
-            disappearance_frame = None
+        disappearance_frame = None
+        shot_bounds = shot_bounds_of(last_frame) if shot_bounds_of is not None else None
+        if stable and shot_bounds is not None and last_frame >= shot_bounds[1]:
+            disappearance_status = TextDisappearanceStatus.PERSISTS_TO_END
+            persists = True
+        elif (
+            shot_bounds_of is None
+            and last_inspected_frame is not None
+            and last_frame >= last_inspected_frame
+        ):
+            # No shot info: fall back to clip-end presence (best available).
             disappearance_status = TextDisappearanceStatus.PERSISTS_TO_END
             persists = True
         else:
-            disappearance_frame = None
             disappearance_status = TextDisappearanceStatus.UNRESOLVED
             persists = False
 
