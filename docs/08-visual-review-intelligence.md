@@ -184,16 +184,33 @@ contract only.
 
 ## Delivered vs planned
 
-**Delivered (slices 1–4):** seed snapshot/parser/claims/feedback, structural
-comparison, claim↔evidence matrix, proposals, review queue, triage, human-decision
-persistence, the frame cache, the frame-observation ledger + concerns, OCR
-(adapter + Tesseract + temporal consensus + sequential timing + one-frame defense
-+ watermark candidates + caption-eligibility gate), deterministic camera
-global-motion segmentation with the camera-vs-subject defense, the P4 validators
-listed above, and CLI + manifest integration.
+**Delivered (Phase 4 complete):**
 
-**Designed, staged for later slices** (data model already in
-`models/review_intelligence.py`; each plugs into the tested orchestrator harness):
-local anchor-assisted tracking / character & object continuity, ownership/contact
-events, final-state checks, action boundaries, playback-speed evidence, and
-high-risk evidence bundles.
+- Seed snapshot / robust multiline parser / atomic claim decomposition (character
+  & object attributes, Action & Audio clause splitting + atomicity diagnostics) /
+  task feedback.
+- Structural comparison against Shot/Audio/media truth using the canonical
+  Manuscript `to_manuscript_display` rounding (ROUND_HALF_UP) and inclusive shot
+  containment; the transition vocabulary is loaded from the rule file.
+- Claim↔evidence matrix with graded evidence, KEEP/FIX/REDO/HUMAN proposals with
+  inherited structural reasons, review queue with resolved frame ranges, triage.
+- Human-decision application layer (typed kinds, media/rules-bound, override →
+  recompute; APPLIED/STALE/INVALID_SUBJECT/INVALID_VALUE/CONFLICT).
+- Shared bounded frame cache with a streaming exact-frame color decoder (one
+  ffmpeg process for scan-heavy consumers), per-frame observation ledger +
+  concerns.
+- OCR: adapter + optional Tesseract, MSER region detection, temporal consensus,
+  sequential timing with honest disappearance semantics, real stability
+  accounting, failure accounting (DEGRADED), watermark candidates, caption-
+  eligibility gate; OCR text tracks feed seed ON_SCREEN_TEXT comparison.
+- Camera global-motion segmentation with hysteresis smoothing (raw pair metrics
+  retained), correct interval-end semantics, and the camera-vs-subject defense;
+  camera evidence feeds seed CAMERA_MOVEMENT comparison (never proves 3D moves).
+- Anchor-seeded local tracking + character/object continuity (first-appearance
+  labels, no merging of similar entities), ownership/contact events, mandatory
+  final-state checks (removal never inferred from a shot ending), atomic
+  action-boundary candidates (semantic label stays None).
+- Playback-speed evidence (fast motion ≠ accelerated, blur ≠ slow motion),
+  high-risk visual evidence bundles (`--extract-visual-evidence`), and a
+  design-only provider-neutral `VisualReasonerAdapter` contract.
+- The full P4-* validator suite and CLI + manifest integration.

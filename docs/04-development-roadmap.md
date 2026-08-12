@@ -32,8 +32,8 @@ cross-check, hard FAIL/WARN semantics, full test/lint/typecheck gates.
 - Deferred to Phase 3.x/4: diarization (adapter contract fixed), OCR,
   camera-movement phases, playback-speed analysis.
 
-## Phase 4 — Visual review intelligence (IN PROGRESS — see docs/08)
-Delivered (slices 1–2):
+## Phase 4 — Visual review intelligence (COMPLETE, pending review — see docs/08)
+Delivered:
 - Immutable seed snapshot → robust recoverable parser → atomic `SeedClaim`
   extraction (typed, foundational/local) → structural comparison against Shot
   Truth / media → claim↔evidence matrix → KEEP / FIX_ENRICH / REDO_REBUILD /
@@ -45,13 +45,15 @@ Delivered (slices 1–2):
 - P4-SEED/CLAIM/REVIEW/OCR/QC/OBS validators; three separate status vocabularies
   (evidence status ≠ machine proposal ≠ human decision).
 
-Staged for later slices (data model already in `models/review_intelligence.py`):
-- OCR (adapter + Tesseract + temporal consensus + timing + caption-eligibility).
-- Anchor-assisted local tracking, character/object continuity, ownership/contact,
-  final-state checks.
-- Camera global-motion segmentation, action boundaries, playback-speed evidence,
-  high-risk evidence bundles.
-- Future `VisualReasonerAdapter` (design only; propose-only, never owns the clock).
+- Streaming exact-frame decoder; OCR (adapter + Tesseract + region detection +
+  temporal consensus + timing + failure accounting + caption-eligibility gate).
+- Anchor-seeded local tracking, character/object continuity, ownership/contact
+  events, mandatory final-state checks, atomic action-boundary candidates.
+- Camera global-motion segmentation with hysteresis, playback-speed evidence,
+  high-risk visual evidence bundles, and the design-only `VisualReasonerAdapter`.
+- The full P4-* validator suite (SEED/CLAIM/REVIEW/OCR/QC/OBS/CAMERA/ENTITY/
+  OBJECT/ACTION/FINAL/SPEED/PRIVACY/TEXT); three separate status vocabularies
+  (evidence status ≠ machine proposal ≠ human decision).
 
 Phase 4 produces structured evidence and reviewer proposals only — no final
 caption prose. Caption generation, the M2-* caption validator, and the Golden
