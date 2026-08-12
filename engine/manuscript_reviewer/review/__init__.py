@@ -2,6 +2,6 @@
 persistence, and triage.
 
 Everything here is a *proposal* or a *queue item* — never a human decision, and
-never final caption prose. Machine proposals can never be stored as a human
-``ReviewDecision`` (validator P4-REVIEW-001).
+never final caption prose. Machine proposals can never be stored as a
+``HumanReviewDecision`` (validator P4-REVIEW-001).
 """

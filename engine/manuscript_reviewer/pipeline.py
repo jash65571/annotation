@@ -21,6 +21,7 @@ from . import __version__
 from .artifacts import writer
 from .audio.asr.runtime import ASRConfig
 from .audio.engine import run_audio_analysis
+from .caption_brain import CaptionBrainError, CaptionBrainOutput, finalize_run
 from .media import frames as frames_mod
 from .media import probe as probe_mod
 from .media.ffmpeg_tools import FFmpegNotFoundError, ToolExecutionError, find_tool, tool_version
@@ -72,6 +73,7 @@ class AuditResult:
     shot_truth: ShotTruthResult | None = None
     audio_truth: AudioQCResult | None = None
     visual_intelligence: VisualIntelligenceResult | None = None
+    caption_brain: CaptionBrainOutput | None = None
 
 
 class _StageTimer:
@@ -104,6 +106,9 @@ def run_audit(
     review_decisions_path: Path | None = None,
     ocr_enabled: bool = True,
     extract_visual_evidence: bool = False,
+    caption_brain: bool = False,
+    human_facts_path: Path | None = None,
+    final_review_path: Path | None = None,
 ) -> AuditResult:
     """Run the full audit (media verification, frame ledger, optional shot
     truth) and write all artifacts.
@@ -152,6 +157,12 @@ def run_audit(
         review_decisions_hash: str | None = None
         if review_decisions_path is not None:
             review_decisions_hash = writer.sha256_file(review_decisions_path)
+        human_facts_hash: str | None = None
+        if human_facts_path is not None:
+            human_facts_hash = writer.sha256_file(human_facts_path)
+        final_review_hash: str | None = None
+        if final_review_path is not None:
+            final_review_hash = writer.sha256_file(final_review_path)
         # Snapshot + hash the visual anchors so tracks are never claimed
         # reproducible without the exact anchor bytes they were seeded from.
         visual_anchors_hash: str | None = None
@@ -293,6 +304,36 @@ def run_audit(
             result.visual_intelligence = vi_output.result
             checks_run.append("visual_intelligence")
 
+        # --- CAPTION BRAIN (Phase 5) ---
+        # Runs from the evidence artifacts already written; never re-decodes
+        # media. Unresolved review never crashes the pipeline — it produces
+        # REVIEW_REQUIRED plus the reviewer packet and a draft when safe (§95).
+        if caption_brain and result.shot_truth is not None:
+            with _StageTimer(timings, "caption_brain_total"):
+                try:
+                    cb_output = finalize_run(
+                        run_dir,
+                        review_decisions_path=review_decisions_path,
+                        human_facts_path=human_facts_path,
+                        final_review_path=final_review_path,
+                        video_sha256=source_hash_before,
+                    )
+                except CaptionBrainError as exc:
+                    cb_output = None
+                    issues.append(
+                        ValidatorIssue(
+                            rule_id="M2-MEDIA-003",
+                            severity=Severity.FAIL,
+                            location="caption_brain",
+                            message=f"Caption Brain could not run: {exc}",
+                        )
+                    )
+            if cb_output is not None:
+                timings.update(cb_output.stage_timings)
+                artifact_paths.extend(cb_output.artifact_paths)
+                result.caption_brain = cb_output
+                checks_run.append("caption_brain")
+
         # --- SOURCE STABILITY ---
         with _StageTimer(timings, "rehash_source"):
             source_hash_after = writer.sha256_file(video_path)
@@ -337,6 +378,15 @@ def run_audit(
                 and status == RunStatus.PASS
             ):
                 status = RunStatus.REVIEW_REQUIRED
+        # Phase 5: a caption that is not READY_TO_ENTER keeps the run in
+        # review — the audit never claims PASS over an unready caption.
+        if (
+            result.caption_brain is not None
+            and result.caption_brain.result.readiness.value
+            in ("BLOCKED", "REVIEW_REQUIRED")
+            and status == RunStatus.PASS
+        ):
+            status = RunStatus.REVIEW_REQUIRED
         qc = QCReport(
             status=status,
             issues=issues,
@@ -366,6 +416,24 @@ def run_audit(
                 str(visual_anchors_path.resolve()) if visual_anchors_path else None
             ),
             source_visual_anchors_sha256=visual_anchors_hash,
+            human_facts_path=(
+                str(human_facts_path.resolve()) if human_facts_path else None
+            ),
+            human_facts_sha256=human_facts_hash,
+            final_review_path=(
+                str(final_review_path.resolve()) if final_review_path else None
+            ),
+            final_review_sha256=final_review_hash,
+            caption_brain_version=(
+                result.caption_brain.result.caption_brain_version
+                if result.caption_brain is not None
+                else None
+            ),
+            caption_final_status=(
+                result.caption_brain.result.readiness.value
+                if result.caption_brain is not None
+                else None
+            ),
             visual_intelligence_version=(
                 result.visual_intelligence.visual_intelligence_version
                 if result.visual_intelligence is not None

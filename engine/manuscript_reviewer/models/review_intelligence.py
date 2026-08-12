@@ -12,7 +12,7 @@ Three vocabularies are kept strictly separate and must never be collapsed:
 
 * :class:`EvidenceStatus`   — what the media proves about a claim.
 * :class:`ReviewProposalOutcome` — the machine's *proposal* for a section.
-* the human ``ReviewDecision`` (in :mod:`.caption`) — an actual human decision.
+* :class:`HumanReviewDecision` (below) — an actual human decision.
 
 Machine systems may propose. Evidence determines timing. Human verification
 determines final uncertain semantics. AI/CV never owns identity, the clock,
@@ -377,7 +377,7 @@ class FoundationCheck(StrictModel):
 
 
 class ReviewProposal(StrictModel):
-    """A machine PROPOSAL about a section/claim. NOT a human ReviewDecision.
+    """A machine PROPOSAL about a section/claim. NOT a HumanReviewDecision.
 
     Built at several levels via ``level`` (claim/field/character/object/shot/
     Overview/seed)."""

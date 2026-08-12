@@ -1,0 +1,73 @@
+# Golden Example behavior rules, version 1.0.0 (Phase 5).
+#
+# Derived from the FULL 31-page Golden Examples PDF (GOLDEN-PDF, local-only,
+# not committed) + Reviewer Handbook v1.2 §1A/§28/§28A-§28B. These are
+# BEHAVIOR rules, never word/sentence/entry-count quotas (HANDBOOK §28B: match
+# the level of evidence and granularity, not the number of entries).
+#
+# Golden Examples are the FLOOR, not the ceiling (HANDBOOK §1A). Every rule
+# carries source/page provenance. Current live-tool rules override older
+# Golden syntax (pronouns, <unintelligible>, Movements+Audio) — those live in
+# manuscript_v1.yaml known_conflicts and are NOT duplicated here.
+
+golden_behavior_version: "1.0.0"
+source: "Manuscript II.pdf (Golden Examples export, 31 pages, 2026-08-10)"
+
+categories:
+  DETAIL_COVERAGE:
+    - id: GB-DETAIL-001
+      rule: Every material eligible fact is represented or carries a valid omission reason.
+      provenance: "GOLDEN-PDF p.1-2 (no important event silently omitted); HANDBOOK §1A"
+  EVENT_GRANULARITY:
+    - id: GB-GRAN-001
+      rule: Granularity follows the footage; a 0.1-second event is retained, never dropped.
+      provenance: "GOLDEN-PDF p.17/p.26 (7.3s-7.4s hand release); HANDBOOK §28C"
+    - id: GB-GRAN-002
+      rule: A dense continuous shot may carry many entries; no artificial entry-count quota.
+      provenance: "GOLDEN-PDF p.8-13 (shot 2, 13 entries); HANDBOOK §28B"
+  TIMESTAMP_DISCIPLINE:
+    - id: GB-TIME-001
+      rule: Every displayed timestamp is the canonical 0.1 s projection of the exact event boundary.
+      provenance: "GOLDEN-PDF p.1 (frame-matched starts/ends); HANDBOOK §20 Rule 1"
+  TRUTHFUL_OVERLAP:
+    - id: GB-OVERLAP-001
+      rule: Overlapping events keep overlapping entries; overlap is never flattened or offset.
+      provenance: "GOLDEN-PDF p.1-2/p.10-12 (narration over actions); HANDBOOK §28 'Overlap is normal'"
+  CHARACTER_CONTINUITY:
+    - id: GB-CHAR-001
+      rule: Every referenced character is defined by ID; off-screen voices get C IDs.
+      provenance: "GOLDEN-PDF p.3-5 (C9 unseen narrator); MASTER-REF §4"
+  OBJECT_CONTINUITY:
+    - id: GB-OBJ-001
+      rule: Object contact, release, and transfer are real state changes; no ghost or duplicate O IDs.
+      provenance: "GOLDEN-PDF p.21-28 (O1-O4 handling); HANDBOOK §28C"
+  CAMERA_SEPARATION:
+    - id: GB-CAM-001
+      rule: Camera movement is timestamped separately and never folded into Action & Audio.
+      provenance: "GOLDEN-PDF p.1 (entry types), p.7-8/p.19-21; HANDBOOK §28 'Camera is separate'"
+  DIALOGUE_COVERAGE:
+    - id: GB-DLG-001
+      rule: Every verified speech act is rendered; interrupted dialogue preserves the cutoff.
+      provenance: "GOLDEN-PDF p.25 ('...where they--'); HANDBOOK §17"
+  AUDIO_COVERAGE:
+    - id: GB-AUD-001
+      rule: Music, ambience, impacts and object sounds are real timed events, not decoration.
+      provenance: "GOLDEN-PDF p.6-16/p.21-28; HANDBOOK §18"
+  TEXT_COVERAGE:
+    - id: GB-TEXT-001
+      rule: Verified on-screen text is its own timestamped quoted entry.
+      provenance: "MASTER-REF §8; HANDBOOK §19"
+  FINAL_STATE:
+    - id: GB-FINAL-001
+      rule: The final physical state of important objects is reconciled; release is never implied by a shot ending.
+      provenance: "GOLDEN-PDF p.30 (reach continues past end); FRAME-AUDIT §30A.10 via rules v1.3.0"
+  SCENE_RECONSTRUCTABILITY:
+    - id: GB-SCENE-001
+      rule: The Overview holds enough eligible facts to reconstruct characters, objects and layout — measured by evidence readiness, never word count.
+      provenance: "GOLDEN-PDF p.3-5/p.17-18; HANDBOOK §1A/§8"
+  EXPORT_SAFETY:
+    - id: GB-EXPORT-001
+      rule: >-
+        The result is at least as export-safe as the Golden layout — atomic
+        entries, unique windows, fields in their homes.
+      provenance: "MASTER-REF §8 (tool validation); HANDBOOK §3 'Export safety'"

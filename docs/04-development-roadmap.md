@@ -32,7 +32,7 @@ cross-check, hard FAIL/WARN semantics, full test/lint/typecheck gates.
 - Deferred to Phase 3.x/4: diarization (adapter contract fixed), OCR,
   camera-movement phases, playback-speed analysis.
 
-## Phase 4 — Visual review intelligence (FINAL HARDENING — see docs/08)
+## Phase 4 — Visual review intelligence (DONE — see docs/08)
 Under an independent review-findings pass; not declared complete until every
 hardening item passes review (evidence→claim reconciliation, typed decision
 registries, anchor/tracking/OCR provenance, expanded validators). Delivered:
@@ -58,11 +58,30 @@ registries, anchor/tracking/OCR provenance, expanded validators). Delivered:
   (evidence status ≠ machine proposal ≠ human decision).
 
 Phase 4 produces structured evidence and reviewer proposals only — no final
-caption prose. Caption generation, the M2-* caption validator, and the Golden
-Example behavior gate move to a later phase.
+caption prose.
 
-## Phase 5 — Reviewer cockpit
+## Phase 5 — Caption Brain (DONE — see docs/09)
+- Central caption-eligibility policy (`CaptionEligibility` distinct from
+  `EvidenceStatus`); CANDIDATE ≠ FINAL FACT enforced structurally, with
+  provenance inspection (a mutated enum alone never proves human verification).
+- Typed `CaptionFact` graph → `CaptionPlan` → deterministic renderer producing
+  the Manuscript II structure; every rendered assertion maps back to fact IDs.
+- Human-added `HumanCaptionFact` input (`--human-facts`), bound to video
+  SHA-256 + rules version; stale facts rejected; machine code never creates one.
+- M2-* caption validator, platform-semantic validator, derived
+  `golden_behavior_v1.yaml` gate, coverage/omission ledger, assertion
+  (hallucination) map, final adversarial QC, task-feedback gate.
+- Ready states BLOCKED / REVIEW_REQUIRED / READY_FOR_FINAL_REVIEW /
+  READY_TO_ENTER; bound `FinalReviewSignoff` (never fabricated); honest
+  filenames (`ready_to_enter.md` only when truly ready, else
+  `draft_review_only.md`).
+- Fast `manuscript-reviewer finalize RUN_DIR` re-finalization from existing
+  Phase 1-4 evidence — no media re-analysis; sub-second to a few seconds.
+- No cloud upload, no platform submission, no result-code generation.
+
+## Phase 6 — Reviewer cockpit
 - Tauri 2 + React + TypeScript desktop UI over the Python engine: timeline, frame
-  stepping, evidence panels, per-section KEEP/FIX/REBUILD workflow, final checklist.
+  stepping, evidence panels, per-section KEEP/FIX/REBUILD workflow, human-decision
+  and human-fact capture, final-review signoff, final checklist.
 - Export of the finished caption for manual paste into the live tool. The app never
   claims tasks, never submits, never touches credentials.

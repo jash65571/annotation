@@ -171,15 +171,12 @@ class ConfidenceAssessment(StrictModel):
     requires_human_verification: bool = True
 
 
-class ReviewDecision(StrictModel):
-    """A recorded human decision about a section, claim, or suggestion."""
-
-    decision_id: str
-    subject_id: str
-    outcome: ReviewOutcome
-    rationale: str | None = None
-    decided_by: str = "human"
-    evidence: list[EvidenceReference] = []
+# NOTE (Phase 5 reconciliation, §11): the older ``ReviewDecision`` model that
+# lived here (with a fabricable ``decided_by="human"`` default) was audited and
+# removed. It was never populated by any pipeline stage. The authoritative
+# human-decision layer is ``review_intelligence.HumanReviewDecision`` +
+# ``DecisionApplication`` (typed registry, media/rules-bound, no defaults) —
+# there is exactly ONE human-decision system.
 
 
 class ReviewedCaption(StrictModel):
@@ -198,4 +195,3 @@ class ReviewedCaption(StrictModel):
     speech_events: list[SpeechEvent] = []
     sound_events: list[SoundEvent] = []
     on_screen_text_events: list[OnScreenTextEvent] = []
-    review_decisions: list[ReviewDecision] = []

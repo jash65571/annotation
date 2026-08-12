@@ -31,6 +31,13 @@ class RunManifest(StrictModel):
     #: anchor bytes the tracks were seeded from (item 20).
     source_visual_anchors_path: str | None = None
     source_visual_anchors_sha256: str | None = None
+    #: Phase 5 inputs/outputs (additive; None when the stage did not run).
+    human_facts_path: str | None = None
+    human_facts_sha256: str | None = None
+    final_review_path: str | None = None
+    final_review_sha256: str | None = None
+    caption_brain_version: str | None = None
+    caption_final_status: str | None = None
     visual_intelligence_version: str | None = None
     ocr_status: str | None = None
     #: Engine provenance for the visual stage (item 20).

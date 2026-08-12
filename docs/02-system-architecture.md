@@ -114,6 +114,25 @@ AUDIO STREAM VERIFICATION
 The annotation clock (`media/clock.py`) is the single source↔annotation time
 mapping used by shots, endpoint, and audio alike.
 
+## Phase 5 Caption Brain (implemented — see docs/09)
+
+```
+PHASE 1-4 EVIDENCE ARTIFACTS (+ human decisions / human facts / signoff)
+  → CAPTION ELIGIBILITY            (caption/eligibility.py: ONE central policy)
+  → CAPTION FACT GRAPH             (caption/facts.py: typed, eligibility-gated)
+  → CAPTION PLAN                   (caption/planning.py: overview + shot plans)
+  → DETERMINISTIC RENDER           (caption/renderer.py: Manuscript II structure)
+  → COVERAGE + ASSERTION MAP       (caption/coverage.py: omission/hallucination)
+  → M2-* / PLATFORM / GOLDEN GATES (validation/caption_validator.py + friends)
+  → ADVERSARIAL QC + SIGNOFF       (final_caption_validator.py, finalizer.py)
+  → BLOCKED | REVIEW_REQUIRED | READY_FOR_FINAL_REVIEW | READY_TO_ENTER
+```
+
+Orchestrated by `caption_brain.py::finalize_run`, which reloads run artifacts
+(no media re-decoding) — the same path serves both `audit --caption-brain` and
+the fast `finalize RUN_DIR` command. `ready_to_enter.md` exists only when the
+status is truly READY_TO_ENTER.
+
 ## Module boundaries planned, not implemented
 
 Cut detection, adjacent-frame similarity, optical flow, OCR, ASR, diarization, audio

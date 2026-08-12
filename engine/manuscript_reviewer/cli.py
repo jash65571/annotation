@@ -158,6 +158,34 @@ def audit(
             "(reserved; evidence-bundle slice not yet implemented)",
         ),
     ] = False,
+    caption_brain: Annotated[
+        bool,
+        typer.Option(
+            "--caption-brain/--no-caption-brain",
+            help="Run the Phase 5 Caption Brain (facts, plan, render, M2/platform/"
+            "Golden gates, readiness) from the run's evidence artifacts",
+        ),
+    ] = True,
+    human_facts: Annotated[
+        Path | None,
+        typer.Option(
+            "--human-facts",
+            exists=True,
+            dir_okay=False,
+            help="Human-added caption facts JSON (bound to video/rules; stale "
+            "entries are rejected; machine code never creates these)",
+        ),
+    ] = None,
+    final_review: Annotated[
+        Path | None,
+        typer.Option(
+            "--final-review",
+            exists=True,
+            dir_okay=False,
+            help="Manual final-review signoff JSON (required for READY_TO_ENTER; "
+            "machine code never fabricates it)",
+        ),
+    ] = None,
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
 ) -> None:
     """Produce a provably correct frame ledger and audit artifacts for VIDEO."""
@@ -193,6 +221,9 @@ def audit(
         review_decisions_path=review_decisions,
         ocr_enabled=ocr,
         extract_visual_evidence=extract_visual_evidence,
+        caption_brain=caption_brain,
+        human_facts_path=human_facts,
+        final_review_path=final_review,
     )
 
     if result.fatal_error:
@@ -384,12 +415,111 @@ def audit(
             f"\nOverall visual intelligence: [{vi_style}]{vi.overall_status}[/{vi_style}]"
         )
 
+    if result.caption_brain is not None:
+        _print_caption_brain_report(result.caption_brain)
+
     console.print(f"\nArtifacts:\n{result.run_dir}")
     style = _status_style(result.status)
     status_label = "Overall audit status" if shot_analysis else "Overall Phase 1 status"
     console.print(f"\n{status_label}: [{style}]{result.status.value}[/{style}]\n")
 
     if result.status == RunStatus.FAILED:
+        raise typer.Exit(code=1)
+
+
+def _print_caption_brain_report(output: object) -> None:
+    """§97 CLI report. Never prints EXPORT READY unless READY_TO_ENTER."""
+    from .caption_brain import CaptionBrainOutput
+
+    assert isinstance(output, CaptionBrainOutput)
+    r = output.result
+    console.print("\n[bold]CAPTION BRAIN[/bold]")
+    console.print("-" * 13)
+    console.print(f"\nCaption facts: {r.fact_count}")
+    console.print(f"\nEligible: {r.eligible_count}")
+    console.print(f"Review required: {r.review_required_count}")
+    console.print(f"Ineligible: {r.ineligible_count + r.rejected_count}")
+    console.print(f"\nShots: {r.shot_count}")
+    console.print(f"Characters: {r.character_count}")
+    console.print(f"Objects: {r.object_count}")
+    console.print("\nSpeech acts:")
+    console.print(f"  Verified: {r.speech_verified_count}")
+    console.print(f"  Blocked: {r.speech_blocked_count}")
+    console.print("On-screen text:")
+    console.print(f"  Verified: {r.text_verified_count}")
+    console.print(f"  Blocked: {r.text_blocked_count}")
+    console.print("Visual actions:")
+    console.print(f"  Verified: {r.action_verified_count}")
+    console.print(f"  Blocked: {r.action_blocked_count}")
+    console.print("\nM2 validator:")
+    console.print(f"  {r.m2_fail_count} FAIL")
+    console.print(f"  {r.m2_review_count} REVIEW REQUIRED")
+    console.print(f"\nPlatform-semantic: {r.platform_semantic_status}")
+    console.print(f"Golden gate: {r.golden_gate_status}")
+    if r.unresolved_feedback_high:
+        console.print(f"Unresolved HIGH feedback: {r.unresolved_feedback_high}")
+    if r.signoff_present:
+        console.print(
+            f"Final-review signoff: {'STALE' if r.signoff_stale else 'present'}"
+        )
+    readiness_style = {
+        "READY_TO_ENTER": "bold green",
+        "READY_FOR_FINAL_REVIEW": "bold cyan",
+        "REVIEW_REQUIRED": "bold yellow",
+        "BLOCKED": "bold red",
+    }.get(r.readiness.value, "bold")
+    console.print(
+        f"\nFinal: [{readiness_style}]{r.readiness.value}[/{readiness_style}]"
+    )
+    if r.blockers:
+        console.print("\nRemaining before ready:")
+        for blocker in r.blockers[:20]:
+            console.print(f"  - {blocker}")
+        if len(r.blockers) > 20:
+            console.print(f"  ... and {len(r.blockers) - 20} more (see review_report.md)")
+
+
+@app.command()
+def finalize(
+    run_dir: Annotated[
+        Path,
+        typer.Argument(exists=True, file_okay=False, help="Existing audit run directory"),
+    ],
+    review_decisions: Annotated[
+        Path | None,
+        typer.Option("--review-decisions", exists=True, dir_okay=False),
+    ] = None,
+    human_facts: Annotated[
+        Path | None,
+        typer.Option("--human-facts", exists=True, dir_okay=False),
+    ] = None,
+    final_review: Annotated[
+        Path | None,
+        typer.Option("--final-review", exists=True, dir_okay=False),
+    ] = None,
+) -> None:
+    """Fast re-finalization: rebuild facts/plan/caption/gates from existing
+    Phase 1-4 evidence + current human review inputs. Never re-runs media
+    analysis."""
+    from .caption_brain import CaptionBrainError, finalize_run
+
+    console.print("\n[bold]MANUSCRIPT REVIEWER — FINALIZE[/bold]")
+    try:
+        output = finalize_run(
+            run_dir,
+            review_decisions_path=review_decisions,
+            human_facts_path=human_facts,
+            final_review_path=final_review,
+        )
+    except CaptionBrainError as exc:
+        console.print(f"[bold red]FATAL:[/bold red] {exc}")
+        raise typer.Exit(code=2) from exc
+    _print_caption_brain_report(output)
+    total = output.result.stage_timings_seconds.get("caption_brain_total")
+    if total is not None:
+        console.print(f"\nRe-finalization time: {total:.3f}s")
+    console.print(f"\nArtifacts:\n{run_dir / 'caption'}\n")
+    if output.result.readiness.value == "BLOCKED":
         raise typer.Exit(code=1)
 
 

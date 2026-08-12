@@ -252,6 +252,21 @@ reviewed, all flags at zero, Final Review clean, result code copied verbatim
 (MASTER-REF §8, §12). Target score: 5/5 — "when in doubt, add the detail and verify
 the stamp" (MASTER-REF §10).
 
+## Phase 5 caption-eligibility law
+
+The Caption Brain (docs/09) enforces **CANDIDATE ≠ FINAL FACT** structurally:
+`CaptionEligibility` ("may this become final caption text?") is a separate
+vocabulary from `EvidenceStatus` ("what does the evidence say?"). Every final
+caption fact carries an explicit eligibility basis — deterministic factual
+evidence, an APPLIED bound human decision, explicit HUMAN_VERIFICATION
+evidence, a human-added bound fact, or a controlling-source rule. A mutated
+machine enum (e.g. `REGULAR_SUPPORTED`) alone never proves human verification;
+provenance is inspected. Machine ASR/OCR text, language guesses, diarization,
+generic action candidates, ambiguous identities, unresolved camera semantics
+and speed candidates are never final on their own, and unresolved transitions
+are never defaulted to Hard cut. `ready_to_enter.md` exists only when the
+caption is truly READY_TO_ENTER (valid bound `FinalReviewSignoff` included).
+
 ## Documented source conflicts
 See `engine/manuscript_reviewer/rules/manuscript_v1.yaml → known_conflicts`:
 [inaudible] vs `<unintelligible>`; Movements+Audio vs Action & Audio; pronouns in old

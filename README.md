@@ -7,7 +7,11 @@ provenance, independent frame-count cross-checks, and audit artifacts — plus t
 cut candidates, gapless shot proposals — `docs/06`) and the **Audio Truth Engine**
 (exact sample-anchored PCM evidence, waveform/spectrogram/energy, local
 faster-whisper + WhisperX alignment in isolated uv environments, boundary audio
-continuity, manual review queue — `docs/07`).
+continuity, manual review queue — `docs/07`), **Visual Review Intelligence**
+(seed claims, structural comparison, KEEP/FIX/REDO proposals — `docs/08`), and
+the **Caption Brain** (eligibility-gated caption facts, deterministic
+Manuscript II rendering, M2/platform/Golden gates, honest ready states —
+`docs/09`).
 
 Not a generic captioning app. Not a task-submission bot. All processing is local:
 no network calls, no telemetry, no accounts, no database.
@@ -40,6 +44,11 @@ uv run manuscript-reviewer audit input.mp4 --no-shot-analysis    # Phase 1 ledge
 uv run manuscript-reviewer audit input.mp4 --candidate-sensitivity high   # max recall
 uv run manuscript-reviewer audit input.mp4 --no-asr              # audio evidence without ASR
 uv run manuscript-reviewer audit input.mp4 --asr-model tiny --asr-device cpu
+uv run manuscript-reviewer audit input.mp4 --seed seed.md --feedback feedback.txt `
+    --review-decisions decisions.json --human-facts human_facts.json   # Phase 1→5
+uv run manuscript-reviewer finalize artifacts\input\<run_id> `
+    --review-decisions decisions.json --human-facts human_facts.json `
+    --final-review final_review.json    # fast re-finalization, no media re-analysis
 uv run manuscript-reviewer version
 uv run python scripts/benchmark.py                                # Phase 2 runtime benchmark
 uv run pytest -m asr_integration                                  # real local ASR tests (needs models)
@@ -110,6 +119,8 @@ Each run writes `artifacts/<video_stem>/<run_id>/`:
 | `shot_evidence/candidate_NNNN/` | labeled `pair.png`, `strip_short.png`, `strip_context.png`, `evidence.json` |
 | `audio/` | `source.wav`, `asr.wav`, audio frame ledger, `audio_timeline.json`, 10 ms energy CSV, waveform/spectrogram/energy PNGs, regions, transients, `speech_regions.csv`, `boundary_audio_evidence.json`, `audio_review_queue.json`, `review_clips/`, `audio_qc.json` |
 | `audio/asr/` | status + runtime metadata, faster-whisper transcript/segments/words, WhisperX-aligned versions, `transcript_best.*` (ASR_EVIDENCE_ONLY) |
+| `caption/` | Phase 5: caption facts + eligibility, plan, `draft_review_only.md` **or** `ready_to_enter.md` (only when truly ready), assertion map, coverage, seed change log, M2/platform/Golden reports, adversarial QC, `final_status.json`, `caption_manifest.json` |
+| `review_report.md` | reviewer packet: blockers, KEEP/FIX/REDO, validator + gate findings (rationale never enters caption fields) |
 
 ## Development
 
@@ -136,8 +147,9 @@ Note: the raw Manuscript II reference documents are local-only and gitignored
 - `docs/01-rule-hierarchy.md` — source priority and conflict handling
 - `docs/02-system-architecture.md` — current slice + full future pipeline
 - `docs/03-data-model.md` — the typed schema (Phase 1 and future)
-- `docs/04-development-roadmap.md` — Phases 2–5
+- `docs/04-development-roadmap.md` — Phases 2–6
 - `docs/05-phase-1-verification.md` — validators, thresholds, cross-check rationale
 - `docs/06-shot-truth-engine.md` — Phase 2: metrics, verifier, transition policy, failure modes
 - `docs/07-audio-truth-engine.md` — Phase 3: audio timeline, ASR workers, language safety, review queue
 - `docs/08-visual-review-intelligence.md` — Phase 4: seed parsing/claims, structural comparison, KEEP/FIX/REDO proposals, review queue, frame observations
+- `docs/09-caption-brain.md` — Phase 5: caption eligibility, fact graph, deterministic renderer, M2/platform/Golden gates, signoff and ready states
