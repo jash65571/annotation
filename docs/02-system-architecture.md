@@ -94,6 +94,26 @@ Each later module consumes **evidence records** (frames, PTS ranges, audio range
 never another model's prose. `EvidenceReference` is the interchange type;
 `MODEL_OBSERVATION` evidence can propose but never verify (see `models/evidence.py`).
 
+## Phase 3 Audio Truth Engine (implemented — see docs/07)
+
+```
+AUDIO STREAM VERIFICATION
+  → AUDIO FRAME LEDGER              (audio/probe.py: every decoded audio frame, exact PTS)
+  → LOSSLESS PCM                    (audio/decode.py: source.wav evidence + asr.wav)
+  → EXACT SAMPLE ANCHOR             (audio/timeline.py: sample ↔ PTS ↔ annotation time)
+  → 10ms ENERGY / WAVEFORM / SPECTROGRAM  (metrics.py, render.py — annotation clock)
+  → SILENCE / TRANSIENT / SIGNAL REGIONS  (regions.py — signal classes, never semantics)
+  → faster-whisper WORKER           (isolated uv env, pinned 1.2.1, transcribe-only)
+  → WhisperX ALIGNMENT WORKER       (isolated uv env, pinned 3.4.3, wording preserved)
+  → SPEECH REGIONS + VAD RECALL DEFENSE   (speech.py)
+  → SHOT-BOUNDARY AUDIO CONTINUITY  (boundary_audio.py — resolves Phase 2 audio flags)
+  → REVIEW QUEUE + CLIPS            (review_queue.py)
+  → P3 VALIDATION + audio_qc.json   (validation/audio_validator.py)
+```
+
+The annotation clock (`media/clock.py`) is the single source↔annotation time
+mapping used by shots, endpoint, and audio alike.
+
 ## Module boundaries planned, not implemented
 
 Cut detection, adjacent-frame similarity, optical flow, OCR, ASR, diarization, audio

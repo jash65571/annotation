@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ..media.clock import AnnotationClock
 from ..media.timestamps import format_manuscript_display
 from ..models.frame import FrameLedger
 from ..models.shot_truth import (
@@ -75,6 +76,7 @@ def generate_candidates(
     flash_regions: list[FlashRegion],
     ledger: FrameLedger,
     sensitivity: Sensitivity,
+    clock: AnnotationClock,
 ) -> tuple[list[BoundaryCandidate], int]:
     """Generate merged boundary candidates.
 
@@ -106,6 +108,11 @@ def generate_candidates(
         sources = sorted(set(by_pair[pair_index]))
         right = ledger.frames[pair.right_frame_index]
         score = max(base.diff_z, base.hist_z, float(pair.phash_hamming) / 8.0)
+        annotation_time = (
+            clock.to_annotation(right.pts_time_seconds)
+            if right.pts_time_seconds is not None
+            else None
+        )
         candidates.append(
             BoundaryCandidate(
                 candidate_id=f"cand_{seq:04d}",
@@ -114,9 +121,10 @@ def generate_candidates(
                 left_pts=pair.left_pts,
                 right_pts=pair.right_pts,
                 boundary_time_exact=right.pts_time_seconds,
+                boundary_annotation_time=annotation_time,
                 boundary_time_manuscript=(
-                    format_manuscript_display(right.pts_time_seconds)
-                    if right.pts_time_seconds is not None
+                    format_manuscript_display(annotation_time)
+                    if annotation_time is not None
                     else None
                 ),
                 candidate_sources=sources,

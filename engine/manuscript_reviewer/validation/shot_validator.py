@@ -4,7 +4,9 @@ transition legality, evidence completeness, and the no-hidden-uncertainty rule."
 from __future__ import annotations
 
 import itertools
+from fractions import Fraction
 
+from ..media.clock import AnnotationClock
 from ..models.frame import FrameLedger
 from ..models.shot_truth import (
     BoundaryCandidate,
@@ -103,22 +105,26 @@ def validate_shot_timeline(
     shots: list[ShotProposal],
     candidates: list[BoundaryCandidate],
     annotation_endpoint: object,
+    clock: AnnotationClock,
 ) -> list[ValidatorIssue]:
     """Continuous annotation-interval validation (separate from frame-range
     ownership validation): the timeline must be gapless, overlap-free, anchored
-    to boundary exact times, and end at the canonical annotation endpoint."""
+    to boundary exact times, and end at the canonical annotation endpoint.
+    All comparisons use the ANNOTATION clock."""
     issues: list[ValidatorIssue] = []
     if not shots or not ledger.frames:
         return issues
 
-    timeline_start = ledger.frames[0].pts_time_seconds
-    if timeline_start is not None and shots[0].start_exact != timeline_start:
+    if (
+        ledger.frames[0].pts_time_seconds is not None
+        and shots[0].start_exact != Fraction(0)
+    ):
         issues.append(
             _issue(
                 "P2-TIME-001",
                 Severity.FAIL,
                 "shot 1",
-                "Shot 1 start_exact does not equal the media timeline start.",
+                "Shot 1 start_exact does not equal the annotation timeline start (0).",
             )
         )
 
@@ -140,7 +146,10 @@ def validate_shot_timeline(
         boundary = by_id.get(current.supporting_boundary_id or "")
         if boundary is None:
             continue
-        boundary_time = ledger.frames[boundary.right_frame_index].pts_time_seconds
+        source_boundary = ledger.frames[boundary.right_frame_index].pts_time_seconds
+        boundary_time = (
+            clock.to_annotation(source_boundary) if source_boundary is not None else None
+        )
         if prev.end_exact != boundary_time:
             issues.append(
                 _issue(

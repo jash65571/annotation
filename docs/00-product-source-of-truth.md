@@ -37,6 +37,16 @@ Converted from the Manuscript II reference material into software requirements.
   Descript fallback; ASR is evidence only; the full audit continues after a local
   ASR failure.
 
+## Audio workflow (rules v1.2.0, AUDIT-NOTES/QC-REPORT provenance)
+
+The approved local audio workflow is
+`FFmpeg → faster-whisper (large-v3-turbo) → WhisperX forced alignment` in
+isolated uv-bootstrapped environments (AUDIT-NOTES §5). Transcription only —
+never translation. Transcripts are wording leads, not frame evidence
+(QC-REPORT). When ASR cannot run, waveform/spectrogram/10 ms-energy evidence
+still completes and dialogue remains provisional until source-audio
+verification — never export-ready on ASR output alone.
+
 ## 1. Product purpose
 Produce extremely precise, evidence-backed Manuscript II reviewer captions from short
 videos (~10–20 s) and seeded caption data, reducing a ~40-minute manual review to a

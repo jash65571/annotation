@@ -29,7 +29,7 @@ from tests.test_shot_truth import SIZE, _lavfi_concat, _lavfi_filtered, analyze
 
 def test_current_controlling_rule_keys_load() -> None:
     rules = load_rules()
-    assert rules.version == "1.1.0"
+    assert rules.version == "1.2.0"
     assert rules.get("source_hierarchy.newest_official_workflow_outranks_older") is True
     assert rules.get("source_hierarchy.actual_media_is_factual_truth") is True
     assert rules.get("source_hierarchy.golden_examples_are_floor_not_ceiling") is True
@@ -249,7 +249,7 @@ def test_no_direct_subprocess_outside_wrapper() -> None:
     engine_root = Path(__file__).parent.parent / "engine" / "manuscript_reviewer"
     offenders = []
     for path in engine_root.rglob("*.py"):
-        if path.name == "ffmpeg_tools.py":
+        if path.name == "ffmpeg_tools.py" or ".venv" in path.parts:
             continue
         text = path.read_text(encoding="utf-8")
         for needle in ("subprocess.run(", "subprocess.Popen(", "os.system(", "shell=True"):

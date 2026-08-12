@@ -1,0 +1,12 @@
+# Isolated faster-whisper worker environment (uv-managed).
+# Pinned tested set — see docs/07-audio-truth-engine.md. Do not float.
+[project]
+name = "mr-fw-worker"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "faster-whisper==1.2.1",
+]
+
+[tool.uv]
+package = false

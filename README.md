@@ -3,9 +3,11 @@
 A frame-accurate **Manuscript II review and evidence engine**. Give it a video and it
 produces a provably correct frame ledger with exact media metadata, SHA-256
 provenance, independent frame-count cross-checks, and audit artifacts — plus the
-**Shot Truth Engine**: deterministic adjacent-frame metrics, adversarially verified
-cut candidates, gapless shot proposals, and labeled visual evidence for every
-boundary (see `docs/06-shot-truth-engine.md`).
+**Shot Truth Engine** (deterministic adjacent-frame metrics, adversarially verified
+cut candidates, gapless shot proposals — `docs/06`) and the **Audio Truth Engine**
+(exact sample-anchored PCM evidence, waveform/spectrogram/energy, local
+faster-whisper + WhisperX alignment in isolated uv environments, boundary audio
+continuity, manual review queue — `docs/07`).
 
 Not a generic captioning app. Not a task-submission bot. All processing is local:
 no network calls, no telemetry, no accounts, no database.
@@ -36,9 +38,19 @@ uv run manuscript-reviewer audit input.mp4 --seed seed.json      # hash+copy see
 uv run manuscript-reviewer audit input.mp4 --extract-frames      # every frame as PNG evidence
 uv run manuscript-reviewer audit input.mp4 --no-shot-analysis    # Phase 1 ledger only
 uv run manuscript-reviewer audit input.mp4 --candidate-sensitivity high   # max recall
+uv run manuscript-reviewer audit input.mp4 --no-asr              # audio evidence without ASR
+uv run manuscript-reviewer audit input.mp4 --asr-model tiny --asr-device cpu
 uv run manuscript-reviewer version
 uv run python scripts/benchmark.py                                # Phase 2 runtime benchmark
+uv run pytest -m asr_integration                                  # real local ASR tests (needs models)
 ```
+
+Audio analysis runs by default. ASR runs locally in isolated uv worker
+environments (faster-whisper 1.2.1, default model `large-v3-turbo`; WhisperX
+3.4.3 alignment). First use downloads packages/models (`--no-asr-bootstrap`
+to forbid); task media is never uploaded anywhere and there is no cloud or
+Descript fallback — an ASR failure degrades to waveform/spectrogram/energy
+evidence and manual review.
 
 Shot analysis runs by default and reports supported boundaries, rejected false
 positives, and review-required candidates with structured reason codes. Expert
@@ -96,6 +108,8 @@ Each run writes `artifacts/<video_stem>/<run_id>/`:
 | `transition_evidence.json` | per-boundary transition proposals, fades, blends |
 | `shot_qc.json` | full Shot Truth result: counts, statuses, every candidate |
 | `shot_evidence/candidate_NNNN/` | labeled `pair.png`, `strip_short.png`, `strip_context.png`, `evidence.json` |
+| `audio/` | `source.wav`, `asr.wav`, audio frame ledger, `audio_timeline.json`, 10 ms energy CSV, waveform/spectrogram/energy PNGs, regions, transients, `speech_regions.csv`, `boundary_audio_evidence.json`, `audio_review_queue.json`, `review_clips/`, `audio_qc.json` |
+| `audio/asr/` | status + runtime metadata, faster-whisper transcript/segments/words, WhisperX-aligned versions, `transcript_best.*` (ASR_EVIDENCE_ONLY) |
 
 ## Development
 
@@ -125,3 +139,4 @@ Note: the raw Manuscript II reference documents are local-only and gitignored
 - `docs/04-development-roadmap.md` — Phases 2–5
 - `docs/05-phase-1-verification.md` — validators, thresholds, cross-check rationale
 - `docs/06-shot-truth-engine.md` — Phase 2: metrics, verifier, transition policy, failure modes
+- `docs/07-audio-truth-engine.md` — Phase 3: audio timeline, ASR workers, language safety, review queue

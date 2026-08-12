@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..artifacts import shot_writer
+from ..media.clock import AnnotationClock
 from ..media.endpoint import compute_annotation_endpoint
 from ..models.frame import FrameLedger
 from ..models.media import MediaInfo
@@ -61,6 +62,7 @@ def run_shot_analysis(
     timings: dict[str, float] = {}
     sensitivity = Sensitivity.from_name(sensitivity_name)
     has_audio = bool(media.audio_streams)
+    clock = AnnotationClock.from_ledger(ledger)
 
     # --- metric decode ---
     start = time.perf_counter()
@@ -111,7 +113,7 @@ def run_shot_analysis(
     # --- candidate generation (recall-first) ---
     start = time.perf_counter()
     candidates, raw_count = generate_candidates(
-        pairs, baselines, flash_regions, ledger, sensitivity
+        pairs, baselines, flash_regions, ledger, sensitivity, clock
     )
     _timed(timings, "shot_candidates", start)
 
@@ -126,6 +128,7 @@ def run_shot_analysis(
         fades=fades,
         blends=blends,
         has_audio=has_audio,
+        clock=clock,
     )
     verified: list[BoundaryCandidate] = verify_all(ctx, candidates)
     _timed(timings, "shot_verification", start)
@@ -154,7 +157,7 @@ def run_shot_analysis(
 
     # --- canonical annotation endpoint + shot proposals ---
     start = time.perf_counter()
-    endpoint = compute_annotation_endpoint(media, ledger, video_path.stem)
+    endpoint = compute_annotation_endpoint(media, ledger, video_path.stem, clock)
     if endpoint.conflict:
         issues.append(
             ValidatorIssue(
@@ -167,7 +170,9 @@ def run_shot_analysis(
                 ),
             )
         )
-    shots: list[ShotProposal] = build_shot_proposals(ledger, verified, endpoint.endpoint)
+    shots: list[ShotProposal] = build_shot_proposals(
+        ledger, verified, endpoint.endpoint, clock
+    )
     _timed(timings, "shot_proposals", start)
 
     # --- validation ---
@@ -176,7 +181,9 @@ def run_shot_analysis(
     issues.extend(shot_validator.validate_candidates(ledger, verified))
     issues.extend(shot_validator.validate_shots(ledger, shots, verified))
     issues.extend(
-        shot_validator.validate_shot_timeline(ledger, shots, verified, endpoint.endpoint)
+        shot_validator.validate_shot_timeline(
+            ledger, shots, verified, endpoint.annotation_endpoint, clock
+        )
     )
     if extract_evidence:
         issues.extend(shot_validator.validate_evidence(verified))
@@ -198,7 +205,8 @@ def run_shot_analysis(
         ),
         proposed_shot_count=len(shots),
         overall_status=overall,
-        annotation_endpoint_exact=endpoint.endpoint,
+        annotation_timeline_origin=clock.origin,
+        annotation_endpoint_exact=endpoint.annotation_endpoint,
         annotation_endpoint_method=endpoint.method,
         annotation_endpoint_conflict=endpoint.conflict,
         candidates=verified,

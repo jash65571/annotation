@@ -1,0 +1,22 @@
+# Isolated WhisperX alignment worker environment (uv-managed).
+# Pinned tested set — see docs/07-audio-truth-engine.md. Do not float.
+# CPU-only torch keeps the environment reproducible and avoids CUDA drift.
+[project]
+name = "mr-wx-worker"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "whisperx==3.4.3",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+torchaudio = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

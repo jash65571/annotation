@@ -19,9 +19,12 @@ from pathlib import Path
 
 from . import __version__
 from .artifacts import writer
+from .audio.asr.runtime import ASRConfig
+from .audio.engine import run_audio_analysis
 from .media import frames as frames_mod
 from .media import probe as probe_mod
 from .media.ffmpeg_tools import FFmpegNotFoundError, ToolExecutionError, find_tool, tool_version
+from .models.audio import AudioQCResult
 from .models.frame import FrameLedger
 from .models.media import MediaInfo
 from .models.run import RunManifest
@@ -59,6 +62,7 @@ class AuditResult:
     fatal_error: str | None = None
     stage_timings: dict[str, float] = field(default_factory=dict)
     shot_truth: ShotTruthResult | None = None
+    audio_truth: AudioQCResult | None = None
 
 
 class _StageTimer:
@@ -82,6 +86,9 @@ def run_audit(
     shot_sensitivity: str = "normal",
     extract_shot_evidence: bool = True,
     use_scdet: bool = True,
+    audio_analysis: bool = False,
+    asr_enabled: bool = True,
+    asr_config: ASRConfig | None = None,
 ) -> AuditResult:
     """Run the full audit (media verification, frame ledger, optional shot
     truth) and write all artifacts.
@@ -208,6 +215,29 @@ def run_audit(
             result.shot_truth = shot_output.result
             checks_run.append("shot_truth")
 
+        # --- AUDIO TRUTH (Phase 3) ---
+        if audio_analysis and ledger is not None and media is not None:
+            with _StageTimer(timings, "audio_analysis_total"):
+                audio_output = run_audio_analysis(
+                    video_path,
+                    run_dir,
+                    media,
+                    ledger,
+                    result.shot_truth,
+                    (
+                        result.shot_truth.annotation_endpoint_exact
+                        if result.shot_truth is not None
+                        else None
+                    ),
+                    asr_enabled=asr_enabled,
+                    asr_config=asr_config,
+                )
+            timings.update(audio_output.stage_timings)
+            issues.extend(audio_output.issues)
+            artifact_paths.extend(audio_output.artifact_paths)
+            result.audio_truth = audio_output.result
+            checks_run.append("audio_truth")
+
         # --- SOURCE STABILITY ---
         with _StageTimer(timings, "rehash_source"):
             source_hash_after = writer.sha256_file(video_path)
@@ -231,6 +261,14 @@ def run_audit(
                 status = RunStatus.FAILED
             elif (
                 result.shot_truth.overall_status == "REVIEW_REQUIRED"
+                and status == RunStatus.PASS
+            ):
+                status = RunStatus.REVIEW_REQUIRED
+        if result.audio_truth is not None:
+            if result.audio_truth.overall_status == "FAILED":
+                status = RunStatus.FAILED
+            elif (
+                result.audio_truth.overall_status == "REVIEW_REQUIRED"
                 and status == RunStatus.PASS
             ):
                 status = RunStatus.REVIEW_REQUIRED

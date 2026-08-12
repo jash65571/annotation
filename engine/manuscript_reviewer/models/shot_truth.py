@@ -149,9 +149,11 @@ class BoundaryCandidate(StrictModel):
     right_frame_index: int
     left_pts: int | None
     right_pts: int | None
-    #: Exact boundary time = incoming/right frame PTS time.
+    #: Exact boundary time = incoming/right frame PTS time (SOURCE clock).
     boundary_time_exact: ExactFraction | None
-    #: Manuscript 0.1 s display projection (string, e.g. "11.8s"). Display only.
+    #: The same instant on the annotation clock (source - origin).
+    boundary_annotation_time: ExactFraction | None = None
+    #: Manuscript 0.1 s display projection of the ANNOTATION time. Display only.
     boundary_time_manuscript: str | None
     candidate_sources: list[str]
     metric_snapshot: PairMetrics
@@ -172,26 +174,32 @@ class ShotProposal(StrictModel):
     A. **Inclusive frame ownership** — ``start_frame_index``/``end_frame_index``
        are the first and last enumerated frames belonging to this shot.
     B. **Continuous annotation interval** — ``start_exact``/``end_exact`` are
-       timeline boundary times: ``start_exact`` is the incoming boundary time
-       (PTS of the first owned frame), a non-final ``end_exact`` is the NEXT
-       boundary's exact time (PTS of the next shot's first frame), and the
-       final shot's ``end_exact`` is the canonical media annotation endpoint.
-       Adjacent shots therefore satisfy prev.end_exact == next.start_exact.
+       timeline boundary times on the ANNOTATION clock (source time minus the
+       annotation timeline origin; identical to source time for zero-origin
+       media): ``start_exact`` is the incoming boundary time, a non-final
+       ``end_exact`` is the NEXT boundary's exact time, and the final shot's
+       ``end_exact`` is the canonical media annotation endpoint. Adjacent
+       shots therefore satisfy prev.end_exact == next.start_exact.
 
-    The final owned frame's own start time is preserved separately as
-    ``last_owned_frame_start_exact`` — it is NEVER the interval end.
+    Raw SOURCE-clock values are preserved unmodified in
+    ``source_start_exact``/``source_end_exact``; the final owned frame's own
+    source start time is ``last_owned_frame_start_exact`` — it is NEVER the
+    interval end.
     """
 
     shot_index: int  # 1-based, matching Manuscript "Shot N"
     #: Frame range: first and last enumerated frame indexes inside this shot.
     start_frame_index: int
     end_frame_index: int
-    #: Annotation interval start = incoming boundary exact time.
+    #: Annotation interval start = incoming boundary time (annotation clock).
     start_exact: ExactFraction | None
-    #: Annotation interval end = next boundary exact time, or the canonical
-    #: media annotation endpoint for the final shot.
+    #: Annotation interval end = next boundary time, or the canonical media
+    #: annotation endpoint for the final shot (annotation clock).
     end_exact: ExactFraction | None
-    #: Start PTS time of the final owned frame (frame ownership evidence).
+    #: Same interval bounds on the raw SOURCE clock (never overwritten).
+    source_start_exact: ExactFraction | None = None
+    source_end_exact: ExactFraction | None = None
+    #: SOURCE-clock start PTS time of the final owned frame (ownership evidence).
     last_owned_frame_start_exact: ExactFraction | None
     start_manuscript: str | None
     end_manuscript: str | None
@@ -215,7 +223,10 @@ class ShotTruthResult(StrictModel):
     review_required_count: int
     proposed_shot_count: int
     overall_status: str  # PASS | REVIEW_REQUIRED | FAILED
-    #: Canonical media annotation endpoint used as the final shot's end_exact.
+    #: Source PTS time of the first presented video frame (annotation clock origin).
+    annotation_timeline_origin: ExactFraction | None = None
+    #: Canonical media annotation endpoint (ANNOTATION clock) used as the final
+    #: shot's end_exact.
     annotation_endpoint_exact: ExactFraction | None = None
     annotation_endpoint_method: str | None = None
     annotation_endpoint_conflict: bool = False

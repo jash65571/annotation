@@ -14,14 +14,22 @@
 #   PROJ-RULES  = MANUSCRIPT-II-PROJECT-RULES-CURRENT.md (NOT YET LOCALLY SUPPLIED)
 #   AUDIT-RM    = MANUSCRIPT_AUDIT_README-v3.2.md (NOT YET LOCALLY SUPPLIED)
 #   CUR-SRC     = MANUSCRIPT-II-CURRENT-SOURCES.md (NOT YET LOCALLY SUPPLIED)
-#   TASK-FEED   = current task-specific workflow feedback (Phase 2.1 hardening
-#                 directive, 2026-08-12) — highest-priority source tier; used
+#   TASK-FEED   = current task-specific workflow feedback (Phase 2.1/3
+#                 directives, 2026-08-12) — highest-priority source tier; used
 #                 for rules whose controlling documents are not yet supplied.
+#   AUDIT-NOTES = completed-task audit notes d97b1fc6c006_2.0_18.0_full_audit_notes.md
+#                 (local working artifact; §5 documents the approved local audio
+#                 workflow: FFmpeg -> faster-whisper large-v3-turbo -> WhisperX
+#                 forced alignment, isolated uv bootstrap, no cloud/Descript
+#                 fallback, waveform/spectrogram/10ms-RMS fallback evidence).
+#   QC-REPORT   = completed-task final QC report 57d9271027f3 (local working
+#                 artifact; confirms no-Descript/no-cloud rule and transcripts
+#                 as wording leads, not frame evidence).
 #
 # Conflict policy (docs/01-rule-hierarchy.md): newest live-tool rule wins over
 # older example syntax. Conflicts are recorded under `known_conflicts`.
 
-rules_version: "1.1.0"
+rules_version: "1.2.0"
 sources:
   - id: MASTER-REF
     file: references/manuscript-ii-master-reference.md
@@ -211,16 +219,22 @@ validation_scope:
   machine_validator_replaces_platform_validation: false
 
 audio_tooling:
-  # TASK-FEED / PROJ-RULES: Descript is disabled by default and a local ASR
-  # failure never authorizes a cloud or Descript fallback.
+  # AUDIT-NOTES §5 / QC-REPORT / TASK-FEED: Descript is disabled by default and
+  # a local ASR failure never authorizes a cloud or Descript fallback.
   descript_enabled: false
   local_asr_failure_authorizes_cloud_fallback: false
   local_asr_failure_authorizes_descript_fallback: false
-  # ASR output is evidence only — never factual truth on its own.
+  # QC-REPORT / TASK-FEED: ASR output is evidence only — wording leads, never
+  # factual truth on its own.
   asr_is_evidence_only: true
-  # The full audit continues after a local ASR failure (audio evidence
-  # degrades; the run does not abort).
+  # AUDIT-NOTES §5: the full audit continues after a local ASR failure (audio
+  # evidence degrades to waveform/spectrogram/energy; the run does not abort).
   full_audit_continues_after_asr_failure: true
+  # AUDIT-NOTES §5: the approved local audio workflow.
+  approved_workflow: "ffmpeg -> faster-whisper -> whisperx-forced-alignment"
+  default_asr_model: "large-v3-turbo"
+  asr_task: "transcribe"          # never translate (TASK-FEED)
+  asr_isolation: "uv-bootstrap"   # isolated uv worker environments
 
 review:
   # HANDBOOK §1: the three valid reviewer outcomes.

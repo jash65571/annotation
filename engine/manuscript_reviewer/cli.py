@@ -10,6 +10,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from .audio.asr.runtime import ASRConfig
 from .models.validation import RunStatus, Severity
 from .pipeline import run_audit
 
@@ -75,6 +76,40 @@ def audit(
         bool,
         typer.Option("--scdet/--no-scdet", help="Include the ffmpeg scdet evidence pass"),
     ] = True,
+    audio_analysis: Annotated[
+        bool,
+        typer.Option(
+            "--audio-analysis/--no-audio-analysis",
+            help="Run the Phase 3 Audio Truth Engine",
+        ),
+    ] = True,
+    asr: Annotated[
+        bool,
+        typer.Option(
+            "--asr/--no-asr",
+            help="Run local ASR (waveform/energy/spectrogram analysis still runs without it)",
+        ),
+    ] = True,
+    asr_bootstrap: Annotated[
+        bool,
+        typer.Option(
+            "--asr-bootstrap/--no-asr-bootstrap",
+            help="Allow uv to create ASR worker environments / download models",
+        ),
+    ] = True,
+    asr_model: Annotated[
+        str, typer.Option("--asr-model", help="faster-whisper model")
+    ] = "large-v3-turbo",
+    asr_language: Annotated[
+        str | None,
+        typer.Option("--asr-language", help="Force transcription language (default: detect)"),
+    ] = None,
+    asr_device: Annotated[
+        str, typer.Option("--asr-device", help="auto|cpu|cuda")
+    ] = "auto",
+    asr_compute_type: Annotated[
+        str, typer.Option("--asr-compute-type", help="auto|int8|float16|...")
+    ] = "auto",
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
 ) -> None:
     """Produce a provably correct frame ledger and audit artifacts for VIDEO."""
@@ -95,6 +130,15 @@ def audit(
         shot_sensitivity=candidate_sensitivity,
         extract_shot_evidence=extract_shot_evidence,
         use_scdet=scdet,
+        audio_analysis=audio_analysis,
+        asr_enabled=asr,
+        asr_config=ASRConfig(
+            model=asr_model,
+            device=asr_device,
+            compute_type=asr_compute_type,
+            language=asr_language,
+            bootstrap=asr_bootstrap,
+        ),
     )
 
     if result.fatal_error:
@@ -206,6 +250,50 @@ def audit(
         console.print(
             f"\nOverall shot status: [{shot_style}]{shot.overall_status}[/{shot_style}]"
         )
+
+    audio = result.audio_truth
+    if audio is not None:
+        console.print("\n[bold]AUDIO TRUTH[/bold]")
+        console.print("-" * 11)
+        if audio.audio_status.value == "NO_AUDIO_STREAM":
+            console.print("\nAudio stream: none (valid; no audio analysis performed)")
+        else:
+            timeline = audio.timeline
+            if timeline is not None:
+                console.print(
+                    f"\nEvidence PCM: {timeline.evidence_sample_rate} Hz "
+                    f"{timeline.evidence_channels}ch"
+                )
+                console.print(f"Samples: {timeline.evidence_sample_count}")
+                console.print(
+                    f"Timeline offset: {float(timeline.annotation_audio_offset):.6f}s"
+                )
+            console.print(f"\nEnergy bins: {audio.energy_bin_count}")
+            console.print(f"Signal regions: {audio.region_count}")
+            console.print(f"Transient candidates: {audio.transient_count}")
+            console.print(f"\nfaster-whisper: {audio.asr_status.value}")
+            if audio.language is not None and audio.language.language_candidate:
+                console.print(
+                    f"Language candidate: {audio.language.language_candidate} "
+                    f"(machine evidence only, "
+                    f"{audio.language.language_review_status.value})"
+                )
+            console.print(f"WhisperX alignment: {audio.alignment_status.value}")
+            console.print(f"\nSpeech regions: {audio.speech_region_count}")
+            console.print(f"Review required: {audio.review_item_count}")
+            console.print(
+                f"Visual boundaries checked for audio continuity: "
+                f"{audio.boundaries_checked}"
+            )
+            audio_style = {
+                "PASS": "bold green",
+                "REVIEW_REQUIRED": "bold yellow",
+                "FAILED": "bold red",
+            }.get(audio.overall_status, "bold")
+            console.print(
+                f"\nOverall audio status: "
+                f"[{audio_style}]{audio.overall_status}[/{audio_style}]"
+            )
 
     console.print(f"\nArtifacts:\n{result.run_dir}")
     style = _status_style(result.status)

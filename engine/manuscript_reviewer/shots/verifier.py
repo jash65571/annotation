@@ -16,6 +16,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from ..media.clock import AnnotationClock
 from ..media.timestamps import format_manuscript_display
 from ..models.frame import FrameLedger
 from ..models.shot_truth import (
@@ -57,6 +58,18 @@ class VerifierContext:
     fades: list[FadeEvidence]
     blends: list[BlendEvidence]
     has_audio: bool
+    clock: AnnotationClock
+
+
+def _annotation_fields(
+    ctx: VerifierContext, right_frame_index: int
+) -> tuple[object, object, str | None]:
+    """(source exact, annotation exact, manuscript display) for a right frame."""
+    source_time = ctx.ledger.frames[right_frame_index].pts_time_seconds
+    if source_time is None:
+        return None, None, None
+    annotation_time = ctx.clock.to_annotation(source_time)
+    return source_time, annotation_time, format_manuscript_display(annotation_time)
 
 
 def _frame_similarity(ctx: VerifierContext, a: int, b: int) -> tuple[int, float]:
@@ -433,6 +446,7 @@ def build_fade_boundaries(
             continue
         left_rec = ctx.ledger.frames[left_index]
         right_rec = ctx.ledger.frames[right_index]
+        _, fade_annotation, fade_display = _annotation_fields(ctx, right_index)
         pair = ctx.pairs[left_index]
         base = ctx.baselines[left_index]
         transition = TransitionEvidence(
@@ -455,11 +469,8 @@ def build_fade_boundaries(
                 left_pts=left_rec.pts,
                 right_pts=right_rec.pts,
                 boundary_time_exact=right_rec.pts_time_seconds,
-                boundary_time_manuscript=(
-                    format_manuscript_display(right_rec.pts_time_seconds)
-                    if right_rec.pts_time_seconds is not None
-                    else None
-                ),
+                boundary_annotation_time=fade_annotation,  # type: ignore[arg-type]
+                boundary_time_manuscript=fade_display,
                 candidate_sources=["internal_fade"],
                 metric_snapshot=pair,
                 local_baseline=base,
@@ -496,6 +507,7 @@ def _build_blend_candidates(
         )
         pair = ctx.pairs[peak_index]
         right_rec = ctx.ledger.frames[pair.right_frame_index]
+        _, blend_annotation, blend_display = _annotation_fields(ctx, pair.right_frame_index)
         extras.append(
             BoundaryCandidate(
                 candidate_id=f"cand_{seq:04d}",
@@ -504,11 +516,8 @@ def _build_blend_candidates(
                 left_pts=pair.left_pts,
                 right_pts=pair.right_pts,
                 boundary_time_exact=right_rec.pts_time_seconds,
-                boundary_time_manuscript=(
-                    format_manuscript_display(right_rec.pts_time_seconds)
-                    if right_rec.pts_time_seconds is not None
-                    else None
-                ),
+                boundary_annotation_time=blend_annotation,  # type: ignore[arg-type]
+                boundary_time_manuscript=blend_display,
                 candidate_sources=["internal_blend"],
                 metric_snapshot=pair,
                 local_baseline=ctx.baselines[peak_index],
