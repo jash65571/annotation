@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .artifacts import review_writer, visual_writer
+from .camera.segmentation import analyze_camera_motion
 from .media.clock import AnnotationClock
 from .models.audio import AudioQCResult
 from .models.frame import FrameLedger
@@ -101,6 +102,9 @@ def run_visual_intelligence(
         )
         result.frame_observation_count = len(observations)
         _timed(timings, "frame_observations", start)
+        start = time.perf_counter()
+        _run_camera_stage(cache, ledger, clock, shot_truth, run_dir, artifacts, issues, result)
+        _timed(timings, "camera_motion", start)
         if ocr_enabled:
             start = time.perf_counter()
             _run_ocr_stage(cache, ledger, clock, run_dir, artifacts, issues, result)
@@ -256,6 +260,38 @@ def _build_observations(
     artifacts.append(visual_writer.write_frame_observations_jsonl(visual_dir, observations))
     artifacts.append(visual_writer.write_enriched_frame_ledger(visual_dir, ledger, observations))
     return observations
+
+
+def _run_camera_stage(
+    cache: FrameCache,
+    ledger: FrameLedger,
+    clock: AnnotationClock,
+    shot_truth: ShotTruthResult | None,
+    run_dir: Path,
+    artifacts: list[Path],
+    issues: list[ValidatorIssue],
+    result: VisualIntelligenceResult,
+) -> None:
+    """Per-shot global camera-motion phases from the shared gray grid."""
+    try:
+        gray = cache.gray_frames()
+        candidates = analyze_camera_motion(gray, ledger, clock, shot_truth)
+    except (MetricDecodeError, ValueError) as exc:
+        issues.append(
+            ValidatorIssue(
+                rule_id="P4-CAMERA-000",
+                severity=Severity.WARN,
+                location="camera_motion",
+                message=f"Camera-motion pass failed: {exc}",
+            )
+        )
+        return
+    issues.extend(
+        visual_validator.validate_camera_candidates(candidates, shot_truth, ledger.frame_count)
+    )
+    result.camera_phase_count = len(candidates)
+    result.camera_direction_reversals = visual_validator.count_direction_reversals(candidates)
+    artifacts.append(visual_writer.write_camera_events(run_dir / "visual" / "camera", candidates))
 
 
 def _run_ocr_stage(

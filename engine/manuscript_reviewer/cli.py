@@ -350,6 +350,12 @@ def audit(
         console.print("-" * 26)
         console.print(f"\nSeed parsed: {'PASS' if vi.seed_parsed else 'FAIL'}")
         console.print(f"Seed claims: {vi.seed_claim_count}")
+        console.print(f"Frame observations: {vi.frame_observation_count}")
+        console.print(f"OCR: {vi.ocr_status.value} (tracks: {vi.ocr_track_count})")
+        console.print(
+            f"Camera phases: {vi.camera_phase_count} "
+            f"(direction reversals: {vi.camera_direction_reversals})"
+        )
         console.print("\nShot foundation:")
         console.print(f"  {vi.foundation_status.value}")
         if vi.seed_shot_count is not None or vi.verified_shot_count is not None:

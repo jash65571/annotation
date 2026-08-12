@@ -15,6 +15,7 @@ from pathlib import Path
 from ..media.timestamps import seconds_to_decimal
 from ..models.frame import FrameLedger
 from ..models.review_intelligence import (
+    CameraMotionCandidate,
     FrameObservation,
     OCREngineInfo,
     OCRObservation,
@@ -130,6 +131,13 @@ def write_watermark_candidates(ocr_dir: Path, candidates: list[WatermarkCandidat
     return _write_json(
         ocr_dir / "watermark_candidates.json",
         {"watermark_candidates": [c.model_dump(mode="json") for c in candidates]},
+    )
+
+
+def write_camera_events(camera_dir: Path, candidates: list[CameraMotionCandidate]) -> Path:
+    return _write_json(
+        camera_dir / "camera_events.json",
+        {"camera_events": [c.model_dump(mode="json") for c in candidates]},
     )
 
 

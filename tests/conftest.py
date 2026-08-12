@@ -7,10 +7,14 @@ clear message; pure-logic tests still run.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from manuscript_reviewer.media.ffmpeg_tools import FFmpegNotFoundError, find_tool, run_tool
+
+if TYPE_CHECKING:
+    import numpy as np
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -79,4 +83,37 @@ def clip_60fps_audio() -> Path:
 def corrupt_file(tmp_path: Path) -> Path:
     path = tmp_path / "not_a_video.mp4"
     path.write_bytes(b"this is not video data at all" * 100)
+    return path
+
+
+def synth_clip(path: Path, frames: list[np.ndarray], fps: int = 25) -> Path:
+    """Encode a list of numpy frames (H,W,3 uint8 BGR) into a video losslessly.
+
+    Frames are written as PNGs then encoded with ``-fps_mode passthrough`` so
+    output frame N corresponds to input frame N — deterministic camera-motion
+    fixtures assert on exact frame identities.
+    """
+    import cv2  # local import: only camera fixtures need it
+
+    ffmpeg = find_tool("ffmpeg")
+    frame_dir = path.parent / f"{path.stem}_frames"
+    frame_dir.mkdir(parents=True, exist_ok=True)
+    for i, frame in enumerate(frames):
+        if not cv2.imwrite(str(frame_dir / f"F{i:06d}.png"), frame):
+            raise RuntimeError(f"could not write synthetic frame {i}")
+    run_tool(
+        ffmpeg,
+        [
+            "-v", "error",
+            "-framerate", str(fps),
+            "-start_number", "0",
+            "-i", str(frame_dir / "F%06d.png"),
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-crf", "0",
+            "-pix_fmt", "yuv420p",
+            "-fps_mode", "passthrough",
+            "-y", str(path),
+        ],
+    )
     return path

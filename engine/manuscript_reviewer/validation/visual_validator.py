@@ -7,9 +7,18 @@ invariant behind "exact frame identity controls all timing".
 
 from __future__ import annotations
 
+import itertools
+
 from ..models.frame import FrameLedger
-from ..models.review_intelligence import FrameObservation
+from ..models.review_intelligence import (
+    CameraMotionCandidate,
+    CameraMotionClass,
+    FrameObservation,
+)
+from ..models.shot_truth import ShotTruthResult
 from ..models.validation import Severity, ValidatorIssue
+
+_MOVEMENT_MIN_RESPONSE = 0.10
 
 
 def validate_frame_observations(
@@ -51,3 +60,83 @@ def validate_frame_observations(
                 )
             )
     return issues
+
+
+_MOVEMENT_CLASSES = frozenset(
+    {
+        CameraMotionClass.HORIZONTAL_GLOBAL_MOTION,
+        CameraMotionClass.VERTICAL_GLOBAL_MOTION,
+        CameraMotionClass.DIAGONAL_GLOBAL_MOTION,
+        CameraMotionClass.SCALE_INCREASE,
+        CameraMotionClass.SCALE_DECREASE,
+        CameraMotionClass.ROTATION,
+    }
+)
+
+
+def validate_camera_candidates(
+    candidates: list[CameraMotionCandidate],
+    shot_result: ShotTruthResult | None,
+    frame_count: int,
+) -> list[ValidatorIssue]:
+    issues: list[ValidatorIssue] = []
+    shot_ranges: dict[int, tuple[int, int]] = {}
+    if shot_result is not None:
+        shot_ranges = {
+            s.shot_index: (s.start_frame_index, s.end_frame_index) for s in shot_result.shots
+        }
+
+    for cand in candidates:
+        # P4-ACTION/CAMERA start<end and valid frames.
+        if not (0 <= cand.start_frame < cand.end_frame < frame_count + 1):
+            issues.append(
+                ValidatorIssue(
+                    rule_id="P4-CAMERA-001",
+                    severity=Severity.FAIL,
+                    location=cand.candidate_id,
+                    message=f"Camera phase frame range invalid: "
+                    f"{cand.start_frame}->{cand.end_frame}.",
+                )
+            )
+        # P4-CAMERA-001: a phase must stay inside one shot.
+        if cand.shot_number is not None and cand.shot_number in shot_ranges:
+            lo, hi = shot_ranges[cand.shot_number]
+            if cand.start_frame < lo or cand.end_frame > hi:
+                issues.append(
+                    ValidatorIssue(
+                        rule_id="P4-CAMERA-001",
+                        severity=Severity.FAIL,
+                        location=cand.candidate_id,
+                        message=f"Camera phase crosses shot {cand.shot_number} boundary.",
+                    )
+                )
+        # P4-CAMERA-003: a movement phase must be supported by a real global
+        # correlation (foreground-only motion cannot become camera motion).
+        if cand.motion_class in _MOVEMENT_CLASSES and cand.inlier_ratio < _MOVEMENT_MIN_RESPONSE:
+            issues.append(
+                ValidatorIssue(
+                    rule_id="P4-CAMERA-003",
+                    severity=Severity.WARN,
+                    location=cand.candidate_id,
+                    message="Camera movement phase has weak global-motion support.",
+                )
+            )
+    return issues
+
+
+def count_direction_reversals(candidates: list[CameraMotionCandidate]) -> int:
+    """Count screen-left <-> screen-right reversals within each shot (P4-CAMERA-002
+    guarantees these are already separate phases)."""
+    reversals = 0
+    by_shot: dict[int | None, list[CameraMotionCandidate]] = {}
+    for cand in candidates:
+        by_shot.setdefault(cand.shot_number, []).append(cand)
+    for phases in by_shot.values():
+        horiz = [
+            c for c in phases
+            if c.motion_class == CameraMotionClass.HORIZONTAL_GLOBAL_MOTION and c.direction
+        ]
+        for prev, nxt in itertools.pairwise(horiz):
+            if prev.direction != nxt.direction:
+                reversals += 1
+    return reversals
