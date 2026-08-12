@@ -20,6 +20,8 @@ from ..models.review_intelligence import (
     FinalStateCheck,
     FrameObservation,
     ObjectHypothesis,
+    PlaybackSpeedEvidence,
+    SpeedConclusion,
     TrackStatus,
 )
 from ..models.shot_truth import ShotTruthResult
@@ -267,6 +269,35 @@ def validate_final_states(
                     severity=Severity.FAIL,
                     location=f"{check.entity_id}@shot{check.shot_number}",
                     message="Final state 'removed' resolved without evidence.",
+                )
+            )
+    return issues
+
+
+def validate_speed_evidence(evidence: list[PlaybackSpeedEvidence]) -> list[ValidatorIssue]:
+    issues: list[ValidatorIssue] = []
+    for ev in evidence:
+        # P4-SPEED-001: fast motion alone cannot prove accelerated playback.
+        if ev.conclusion == SpeedConclusion.ACCELERATED_CANDIDATE and not ev.sustained_retiming:
+            issues.append(
+                ValidatorIssue(
+                    rule_id="P4-SPEED-001",
+                    severity=Severity.FAIL,
+                    location=f"shot {ev.shot_number}",
+                    message="ACCELERATED concluded without sustained retiming evidence.",
+                )
+            )
+        # P4-SPEED-002: motion blur alone cannot prove slow motion — a slow-motion
+        # candidate must rest on frame duplication cadence.
+        if ev.conclusion == SpeedConclusion.SLOW_MOTION_CANDIDATE and (
+            ev.duplicate_frame_ratio is None or ev.duplicate_frame_ratio <= 0.0
+        ):
+            issues.append(
+                ValidatorIssue(
+                    rule_id="P4-SPEED-002",
+                    severity=Severity.FAIL,
+                    location=f"shot {ev.shot_number}",
+                    message="SLOW_MOTION concluded without frame-duplication evidence.",
                 )
             )
     return issues

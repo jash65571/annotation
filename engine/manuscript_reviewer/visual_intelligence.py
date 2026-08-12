@@ -46,6 +46,7 @@ from .review.decisions import (
     apply_decisions_to_claims,
     load_decisions,
 )
+from .review.evidence_bundles import extract_evidence_bundles
 from .review.proposals import build_proposals, count_by_outcome
 from .review.queue import build_review_queue, build_triage
 from .seed import feedback as feedback_mod
@@ -54,6 +55,7 @@ from .seed.claims import collect_seed_diagnostics, extract_claims
 from .seed.comparison import build_rows, compare_seed
 from .seed.parser import parse_seed_text
 from .shots.decode import MetricDecodeError
+from .speed.evidence import build_playback_speed_evidence
 from .tracking.anchors import AnchorLoadError, load_anchors
 from .tracking.continuity import build_continuity
 from .tracking.tracker import track_anchor
@@ -116,6 +118,7 @@ def run_visual_intelligence(
     ocr_text_tracks: list[TextTrack] = []
     camera_candidates: list[CameraMotionCandidate] = []
     entity_tracks: list[EntityTrack] = []
+    cache: FrameCache | None = None
     if ledger is not None and media is not None and video_path is not None:
         cache = FrameCache(video_path, ledger)
         clock = AnnotationClock.from_ledger(ledger)
@@ -130,6 +133,16 @@ def run_visual_intelligence(
             cache, ledger, clock, shot_truth, run_dir, artifacts, issues, result
         )
         _timed(timings, "camera_motion", start)
+        if shot_truth is not None:
+            start = time.perf_counter()
+            speed_evidence = build_playback_speed_evidence(cache.gray_frames(), shot_truth)
+            issues.extend(visual_validator.validate_speed_evidence(speed_evidence))
+            artifacts.append(
+                visual_writer.write_playback_speed_evidence(
+                    run_dir / "visual" / "speed", speed_evidence
+                )
+            )
+            _timed(timings, "playback_speed", start)
         if visual_anchors_path is not None:
             start = time.perf_counter()
             entity_tracks = _run_tracking_stage(
@@ -245,6 +258,27 @@ def run_visual_intelligence(
     for row in comparison.rows:
         row.review_proposal = claim_outcomes.get(row.claim_id)
 
+    # --- high-risk visual evidence bundles (Z; opt-in) ---
+    if extract_visual_evidence and cache is not None and ledger is not None:
+        try:
+            bundles = extract_evidence_bundles(
+                queue_items,
+                cache,
+                ledger.frame_count,
+                _frame_to_time(ledger, AnnotationClock.from_ledger(ledger)),
+                run_dir / "visual_evidence",
+            )
+            artifacts.extend(bundles)
+        except (MetricDecodeError, ValueError) as exc:
+            issues.append(
+                ValidatorIssue(
+                    rule_id="P4-EVIDENCE-000",
+                    severity=Severity.WARN,
+                    location="visual_evidence",
+                    message=f"Evidence bundle extraction failed: {exc}",
+                )
+            )
+
     # --- validation ---
     issues.extend(ri_validator.validate_matrix(comparison.rows))
     issues.extend(ri_validator.validate_proposals(proposals, comparison.rows))
@@ -276,9 +310,9 @@ def run_visual_intelligence(
     artifacts.append(review_writer.write_visual_qc(review_dir, result))
 
     _timed(timings, "visual_intelligence_total", stage_start)
-    # entity_tracks feed the contacts/final-state/action slices; extract flag and
-    # audio_truth are reserved for the evidence-bundle and audio-linkage slices.
-    _ = (audio_truth, ocr_enabled, extract_visual_evidence, entity_tracks)
+    # entity_tracks are consumed inside the tracking stage; audio_truth is
+    # reserved for a future audio-linkage slice.
+    _ = (audio_truth, entity_tracks)
     return VisualIntelligenceOutput(result, issues, artifacts, timings)
 
 

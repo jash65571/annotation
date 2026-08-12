@@ -27,6 +27,7 @@ from ..models.review_intelligence import (
     ObjectHypothesis,
     OCREngineInfo,
     OCRObservation,
+    PlaybackSpeedEvidence,
     TextTrack,
     WatermarkCandidate,
 )
@@ -188,6 +189,13 @@ def write_action_candidates(actions_dir: Path, candidates: list[ActionCandidate]
     return _write_json(
         actions_dir / "action_candidates.json",
         {"action_candidates": [c.model_dump(mode="json") for c in candidates]},
+    )
+
+
+def write_playback_speed_evidence(speed_dir: Path, evidence: list[PlaybackSpeedEvidence]) -> Path:
+    return _write_json(
+        speed_dir / "playback_speed_evidence.json",
+        {"playback_speed_evidence": [e.model_dump(mode="json") for e in evidence]},
     )
 
 
