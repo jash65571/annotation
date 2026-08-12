@@ -15,17 +15,18 @@ from fractions import Fraction
 
 from ..media.timestamps import format_manuscript_display
 from ..models.audio import (
-    AlignmentResult,
     AlignmentStatus,
     ASRResult,
     ASRStatus,
-    ASRWord,
     AudioRegion,
     AudioRegionKind,
     AudioReviewReason,
     AudioTimeline,
+    BestWord,
     EvidenceState,
+    SourceVerificationStatus,
     SpeechRegion,
+    WordTimingStatus,
 )
 from ..rules.loader import load_rules
 
@@ -43,35 +44,30 @@ def _pause_threshold() -> Fraction:
     return Fraction(str(value))
 
 
-def _flatten_words(result: ASRResult, alignment: AlignmentResult | None) -> list[ASRWord]:
-    """Words with the best available timing: WhisperX when validly aligned,
-    faster-whisper otherwise. Wording always comes from faster-whisper."""
-    if alignment is not None and alignment.status == AlignmentStatus.ALIGNED:
-        words = [w for s in alignment.segments for w in s.words]
-        if words:
-            return words
-    return [w for s in result.segments for w in s.words]
-
-
 def build_speech_regions(
     result: ASRResult,
-    alignment: AlignmentResult | None,
+    best_words: list[BestWord],
+    best_status: AlignmentStatus,
+    alignment_coverage: float | None,
     timeline: AudioTimeline,
     annotation_endpoint: Fraction | None,
 ) -> list[SpeechRegion]:
-    """Group ASR words into speech regions split at real audio gaps."""
+    """Group reconciled best words into speech regions split at real audio gaps.
+
+    EVERY machine speech region defaults to ``source_verification_status =
+    UNVERIFIED`` and always carries ``MANDATORY_SOURCE_AUDIO_VERIFICATION``: a
+    clean, high-confidence, fully-aligned result never bypasses a human listen.
+    The machine ``EvidenceState`` still records processing quality
+    (ALIGNED_EVIDENCE vs ASR_EVIDENCE) but NEVER suppresses that review (§2/§3).
+    """
     if result.status != ASRStatus.PASS:
         return []
-    words = _flatten_words(result, alignment)
-    if not words:
+    if not best_words:
         return []
     pause = _pause_threshold()
-    alignment_status = (
-        alignment.status if alignment is not None else AlignmentStatus.NOT_ATTEMPTED
-    )
 
-    groups: list[list[ASRWord]] = [[words[0]]]
-    for word in words[1:]:
+    groups: list[list[BestWord]] = [[best_words[0]]]
+    for word in best_words[1:]:
         gap = word.start_annotation_time - groups[-1][-1].end_annotation_time
         if gap > pause:
             groups.append([word])
@@ -86,24 +82,32 @@ def build_speech_regions(
         mean_probability = (
             sum(probabilities) / len(probabilities) if probabilities else None
         )
-        reasons: list[AudioReviewReason] = []
+        # Mandatory human source verification is ALWAYS required for machine speech.
+        reasons: list[AudioReviewReason] = [
+            AudioReviewReason.MANDATORY_SOURCE_AUDIO_VERIFICATION
+        ]
         if mean_probability is not None and mean_probability < LOW_WORD_PROBABILITY:
             reasons.append(AudioReviewReason.LOW_ASR_CONFIDENCE)
-        if alignment_status not in (AlignmentStatus.ALIGNED, AlignmentStatus.NOT_ATTEMPTED):
+        if best_status == AlignmentStatus.PARTIAL:
+            reasons.append(AudioReviewReason.PARTIAL_ALIGNMENT)
+        elif best_status not in (
+            AlignmentStatus.ALIGNED,
+            AlignmentStatus.NOT_ATTEMPTED,
+        ):
             reasons.append(AudioReviewReason.MISSING_ALIGNMENT)
         if start <= CLIP_EDGE_SECONDS:
             reasons.append(AudioReviewReason.SPEECH_AT_CLIP_START)
         if annotation_endpoint is not None and annotation_endpoint - end <= CLIP_EDGE_SECONDS:
             reasons.append(AudioReviewReason.SPEECH_AT_CLIP_END)
 
+        # Machine processing state — NOT a human-verification claim.
         state = (
-            EvidenceState.REVIEW_REQUIRED
-            if reasons
-            else (
-                EvidenceState.ALIGNED_EVIDENCE
-                if alignment_status == AlignmentStatus.ALIGNED
-                else EvidenceState.ASR_EVIDENCE
-            )
+            EvidenceState.ALIGNED_EVIDENCE
+            if best_status == AlignmentStatus.ALIGNED
+            else EvidenceState.ASR_EVIDENCE
+        )
+        has_aligned = any(
+            w.timing_status == WordTimingStatus.WHISPERX_ALIGNED for w in group
         )
         regions.append(
             SpeechRegion(
@@ -113,14 +117,16 @@ def build_speech_regions(
                 start_manuscript=format_manuscript_display(start),
                 end_manuscript=format_manuscript_display(end),
                 sources=["asr_faster_whisper"]
-                + (["whisperx_alignment"] if alignment_status == AlignmentStatus.ALIGNED else []),
+                + (["whisperx_alignment"] if has_aligned else []),
                 text_candidate=" ".join(w.text for w in group),
                 language=result.language,
                 mean_word_probability=(
                     round(mean_probability, 4) if mean_probability is not None else None
                 ),
-                alignment_status=alignment_status,
+                alignment_status=best_status,
+                alignment_coverage=alignment_coverage,
                 state=state,
+                source_verification_status=SourceVerificationStatus.UNVERIFIED,
                 review_reasons=reasons,
             )
         )

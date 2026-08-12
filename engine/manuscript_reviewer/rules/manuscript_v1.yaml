@@ -1,4 +1,10 @@
-# Manuscript II rule set, version 1.1.
+# Manuscript II rule set, version 1.3.
+#
+# NOTE (Phase 3.1): the four named controlling documents (FRAME-AUDIT,
+# PROJ-RULES, AUDIT-RM, CUR-SRC) are still NOT locally supplied, so their
+# provenance re-mapping (replacing TASK-FEED where they directly support a rule)
+# is DEFERRED — those `supplied_locally: false` markers stay false and no rule
+# cites them as evidence until the real files land under ./references/.
 #
 # Every rule carries provenance: which reference document it came from.
 # Raw source documents are NOT committed to the repository (distribution
@@ -29,7 +35,7 @@
 # Conflict policy (docs/01-rule-hierarchy.md): newest live-tool rule wins over
 # older example syntax. Conflicts are recorded under `known_conflicts`.
 
-rules_version: "1.2.0"
+rules_version: "1.3.0"
 sources:
   - id: MASTER-REF
     file: references/manuscript-ii-master-reference.md
@@ -162,8 +168,13 @@ shots:
     - J-cut
     - Whip pan
     - Swish pan
-  # MASTER-REF §6: hard cut is the overwhelming default when in doubt.
-  default_transition: "Hard cut"
+  # Phase 3.1 (§22): there is NO automatic caption-facing transition default.
+  # "Hard cut" is statistically common but is NOT factual truth when the
+  # evidence is unresolved, and a later caption builder must never emit it merely
+  # because a transition could not be resolved. The shot engine already selects
+  # transitions from frame evidence and leaves unresolved ones UNRESOLVED.
+  default_transition: null
+  unresolved_transition_is_not_hard_cut: true
   # MASTER-REF check 11, HANDBOOK §14: a flash frame can be its own shot; verify frames.
   flash_frames_require_frame_review: true
   # MASTER-REF check 12, HANDBOOK check 12: fade content belongs to outgoing shot.

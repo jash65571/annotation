@@ -14,11 +14,13 @@ Converted from the Manuscript II reference material into software requirements.
 > current controlling source set also names four documents **not yet locally
 > supplied** — Master Frame Audit Protocol v1.5, MANUSCRIPT-II-PROJECT-RULES-CURRENT.md,
 > MANUSCRIPT_AUDIT_README-v3.2.md, MANUSCRIPT-II-CURRENT-SOURCES.md. Their known
-> requirements are encoded in `manuscript_v1.yaml` (v1.1.0) with TASK-FEED provenance;
+> requirements are encoded in `manuscript_v1.yaml` (v1.3.0) with TASK-FEED provenance;
 > when the documents arrive they outrank this file per docs/01. Raw source documents
-> are local-only and gitignored (see `references/README.md`).
+> are local-only and gitignored (see `references/README.md`). **Phase 3.1 note:** the
+> four named controlling files are still absent, so their provenance re-mapping is
+> deferred — `TASK-FEED` entries and `supplied_locally: false` stand until they land.
 
-## Additional controlling rules (rules v1.1.0, TASK-FEED provenance)
+## Additional controlling rules (rules v1.3.0, TASK-FEED provenance)
 
 - Newest official/task-specific workflow material outranks all older material;
   actual media remains factual truth; Golden Examples are floor, not ceiling.
@@ -37,7 +39,7 @@ Converted from the Manuscript II reference material into software requirements.
   Descript fallback; ASR is evidence only; the full audit continues after a local
   ASR failure.
 
-## Audio workflow (rules v1.2.0, AUDIT-NOTES/QC-REPORT provenance)
+## Audio workflow (rules v1.3.0, AUDIT-NOTES/QC-REPORT provenance)
 
 The approved local audio workflow is
 `FFmpeg → faster-whisper (large-v3-turbo) → WhisperX forced alignment` in
@@ -46,6 +48,21 @@ never translation. Transcripts are wording leads, not frame evidence
 (QC-REPORT). When ASR cannot run, waveform/spectrogram/10 ms-energy evidence
 still completes and dialogue remains provisional until source-audio
 verification — never export-ready on ASR output alone.
+
+**Phase 3.1 audio evidence integrity.** ASR speech (text, word timing, language,
+speaker) is *unverified evidence*: every machine speech region carries
+`source_verification_status = UNVERIFIED` and a mandatory
+`MANDATORY_SOURCE_AUDIO_VERIFICATION` review item — a clean, high-confidence,
+fully-aligned result never bypasses a human listen, and top-level audio PASS is
+forbidden while any speech is source-unverified. Machine ASR text is never
+caption-eligible (`caption_text_eligible` requires human verification/correction),
+and a machine language guess is never a caption language claim. WhisperX supplies
+timing only: reconciliation yields exactly one best word per faster-whisper
+source word (never dropped, invented, or re-worded), missing timing stays missing
+(never 0 s), and partial alignment is recorded with coverage. Boundary audio
+continuity is conservative — energy on both sides never proves one source crosses
+a cut; CONTINUOUS needs a crossing word or proven spectral continuity, and L/J
+transitions are never auto-selected.
 
 ## 1. Product purpose
 Produce extremely precise, evidence-backed Manuscript II reviewer captions from short

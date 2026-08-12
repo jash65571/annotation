@@ -20,6 +20,7 @@ from ..models.audio import (
     AudioQCResult,
     AudioReviewItem,
     AudioTimeline,
+    BestWord,
     BoundaryAudioEvidence,
     SpeechRegion,
 )
@@ -126,7 +127,8 @@ def write_speech_regions_csv(audio_dir: Path, regions: list[SpeechRegion]) -> Pa
             writer.writerow(
                 ["region_id", "start_exact", "end_exact", "start_manuscript",
                  "end_manuscript", "sources", "text_candidate", "language_candidate",
-                 "mean_word_probability", "alignment_status", "state",
+                 "mean_word_probability", "alignment_status", "alignment_coverage",
+                 "state", "source_verification_status", "caption_text_eligible",
                  "possible_overlap", "review_reasons"]
             )
             for region in regions:
@@ -144,7 +146,12 @@ def write_speech_regions_csv(audio_dir: Path, regions: list[SpeechRegion]) -> Pa
                         if region.mean_word_probability is not None
                         else "",
                         region.alignment_status.value,
+                        region.alignment_coverage
+                        if region.alignment_coverage is not None
+                        else "",
                         region.state.value,
+                        region.source_verification_status.value,
+                        int(region.caption_text_eligible),
                         int(region.possible_overlap),
                         "|".join(r.value for r in region.review_reasons),
                     ]
@@ -188,8 +195,8 @@ def _segments_csv(path: Path, segments: list[ASRSegment]) -> Path:
                         segment.segment_id,
                         _dec(segment.start_annotation_time),
                         _dec(segment.end_annotation_time),
-                        segment.asr_start_seconds,
-                        segment.asr_end_seconds,
+                        segment.asr_start_seconds or "",
+                        segment.asr_end_seconds or "",
                         segment.avg_logprob if segment.avg_logprob is not None else "",
                         segment.no_speech_prob if segment.no_speech_prob is not None else "",
                         segment.text,
@@ -217,8 +224,8 @@ def _words_csv(path: Path, segments: list[ASRSegment]) -> Path:
                             word.word_index,
                             _dec(word.start_annotation_time),
                             _dec(word.end_annotation_time),
-                            word.asr_start_seconds,
-                            word.asr_end_seconds,
+                            word.asr_start_seconds or "",
+                            word.asr_end_seconds or "",
                             word.probability if word.probability is not None else "",
                             word.timing_source,
                             word.text,
@@ -229,11 +236,44 @@ def _words_csv(path: Path, segments: list[ASRSegment]) -> Path:
     return path
 
 
+def _best_words_csv(path: Path, best_words: list[BestWord]) -> Path:
+    """words_best.csv — one row per faster-whisper source word, in source order,
+    with the per-word timing provenance. The word SEQUENCE always matches the
+    faster-whisper source (P3-ASR-006); only the timing source may differ."""
+    try:
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(
+                ["segment_id", "source_word_index", "start_annotation_time",
+                 "end_annotation_time", "asr_start", "asr_end", "probability",
+                 "timing_source", "timing_status", "text"]
+            )
+            for word in best_words:
+                writer.writerow(
+                    [
+                        word.segment_id,
+                        word.source_word_index,
+                        _dec(word.start_annotation_time),
+                        _dec(word.end_annotation_time),
+                        word.asr_start_seconds,
+                        word.asr_end_seconds,
+                        word.probability if word.probability is not None else "",
+                        word.timing_source,
+                        word.timing_status.value,
+                        word.text,
+                    ]
+                )
+    except OSError as exc:
+        raise ArtifactWriteError(f"Failed to write {path}: {exc}") from exc
+    return path
+
+
 def write_asr_artifacts(
     asr_dir: Path,
     result: ASRResult,
     alignment: AlignmentResult | None,
     best_segments: list[ASRSegment],
+    best_words: list[BestWord],
 ) -> list[Path]:
     """Write ASR/alignment/best artifacts. transcript_best carries
     verification_status = ASR_EVIDENCE_ONLY — never implies human verification."""
@@ -303,6 +343,8 @@ def write_asr_artifacts(
         (asr_dir / "transcript_best.txt").write_text(header + text + "\n", encoding="utf-8")
         paths.append(asr_dir / "transcript_best.txt")
         paths.append(_segments_csv(asr_dir / "segments_best.csv", best_segments))
-        paths.append(_words_csv(asr_dir / "words_best.csv", best_segments))
+        # words_best.csv comes from the reconciled best-word sequence (one per FW
+        # source word) so its wording sequence always matches faster-whisper.
+        paths.append(_best_words_csv(asr_dir / "words_best.csv", best_words))
 
     return paths

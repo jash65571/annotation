@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,31 @@ logger = logging.getLogger(__name__)
 
 class AudioProbeError(RuntimeError):
     """Audio frame enumeration was not possible."""
+
+
+@dataclass(frozen=True)
+class AudioPriming:
+    """Raw codec priming/skip evidence for the AAC/MP4 sample-anchor question.
+
+    ``initial_padding`` is a stream-level declaration; ``skip_samples`` /
+    ``discard_padding`` come from packet side data (the AAC encoder delay the
+    decoder trims). Any non-zero value means decoded PCM sample 0 does NOT
+    trivially equal the first encoded packet PTS — sample-perfect anchoring is
+    not assumed without this evidence (§16)."""
+
+    codec_name: str | None = None
+    stream_start_pts: int | None = None
+    initial_padding: int | None = None
+    skip_samples: int | None = None
+    discard_padding: int | None = None
+
+    @property
+    def has_priming(self) -> bool:
+        return bool(
+            (self.initial_padding or 0)
+            or (self.skip_samples or 0)
+            or (self.discard_padding or 0)
+        )
 
 
 def _int_or_none(value: Any) -> int | None:
@@ -88,24 +114,68 @@ def enumerate_audio_frames(
     return records
 
 
-def stream_initial_padding(video_path: Path, stream_index: int = 0) -> int | None:
-    """Codec priming samples declared by the container/stream, if any."""
+def _skip_from_packets(video_path: Path, stream_index: int) -> tuple[int | None, int | None]:
+    """First-packet ``skip_samples`` / ``discard_padding`` from packet side data.
+
+    AAC in MP4/M4A carries encoder delay as a "Skip Samples" side-data block on
+    the first packet; ffprobe exposes it under ``side_data_list``. Absence of the
+    block (older ffprobe / non-AAC) returns ``(None, None)`` — never a fake 0.
+    """
     ffprobe = find_tool("ffprobe")
     result = run_tool(
         ffprobe,
         [
             "-v", "error",
             "-select_streams", f"a:{stream_index}",
-            "-show_entries", "stream=initial_padding",
+            "-read_intervals", "%+#1",
+            "-show_packets",
+            "-show_entries", "packet=pts:packet_side_data=skip_samples,discard_padding",
             "-output_format", "json",
             str(video_path),
         ],
     )
     try:
         raw = json.loads(result.stdout)
-        streams = raw.get("streams", [])
+    except json.JSONDecodeError:
+        return None, None
+    for packet in raw.get("packets", []):
+        for side in packet.get("side_data_list", []):
+            skip = side.get("skip_samples")
+            discard = side.get("discard_padding")
+            if skip is not None or discard is not None:
+                return _int_or_none(skip), _int_or_none(discard)
+    return None, None
+
+
+def probe_audio_priming(video_path: Path, stream_index: int = 0) -> AudioPriming:
+    """Collect codec priming/skip evidence (stream + packet side data)."""
+    ffprobe = find_tool("ffprobe")
+    result = run_tool(
+        ffprobe,
+        [
+            "-v", "error",
+            "-select_streams", f"a:{stream_index}",
+            "-show_entries", "stream=codec_name,start_pts,initial_padding",
+            "-output_format", "json",
+            str(video_path),
+        ],
+    )
+    codec_name: str | None = None
+    start_pts: int | None = None
+    initial_padding: int | None = None
+    try:
+        streams = json.loads(result.stdout).get("streams", [])
         if streams:
-            return _int_or_none(streams[0].get("initial_padding"))
+            codec_name = streams[0].get("codec_name")
+            start_pts = _int_or_none(streams[0].get("start_pts"))
+            initial_padding = _int_or_none(streams[0].get("initial_padding"))
     except json.JSONDecodeError:
         pass
-    return None
+    skip_samples, discard_padding = _skip_from_packets(video_path, stream_index)
+    return AudioPriming(
+        codec_name=codec_name,
+        stream_start_pts=start_pts,
+        initial_padding=initial_padding,
+        skip_samples=skip_samples,
+        discard_padding=discard_padding,
+    )

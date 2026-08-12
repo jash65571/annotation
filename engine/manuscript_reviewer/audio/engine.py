@@ -29,6 +29,8 @@ from ..models.audio import (
     AudioQCResult,
     AudioReviewReason,
     AudioStatus,
+    BestWord,
+    SampleAnchorStatus,
 )
 from ..models.frame import FrameLedger
 from ..models.media import MediaInfo
@@ -44,13 +46,16 @@ from .asr.runtime import (
     TranscriptionAdapter,
     WhisperXAdapter,
     WorkerUnavailableError,
+    best_words_to_segments,
     model_cache_state,
     parse_alignment,
     parse_transcription,
+    reconcile_best_transcript,
+    resolve_cache_state,
 )
 from .decode import AudioDecodeError, extract_wav, mono_float
 from .metrics import compute_energy_bins
-from .probe import AudioProbeError, enumerate_audio_frames, stream_initial_padding
+from .probe import AudioProbeError, enumerate_audio_frames, probe_audio_priming
 from .render import render_energy, render_spectrogram, render_waveform
 from .review_queue import build_review_queue, render_review_clips
 from .speech import build_speech_regions, find_uncovered_audio
@@ -116,7 +121,7 @@ def run_audio_analysis(
         if time_base is None:
             raise AudioProbeError("Audio stream has no time base")
         audio_frames = enumerate_audio_frames(video_path, time_base, clock.origin)
-        initial_padding = stream_initial_padding(video_path)
+        priming = probe_audio_priming(video_path)
     except AudioProbeError as exc:
         issues.append(
             ValidatorIssue(
@@ -158,7 +163,7 @@ def run_audio_analysis(
     # --- timeline + cross-check ---
     start = time.perf_counter()
     timeline = build_audio_timeline(
-        stream, audio_frames, source_wav, clock, initial_padding, asr_wav
+        stream, audio_frames, source_wav, clock, priming, asr_wav
     )
     issues.extend(audio_validator.validate_audio_timeline(timeline, audio_frames))
     issues.extend(cross_check_sample_count(timeline, audio_frames, stream))
@@ -204,11 +209,15 @@ def run_audio_analysis(
     else:
         start = time.perf_counter()
         adapter = transcriber or FasterWhisperAdapter()
-        cache_state = model_cache_state(config.model)
+        # Snapshot the cache BEFORE and reconcile AFTER so a model downloaded
+        # during this run is recorded as downloaded_this_run, not not_cached (§21).
+        cache_before = model_cache_state(config.model)
+        worker_ran = False
         try:
             response = adapter.transcribe(
                 audio_dir / "asr.wav", config, run_dir / "audio" / "_scratch"
             )
+            worker_ran = True
             asr_result = parse_transcription(response, timeline.annotation_audio_offset)
         except WorkerUnavailableError as exc:
             asr_result = ASRResult(
@@ -217,12 +226,15 @@ def run_audio_analysis(
                                        failure_reason=str(exc)),
             )
         except (RuntimeError, OSError, ValueError) as exc:
+            worker_ran = True
             asr_result = ASRResult(
                 status=ASRStatus.FAILED,
                 runtime=ASRRuntimeInfo(engine="faster_whisper",
                                        failure_reason=f"{type(exc).__name__}: {exc}"),
             )
-        asr_result.runtime.model_cache_state = cache_state
+        asr_result.runtime.model_cache_state = resolve_cache_state(
+            config.model, cache_before, worker_ran
+        )
         _timed(timings, "audio_faster_whisper", start)
 
         # --- WhisperX forced alignment (wording preserved, never replaced) ---
@@ -270,24 +282,31 @@ def run_audio_analysis(
                 )
             _timed(timings, "audio_whisperx", start)
 
+    # --- reconcile best transcript: exactly one best word per FW source word,
+    #     WhisperX timing mapped by identity, no source word ever dropped (§5-9).
+    best = reconcile_best_transcript(asr_result, alignment)
+    best_words: list[BestWord] = best.best_words
+    best_segments: list[ASRSegment] = best_words_to_segments(best_words)
+    if alignment is not None:
+        alignment.status = best.status
+        alignment.alignment_coverage = best.coverage
+        alignment.partial_alignment = best.partial_alignment
+        alignment.source_word_count = best.source_word_count
+        alignment.aligned_word_count = best.aligned_word_count
+
     issues.extend(audio_validator.validate_asr(asr_result, timeline))
     issues.extend(audio_validator.validate_alignment(alignment))
+    issues.extend(audio_validator.validate_best_words(best_words, asr_result))
 
-    # --- transcript_best: faster-whisper wording + best valid timing ---
-    best_segments: list[ASRSegment]
-    if alignment is not None and alignment.status == AlignmentStatus.ALIGNED:
-        best_segments = alignment.segments
-    else:
-        best_segments = asr_result.segments
     artifacts.extend(
         audio_writer.write_asr_artifacts(audio_dir / "asr", asr_result, alignment,
-                                         best_segments)
+                                         best_segments, best_words)
     )
 
     # --- speech regions + VAD recall defense ---
     start = time.perf_counter()
     speech_regions = build_speech_regions(
-        asr_result, alignment, timeline, annotation_endpoint
+        asr_result, best_words, best.status, best.coverage, timeline, annotation_endpoint
     )
     issues.extend(audio_validator.validate_speech_regions(speech_regions, timeline))
     uncovered = find_uncovered_audio(audio_regions, speech_regions, audio_regions)
@@ -298,11 +317,13 @@ def run_audio_analysis(
     start = time.perf_counter()
     shot_candidates = shot_result.candidates if shot_result is not None else []
     boundary_evidence = boundary_mod.analyze_boundary_audio(
-        shot_candidates, clock, timeline, bins, audio_regions, speech_regions
+        shot_candidates, clock, timeline, bins, audio_regions, speech_regions,
+        best_words, best_segments,
     )
     issues.extend(
         audio_validator.validate_boundaries(shot_candidates, boundary_evidence, True)
     )
+    issues.extend(audio_validator.validate_boundary_continuity(boundary_evidence))
     artifacts.append(audio_writer.write_boundary_evidence(audio_dir, boundary_evidence))
     _timed(timings, "audio_boundary_continuity", start)
 
@@ -318,11 +339,27 @@ def run_audio_analysis(
             review_items, source_wav, timeline, audio_dir / "review_clips"
         )
         artifacts.extend(clips)
+    issues.extend(
+        audio_validator.validate_source_verification(speech_regions, review_items)
+    )
     artifacts.append(audio_writer.write_review_queue(audio_dir, review_items))
     _timed(timings, "audio_review_queue", start)
 
     # --- concerns (structured leads, never prose) ---
     concerns: list[AudioConcernCandidate] = []
+    if timeline.sample_anchor_status == SampleAnchorStatus.ANCHOR_REVIEW_REQUIRED:
+        concerns.append(
+            AudioConcernCandidate(
+                concern_code="AUDIO_SAMPLE_ANCHOR_REVIEW_REQUIRED",
+                detail=(
+                    f"codec_delay={timeline.codec_delay}; "
+                    f"skip_samples={timeline.codec_skip_samples}; "
+                    f"discard_padding={timeline.codec_discard_padding}; "
+                    f"initial_padding={timeline.initial_padding_samples}; "
+                    "sample-perfect source anchoring not claimed."
+                ),
+            )
+        )
     if asr_unavailable:
         concerns.append(
             AudioConcernCandidate(
@@ -349,7 +386,7 @@ def run_audio_analysis(
             )
 
     overall = audio_validator.compute_audio_status(
-        issues, review_items, boundary_evidence, no_audio=False
+        issues, review_items, boundary_evidence, speech_regions, no_audio=False
     )
     qc = AudioQCResult(
         audio_status=AudioStatus.ANALYZED,
@@ -361,6 +398,7 @@ def run_audio_analysis(
         region_count=len(audio_regions),
         transient_count=len(transients),
         speech_region_count=len(speech_regions),
+        best_word_count=len(best_words),
         review_item_count=len(review_items),
         boundaries_checked=len(boundary_evidence),
         language=asr_result.language,

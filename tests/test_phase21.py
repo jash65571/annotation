@@ -29,7 +29,7 @@ from tests.test_shot_truth import SIZE, _lavfi_concat, _lavfi_filtered, analyze
 
 def test_current_controlling_rule_keys_load() -> None:
     rules = load_rules()
-    assert rules.version == "1.2.0"
+    assert rules.version == "1.3.0"
     assert rules.get("source_hierarchy.newest_official_workflow_outranks_older") is True
     assert rules.get("source_hierarchy.actual_media_is_factual_truth") is True
     assert rules.get("source_hierarchy.golden_examples_are_floor_not_ceiling") is True

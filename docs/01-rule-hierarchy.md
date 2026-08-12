@@ -28,6 +28,12 @@ An older example never overrides a newer live-tool rule.
 - Conflicts between sources are recorded under `known_conflicts` with the winning rule.
 - The rule file is versioned (`rules_version`); every audit run's `manifest.json`
   records the rule version used, so past runs remain interpretable after rule updates.
+- Current version: **v1.3.0** (Phase 3.1). It replaced the caption-facing
+  `default_transition: "Hard cut"` with `default_transition: null` +
+  `unresolved_transition_is_not_hard_cut: true`: "Hard cut" stays a valid menu
+  option but is never emitted merely because a transition is unresolved. The four
+  named controlling documents remain unsupplied, so their provenance re-mapping
+  (replacing `TASK-FEED` where they directly support a rule) is still pending.
 
 ## Conflict-resolution procedure
 

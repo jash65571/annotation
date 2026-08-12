@@ -48,10 +48,13 @@ def test_real_faster_whisper_and_whisperx(tmp_path: Path) -> None:
     assert "faster_whisper" in runtime and "tiny" in runtime
 
     if (WX_ENV / ".venv").exists():
+        # PARTIAL is a legitimate Phase 3.1 outcome: some source words keep
+        # faster-whisper timing when WhisperX cannot align them (no word dropped).
         assert qc.alignment_status in (
             AlignmentStatus.ALIGNED,
+            AlignmentStatus.PARTIAL,
             AlignmentStatus.TEXT_MISMATCH,
             AlignmentStatus.FAILED,
         )
-        if qc.alignment_status == AlignmentStatus.ALIGNED:
+        if qc.alignment_status in (AlignmentStatus.ALIGNED, AlignmentStatus.PARTIAL):
             assert "whisperx" in runtime

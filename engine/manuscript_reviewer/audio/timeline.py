@@ -11,10 +11,11 @@ import logging
 from fractions import Fraction
 
 from ..media.clock import AnnotationClock
-from ..models.audio import AudioFrameRecord, AudioTimeline
+from ..models.audio import AudioFrameRecord, AudioTimeline, SampleAnchorStatus
 from ..models.media import AudioStreamInfo
 from ..models.validation import Severity, ValidatorIssue
 from .decode import DecodedWav
+from .probe import AudioPriming
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ def build_audio_timeline(
     audio_frames: list[AudioFrameRecord],
     source_wav: DecodedWav,
     clock: AnnotationClock,
-    initial_padding: int | None,
+    priming: AudioPriming,
     asr_wav: DecodedWav | None,
 ) -> AudioTimeline:
     first_pts = audio_frames[0].pts if audio_frames else None
@@ -37,6 +38,13 @@ def build_audio_timeline(
         clock.to_annotation(first_time) if first_time is not None else Fraction(0)
     )
     time_base = stream.time_base if stream.time_base is not None else Fraction(1, 1)
+    # Sample-anchor honesty (§16/§17): if the codec declares any priming/skip,
+    # we do NOT claim decoded PCM sample 0 == first encoded packet PTS.
+    anchor_status = (
+        SampleAnchorStatus.ANCHOR_REVIEW_REQUIRED
+        if priming.has_priming
+        else SampleAnchorStatus.ANCHORED
+    )
     return AudioTimeline(
         source_stream_index=stream.stream_index,
         source_time_base=time_base,
@@ -45,7 +53,11 @@ def build_audio_timeline(
         first_decoded_audio_pts=first_pts,
         annotation_timeline_origin=clock.origin,
         annotation_audio_offset=offset,
-        initial_padding_samples=initial_padding,
+        initial_padding_samples=priming.initial_padding,
+        codec_skip_samples=priming.skip_samples,
+        codec_discard_padding=priming.discard_padding,
+        codec_delay=priming.stream_start_pts,
+        sample_anchor_status=anchor_status,
         source_sample_rate=stream.sample_rate or source_wav.sample_rate,
         source_channels=stream.channels or source_wav.channels,
         evidence_sample_rate=source_wav.sample_rate,

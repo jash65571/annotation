@@ -18,6 +18,7 @@ from manuscript_reviewer.audio.asr.runtime import (
     parse_transcription,
 )
 from manuscript_reviewer.audio.engine import run_audio_analysis
+from manuscript_reviewer.audio.probe import probe_audio_priming
 from manuscript_reviewer.audio.timeline import annotation_to_sample, sample_to_annotation
 from manuscript_reviewer.media.clock import AnnotationClock
 from manuscript_reviewer.media.endpoint import compute_annotation_endpoint
@@ -32,6 +33,7 @@ from manuscript_reviewer.models.audio import (
     AudioStatus,
     AudioVerificationStatus,
     BoundaryAudioStatus,
+    SampleAnchorStatus,
 )
 from manuscript_reviewer.models.validation import RunStatus
 from manuscript_reviewer.pipeline import run_audit
@@ -276,6 +278,80 @@ def _hardcut_with_audio(name: str, audio_expr_args: list[str]) -> Path:
     return path
 
 
+def _hardcut_two_audio(name: str, a0: str, a1: str) -> Path:
+    """Video hard cut at t=1 s with two DIFFERENT 1 s audio sources concatenated
+    at the cut, so the audio source genuinely switches exactly at the boundary."""
+    path = FIXTURES_DIR / name
+    if path.exists():
+        return path
+    FIXTURES_DIR.mkdir(exist_ok=True)
+    ffmpeg = find_tool("ffmpeg")
+    run_tool(ffmpeg, [
+        "-v", "error",
+        "-f", "lavfi", "-i", f"testsrc2=duration=1:rate=24:size={SIZE}",
+        "-f", "lavfi", "-i", f"smptebars=duration=1:rate=24:size={SIZE}",
+        "-f", "lavfi", "-i", a0,
+        "-f", "lavfi", "-i", a1,
+        "-filter_complex",
+        "[0:v][1:v]concat=n=2:v=1:a=0[v];[2:a][3:a]concat=n=2:v=0:a=1[a]",
+        "-map", "[v]", "-map", "[a]",
+        "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-shortest", "-y", str(path),
+    ])
+    return path
+
+
+def test_boundary_equal_energy_frequency_switch_not_continuous(tmp_path: Path) -> None:
+    """§14 B: 440 Hz → 880 Hz at equal amplitude must NOT read CONTINUOUS just
+    because energy is present on both sides — the spectrum moved."""
+    clip = _hardcut_two_audio(
+        "au_cut_freqswitch.mp4",
+        "sine=frequency=440:duration=1:sample_rate=48000",
+        "sine=frequency=880:duration=1:sample_rate=48000",
+    )
+    output = _analyze(clip, tmp_path, with_shots=True)
+    qc = output.result
+    assert qc is not None and qc.boundaries_checked == 1
+    boundary = qc.boundary_evidence[0]
+    assert boundary.audio_present_before and boundary.audio_present_after
+    assert boundary.audio_continuity_status != BoundaryAudioStatus.CONTINUOUS
+
+
+def test_boundary_equal_energy_tone_to_noise_not_continuous(tmp_path: Path) -> None:
+    """§14 C: a tone → broadband noise at similar level must NOT read CONTINUOUS."""
+    clip = _hardcut_two_audio(
+        "au_cut_tonenoise.mp4",
+        "sine=frequency=400:duration=1:sample_rate=48000",
+        "anoisesrc=color=white:duration=1:sample_rate=48000:amplitude=0.5",
+    )
+    output = _analyze(clip, tmp_path, with_shots=True)
+    qc = output.result
+    assert qc is not None and qc.boundaries_checked == 1
+    assert qc.boundary_evidence[0].audio_continuity_status != BoundaryAudioStatus.CONTINUOUS
+
+
+def test_aac_priming_skip_samples_detected(tmp_path: Path) -> None:
+    """§16/§17: AAC exposes encoder-delay skip_samples; sample-0 anchoring is not
+    claimed and an AUDIO_SAMPLE_ANCHOR_REVIEW_REQUIRED concern is recorded."""
+    clip = _make_av(
+        "au_sine48k.mp4",
+        f"testsrc2=duration=2:rate=24:size={SIZE}",
+        ["-f", "lavfi", "-i", "sine=frequency=440:duration=2:sample_rate=48000"],
+        ["-c:a", "aac", "-ac", "2", "-ar", "48000", "-shortest"],
+    )
+    priming = probe_audio_priming(clip)
+    assert priming.codec_name == "aac"
+    assert priming.has_priming  # skip_samples > 0 for AAC
+    output = _analyze(clip, tmp_path)
+    qc = output.result
+    assert qc is not None and qc.timeline is not None
+    assert qc.timeline.sample_anchor_status == SampleAnchorStatus.ANCHOR_REVIEW_REQUIRED
+    assert qc.timeline.codec_skip_samples is not None and qc.timeline.codec_skip_samples > 0
+    codes = {c.concern_code for c in qc.concerns}
+    assert "AUDIO_SAMPLE_ANCHOR_REVIEW_REQUIRED" in codes
+    assert any(i.rule_id == "P3-AUDIO-009" for i in output.issues)
+
+
 def test_boundary_with_continuous_audio_crossing(tmp_path: Path) -> None:
     clip = _hardcut_with_audio(
         "au_cut_continuous.mp4",
@@ -310,7 +386,7 @@ def test_boundary_with_silence_gap(tmp_path: Path) -> None:
     assert qc is not None
     assert qc.boundaries_checked == 1
     boundary = qc.boundary_evidence[0]
-    assert boundary.silence_around_boundary is True
+    assert boundary.silence_spans_boundary is True
     assert boundary.audio_continuity_status == BoundaryAudioStatus.DISCONTINUOUS
     assert boundary.audio_verification_status == AudioVerificationStatus.CHECKED_NO_CROSSING
 
