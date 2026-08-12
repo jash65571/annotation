@@ -32,8 +32,10 @@ cross-check, hard FAIL/WARN semantics, full test/lint/typecheck gates.
 - Deferred to Phase 3.x/4: diarization (adapter contract fixed), OCR,
   camera-movement phases, playback-speed analysis.
 
-## Phase 4 — Visual review intelligence (COMPLETE, pending review — see docs/08)
-Delivered:
+## Phase 4 — Visual review intelligence (FINAL HARDENING — see docs/08)
+Under an independent review-findings pass; not declared complete until every
+hardening item passes review (evidence→claim reconciliation, typed decision
+registries, anchor/tracking/OCR provenance, expanded validators). Delivered:
 - Immutable seed snapshot → robust recoverable parser → atomic `SeedClaim`
   extraction (typed, foundational/local) → structural comparison against Shot
   Truth / media → claim↔evidence matrix → KEEP / FIX_ENRICH / REDO_REBUILD /

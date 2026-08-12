@@ -184,7 +184,24 @@ contract only.
 
 ## Delivered vs planned
 
-**Delivered (Phase 4 complete):**
+**Status: FINAL HARDENING.** Phase 4 is under an independent review-findings pass
+and is NOT declared complete until every hardening item passes review. Remaining
+review threads and what they enforce:
+
+- Visual/CV evidence is reconciled into the claim↔evidence matrix and drives
+  status even with a clean or absent seed; machine semantic evidence never becomes
+  factual on its own (at most PARTIALLY_SUPPORTED with a graded ref, CONTRADICTED
+  where deterministic, else UNRESOLVED/REVIEW_REQUIRED).
+- Camera/OCR claim matching is scoped by shot + time (and camera by direction);
+  entity-foundation checks catch identity collisions and not-visible-at-claim-time.
+- Human decisions route to typed target registries with whitelisted per-kind
+  appliers — no decision can mutate an arbitrary model field, similar tracks are
+  never auto-merged, and a SAME_ENTITY_CANDIDATE stays review-required.
+- The run manifest records anchor input provenance (path + SHA-256 + snapshot),
+  the tracking version/config, and the OCR engine/version/language/status, so a
+  result is never claimed reproducible without them.
+
+**Delivered so far:**
 
 - Seed snapshot / robust multiline parser / atomic claim decomposition (character
   & object attributes, Action & Audio clause splitting + atomicity diagnostics) /
