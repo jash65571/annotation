@@ -16,10 +16,13 @@ from ..camera.global_motion import PairMotion
 from ..media.timestamps import seconds_to_decimal
 from ..models.frame import FrameLedger
 from ..models.review_intelligence import (
+    ActionCandidate,
     CameraMotionCandidate,
     CharacterHypothesis,
+    ContactEvent,
     ContinuityLink,
     EntityTrack,
+    FinalStateCheck,
     FrameObservation,
     ObjectHypothesis,
     OCREngineInfo,
@@ -164,6 +167,27 @@ def write_continuity_links(entities_dir: Path, links: list[ContinuityLink]) -> P
     return _write_json(
         entities_dir / "continuity_links.json",
         {"continuity_links": [link.model_dump(mode="json") for link in links]},
+    )
+
+
+def write_final_state_checks(entities_dir: Path, checks: list[FinalStateCheck]) -> Path:
+    return _write_json(
+        entities_dir / "final_state_checks.json",
+        {"final_state_checks": [c.model_dump(mode="json") for c in checks]},
+    )
+
+
+def write_contact_events(actions_dir: Path, events: list[ContactEvent]) -> Path:
+    return _write_json(
+        actions_dir / "contact_events.json",
+        {"contact_events": [e.model_dump(mode="json") for e in events]},
+    )
+
+
+def write_action_candidates(actions_dir: Path, candidates: list[ActionCandidate]) -> Path:
+    return _write_json(
+        actions_dir / "action_candidates.json",
+        {"action_candidates": [c.model_dump(mode="json") for c in candidates]},
     )
 
 

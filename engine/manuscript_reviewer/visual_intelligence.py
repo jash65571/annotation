@@ -20,6 +20,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .actions.boundaries import build_action_candidates
+from .actions.contacts import build_contact_events
+from .actions.final_state import build_final_state_checks
 from .artifacts import review_writer, visual_writer
 from .camera.segmentation import analyze_camera_motion
 from .media.clock import AnnotationClock
@@ -130,7 +133,7 @@ def run_visual_intelligence(
         if visual_anchors_path is not None:
             start = time.perf_counter()
             entity_tracks = _run_tracking_stage(
-                cache, ledger, clock, media, visual_anchors_path,
+                cache, ledger, clock, media, shot_truth, visual_anchors_path,
                 run_dir, artifacts, issues, result,
             )
             _timed(timings, "tracking", start)
@@ -352,6 +355,7 @@ def _run_tracking_stage(
     ledger: FrameLedger,
     clock: AnnotationClock,
     media: MediaInfo,
+    shot_truth: ShotTruthResult | None,
     anchors_path: Path,
     run_dir: Path,
     artifacts: list[Path],
@@ -385,6 +389,32 @@ def _run_tracking_stage(
     artifacts.append(visual_writer.write_character_hypotheses(entities_dir, characters))
     artifacts.append(visual_writer.write_object_hypotheses(entities_dir, objects))
     artifacts.append(visual_writer.write_continuity_links(entities_dir, links))
+
+    char_tracks = [t for t in tracks if t.entity_type.upper() == "CHARACTER"]
+    obj_tracks = [t for t in tracks if t.entity_type.upper() == "OBJECT"]
+
+    # V: ownership/contact events.
+    contact_events = build_contact_events(char_tracks, obj_tracks)
+    issues.extend(visual_validator.validate_contact_events(contact_events))
+    # W: final object-state checks (removal never inferred from a shot ending).
+    final_checks = build_final_state_checks(obj_tracks, shot_truth, contact_events)
+    issues.extend(visual_validator.validate_final_states(final_checks, shot_truth))
+    artifacts.append(visual_writer.write_final_state_checks(entities_dir, final_checks))
+    # X: atomic action-boundary candidates (semantic label stays None).
+    frame_time = _frame_to_time(ledger, clock)
+    action_candidates = build_action_candidates(
+        char_tracks, obj_tracks, contact_events, frame_time
+    )
+    issues.extend(
+        visual_validator.validate_action_candidates(action_candidates, ledger.frame_count)
+    )
+    result.action_candidate_count = len(action_candidates)
+    result.semantic_review_required_count = sum(
+        1 for a in action_candidates if a.semantic_label is None
+    )
+    actions_dir = run_dir / "visual" / "actions"
+    artifacts.append(visual_writer.write_contact_events(actions_dir, contact_events))
+    artifacts.append(visual_writer.write_action_candidates(actions_dir, action_candidates))
     return tracks
 
 
@@ -448,6 +478,21 @@ def _region_boxes(gray: np.ndarray) -> list[tuple[int, int, int, int]]:
     from .ocr.regions import detect_text_regions
 
     return [(r.x, r.y, r.width, r.height) for r in detect_text_regions(gray)]
+
+
+def _frame_to_time(
+    ledger: FrameLedger, clock: AnnotationClock
+) -> Callable[[int], Fraction | None]:
+    """Resolve a ledger frame index to its exact annotation time."""
+
+    def resolve(frame_index: int) -> Fraction | None:
+        if 0 <= frame_index < ledger.frame_count:
+            src = ledger.frames[frame_index].pts_time_seconds
+            if src is not None:
+                return clock.to_annotation(src)
+        return None
+
+    return resolve
 
 
 def _make_time_to_frame(

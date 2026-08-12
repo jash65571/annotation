@@ -11,10 +11,13 @@ import itertools
 
 from ..models.frame import FrameLedger
 from ..models.review_intelligence import (
+    ActionCandidate,
     CameraMotionCandidate,
     CameraMotionClass,
     CharacterHypothesis,
+    ContactEvent,
     EntityTrack,
+    FinalStateCheck,
     FrameObservation,
     ObjectHypothesis,
     TrackStatus,
@@ -196,6 +199,74 @@ def validate_hypotheses(
                     severity=Severity.FAIL,
                     location=tid,
                     message=f"One physical track maps to multiple O IDs: {sorted(labels)}.",
+                )
+            )
+    return issues
+
+
+def validate_action_candidates(
+    candidates: list[ActionCandidate], frame_count: int
+) -> list[ValidatorIssue]:
+    issues: list[ValidatorIssue] = []
+    for cand in candidates:
+        # P4-ACTION-001/002: valid, ordered exact frames.
+        if not (0 <= cand.start_frame <= cand.end_frame < frame_count):
+            issues.append(
+                ValidatorIssue(
+                    rule_id="P4-ACTION-001",
+                    severity=Severity.FAIL,
+                    location=cand.candidate_id,
+                    message=f"Action frame range invalid: {cand.start_frame}->{cand.end_frame}.",
+                )
+            )
+        # P4-ACTION-003: a semantic label may never be asserted as verified from
+        # generic motion — a labelled candidate must still be review-required.
+        if cand.semantic_label is not None and not cand.review_required:
+            issues.append(
+                ValidatorIssue(
+                    rule_id="P4-ACTION-003",
+                    severity=Severity.FAIL,
+                    location=cand.candidate_id,
+                    message="Semantic action label marked verified from generic motion.",
+                )
+            )
+    return issues
+
+
+def validate_contact_events(events: list[ContactEvent]) -> list[ValidatorIssue]:
+    """P4-OBJECT-003: ownership/contact transitions are chronological per object."""
+    issues: list[ValidatorIssue] = []
+    by_obj: dict[str | None, list[int]] = {}
+    for ev in events:
+        by_obj.setdefault(ev.object_track_id, []).append(ev.frame_index)
+    for obj, frames in by_obj.items():
+        if frames != sorted(frames):
+            issues.append(
+                ValidatorIssue(
+                    rule_id="P4-OBJECT-003",
+                    severity=Severity.FAIL,
+                    location=str(obj),
+                    message="Contact/ownership events are not chronological.",
+                )
+            )
+    return issues
+
+
+def validate_final_states(
+    checks: list[FinalStateCheck], shot_result: object
+) -> list[ValidatorIssue]:
+    """P4-FINAL-001: a final state is never resolved as removed/released without
+    evidence (removal is never inferred merely because the shot ends)."""
+    issues: list[ValidatorIssue] = []
+    for check in checks:
+        removed = check.final_state.value in ("OUT_OF_FRAME",)
+        if removed and check.resolved and not check.evidence_refs:
+            issues.append(
+                ValidatorIssue(
+                    rule_id="P4-FINAL-001",
+                    severity=Severity.FAIL,
+                    location=f"{check.entity_id}@shot{check.shot_number}",
+                    message="Final state 'removed' resolved without evidence.",
                 )
             )
     return issues
