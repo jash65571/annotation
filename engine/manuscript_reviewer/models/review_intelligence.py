@@ -516,6 +516,12 @@ class TrackObservation(StrictModel):
     height: int
     status: TrackStatus = TrackStatus.TRACKED
     appearance_similarity: float | None = None
+    #: Ambiguity evidence (final-fix 3): the next-best distinct template peak, the
+    #: displacement from the last known position, and whether this frame's match is
+    #: identity-ambiguous (near-equal competitor or an implausible jump).
+    second_best_score: float | None = None
+    displacement: float | None = None
+    identity_ambiguous: bool = False
     notes: list[str] = []
 
 
@@ -531,6 +537,9 @@ class EntityTrack(StrictModel):
     observations: list[TrackObservation] = []
     status: TrackStatus = TrackStatus.REVIEW_REQUIRED
     reacquired: bool = False
+    #: True if any frame's match was identity-ambiguous — the track may have wanted
+    #: to jump to a similar-looking entity; identity is never silently accepted.
+    identity_ambiguous: bool = False
     evidence_refs: list[EvidenceReference] = []
     notes: list[str] = []
 

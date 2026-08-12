@@ -35,6 +35,15 @@ def _identity_evidence(track: EntityTrack) -> list[IdentityEvidence]:
                 supports=False,
             )
         )
+    if track.identity_ambiguous:
+        evidence.append(
+            IdentityEvidence(
+                kind="identity_ambiguous",
+                detail="a near-equal competitor / implausible jump made identity "
+                "ambiguous; the track may have wanted to hop to a similar entity",
+                supports=False,
+            )
+        )
     return evidence
 
 

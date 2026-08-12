@@ -14,8 +14,9 @@ from manuscript_reviewer.tracking.tracker import TRACKING_VERSION, tracking_conf
 def test_tracking_config_is_pinned_and_versioned() -> None:
     cfg = tracking_config()
     assert set(cfg) == {
-        "track_threshold", "occlusion_max", "lost_giveup",
-        "min_template", "metric_width", "metric_height",
+        "track_threshold", "occlusion_max", "lost_giveup", "min_template",
+        "ambiguity_margin", "max_disp_factor", "max_disp_floor",
+        "metric_width", "metric_height",
     }
     assert cfg["track_threshold"] == 0.55
     assert TRACKING_VERSION  # non-empty; bumps when tracking behaviour changes

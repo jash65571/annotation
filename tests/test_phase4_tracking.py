@@ -159,6 +159,33 @@ def test_same_entity_candidate_link_must_stay_review_required() -> None:
 
 
 # --------------------------------------------------------------------------
+# Final-fix 3: identity-ambiguity decision (pure) + no-silent-swap
+# --------------------------------------------------------------------------
+
+
+def test_identity_uncertain_decision() -> None:
+    from manuscript_reviewer.tracking.tracker import _identity_uncertain
+
+    ts = 30.0  # template size
+    # A near-equal competitor at a spatially DISTINCT peak -> ambiguous.
+    assert _identity_uncertain(0.82, 0.81, peak_distance=40, displacement=2,
+                               consecutive=True, template_size=ts)
+    # A clear winner (second far below) -> not ambiguous.
+    assert not _identity_uncertain(0.82, 0.40, peak_distance=40, displacement=2,
+                                   consecutive=True, template_size=ts)
+    # Near-equal but the "second peak" is the shoulder of the same blob (close) -> ok.
+    assert not _identity_uncertain(0.82, 0.81, peak_distance=5, displacement=2,
+                                   consecutive=True, template_size=ts)
+    # Implausible jump on a consecutive frame -> ambiguous.
+    assert _identity_uncertain(0.9, 0.2, peak_distance=60, displacement=140,
+                               consecutive=True, template_size=ts)
+    # The same large displacement right after an occlusion gap (non-consecutive) is
+    # NOT treated as a jump (legit motion during the gap; rely on the competitor).
+    assert not _identity_uncertain(0.9, 0.2, peak_distance=60, displacement=140,
+                                   consecutive=False, template_size=ts)
+
+
+# --------------------------------------------------------------------------
 # ffmpeg: real tracking on a synthetic clip
 # --------------------------------------------------------------------------
 
@@ -184,6 +211,35 @@ def test_track_follows_moving_template(tmp_path: Path) -> None:
     # The tracked box follows the square rightward across the clip.
     assert xs[-1] > xs[0]
     assert len(track.observations) >= 10
+    # A lone, smoothly moving object is never identity-ambiguous (case B).
+    assert not track.identity_ambiguous
+
+
+@requires_ffmpeg
+def test_tracker_does_not_silently_swap_between_two_identical_objects(tmp_path: Path) -> None:
+    # Two identical textured squares, both static and present every frame. Anchored
+    # to the LEFT one; the RIGHT one is an equally-strong competitor. The tracker
+    # must NOT silently hop to it — identity stays ambiguous / review-required.
+    frames = []
+    for _ in range(14):
+        f = _bg().copy()
+        _place_square(f, 30)   # left square
+        _place_square(f, 230)  # identical right square, far away
+        frames.append(f)
+    clip = synth_clip(tmp_path / "twins.mp4", frames)
+    ledger = _build_ledger(clip)
+    cache = FrameCache(clip, ledger)
+    clock = AnnotationClock.from_ledger(ledger)
+    anchor = VisualAnchor(
+        anchor_id="a1", frame_index=0, x=30, y=70, width=30, height=30,
+        entity_type="OBJECT", temporary_label="square",
+    )
+    track = track_anchor(cache.gray_frames(), ledger, clock, anchor, _W, _H)
+    assert track.identity_ambiguous is True
+    assert track.status == TrackStatus.REVIEW_REQUIRED
+    # It never confidently (TRACKED) reports the RIGHT square's position.
+    tracked_xs = [o.x for o in track.observations if o.status == TrackStatus.TRACKED]
+    assert all(x < 150 for x in tracked_xs)  # right square sits near x~230
 
 
 def _grid_ledger(n: int) -> FrameLedger:

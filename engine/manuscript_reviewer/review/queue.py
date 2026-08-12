@@ -198,6 +198,17 @@ def build_machine_review_items(
                                 "track was lost and reacquired; identity not proven",
                                 ReviewerAction.VERIFY,
                                 track.first_frame_index, track.last_frame_index, refs=[ref]))
+        if track.identity_ambiguous:
+            amb = [o.frame_index for o in track.observations if o.identity_ambiguous]
+            lo_a, hi_a = (min(amb), max(amb)) if amb else (
+                track.first_frame_index, track.last_frame_index)
+            ref = _frame_ref(f"EV-AMBIG-{track.track_id}", lo_a, hi_a,
+                             "identity-ambiguous frames")
+            items.append(_mitem(counter, ReviewPriority.HIGH,
+                                f"Ambiguous identity: {track.track_id}",
+                                "a near-equal competitor / implausible jump; the track may "
+                                "have wanted to hop to a similar entity",
+                                ReviewerAction.CHOOSE_IDENTITY, lo_a, hi_a, refs=[ref]))
     for check in evidence.final_state_checks:
         if not check.resolved:
             refs = []

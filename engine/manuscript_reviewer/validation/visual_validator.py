@@ -182,6 +182,17 @@ def validate_tracks(
                     message="Reacquired track marked TRACKED (must stay REVIEW_REQUIRED).",
                 )
             )
+        # P4-ENTITY-007: an identity-ambiguous track cannot silently be verified
+        # (FAIL only on the contradiction, never on ambiguity itself).
+        if track.identity_ambiguous and track.status == TrackStatus.TRACKED:
+            issues.append(
+                ValidatorIssue(
+                    rule_id="P4-ENTITY-007",
+                    severity=Severity.FAIL,
+                    location=track.track_id,
+                    message="Identity-ambiguous track marked TRACKED (must stay REVIEW_REQUIRED).",
+                )
+            )
         # P4-ENTITY-005: a single track must not silently span a shot cut. Tracks are
         # shot-bounded; cross-shot continuity belongs to a review-required continuity
         # link, never one track carrying the same identity across a cut.

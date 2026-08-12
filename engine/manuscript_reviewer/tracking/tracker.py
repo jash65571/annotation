@@ -19,7 +19,7 @@ from ..shots.decode import METRIC_HEIGHT, METRIC_WIDTH, GrayFrames
 
 #: Bumps whenever tracking behaviour changes; recorded in the run manifest so a
 #: result is never claimed reproducible without the tracking config it was made by.
-TRACKING_VERSION = "0.4.0"
+TRACKING_VERSION = "0.5.0"
 
 #: Normalized template-match score for a confident match.
 _TRACK_THRESHOLD = 0.55
@@ -28,6 +28,14 @@ _OCCLUSION_MAX = 3
 #: Give up searching after this many consecutive LOST frames.
 _LOST_GIVEUP = 8
 _MIN_TEMPLATE = 2
+#: Final-fix 3 identity-ambiguity defense. A best match within this margin of a
+#: spatially DISTINCT second-best peak is ambiguous (two similar candidates).
+_AMBIGUITY_MARGIN = 0.05
+#: A per-frame displacement above max(floor, factor*template) on a CONSECUTIVE frame
+#: is an implausible jump (silently hopping to a similar entity elsewhere). It is
+#: only applied on consecutive frames so a legitimate fast pan is not broken.
+_MAX_DISP_FACTOR = 3.0
+_MAX_DISP_FLOOR = 12.0
 
 
 def tracking_config() -> dict[str, float]:
@@ -37,9 +45,27 @@ def tracking_config() -> dict[str, float]:
         "occlusion_max": float(_OCCLUSION_MAX),
         "lost_giveup": float(_LOST_GIVEUP),
         "min_template": float(_MIN_TEMPLATE),
+        "ambiguity_margin": _AMBIGUITY_MARGIN,
+        "max_disp_factor": _MAX_DISP_FACTOR,
+        "max_disp_floor": _MAX_DISP_FLOOR,
         "metric_width": float(METRIC_WIDTH),
         "metric_height": float(METRIC_HEIGHT),
     }
+
+
+def _identity_uncertain(
+    best: float, second: float, peak_distance: float, displacement: float,
+    consecutive: bool, template_size: float,
+) -> bool:
+    """Pure ambiguity decision (unit-testable). A confident-enough score is still
+    NOT accepted as the same identity when either a near-equal competitor peak sits
+    at a spatially distinct location, or (on a consecutive frame) the box would have
+    to make an implausible jump. Both are how a template tracker silently hops
+    between two similar entities."""
+    competitor = (best - second) < _AMBIGUITY_MARGIN and peak_distance >= template_size
+    allowed = max(_MAX_DISP_FLOOR, _MAX_DISP_FACTOR * template_size)
+    implausible_jump = consecutive and displacement > allowed
+    return bool(competitor or implausible_jump)
 
 
 def _to_grid_box(
@@ -70,15 +96,25 @@ def _hist(patch: npt.NDArray[np.uint8]) -> npt.NDArray[np.float32]:
     return hist.astype(np.float32)
 
 
-def _match(
+def _match_peaks(
     frame: npt.NDArray[np.uint8], template: npt.NDArray[np.uint8]
-) -> tuple[int, int, float]:
+) -> tuple[int, int, float, int, int, float]:
+    """Best match plus the next-best SPATIALLY DISTINCT peak. The neighborhood
+    around the best peak is suppressed (to -1, below the TM_CCOEFF_NORMED floor)
+    before re-maxing so the 'second-best' is a competing entity, not the shoulder
+    of the same blob."""
     th, tw = template.shape
     if frame.shape[0] < th or frame.shape[1] < tw:
-        return 0, 0, 0.0
+        return 0, 0, 0.0, 0, 0, -1.0
     result = cv2.matchTemplate(frame, template, cv2.TM_CCOEFF_NORMED)
     _min_v, max_v, _min_l, max_l = cv2.minMaxLoc(result)
-    return int(max_l[0]), int(max_l[1]), float(max_v)
+    bx, by = int(max_l[0]), int(max_l[1])
+    suppressed = result.copy()
+    y0, y1 = max(0, by - th), min(result.shape[0], by + th + 1)
+    x0, x1 = max(0, bx - tw), min(result.shape[1], bx + tw + 1)
+    suppressed[y0:y1, x0:x1] = -1.0
+    _m2, second_v, _l2, second_l = cv2.minMaxLoc(suppressed)
+    return bx, by, float(max_v), int(second_l[0]), int(second_l[1]), float(second_v)
 
 
 def track_anchor(
@@ -109,6 +145,8 @@ def track_anchor(
     )
     reacquired = False
     saw_loss = False
+    identity_ambiguous = False
+    template_size = float(max(gw, gh))
 
     for direction in (1, -1):
         miss = 0
@@ -116,8 +154,13 @@ def track_anchor(
         last_gx, last_gy = gx, gy  # last KNOWN position for occlusion frames
         f = anchor.frame_index + direction
         while lo <= f <= hi:
-            mx, my, score = _match(gray[f], template)
-            if score >= _TRACK_THRESHOLD:
+            mx, my, score, sx, sy, second = _match_peaks(gray[f], template)
+            displacement = ((mx - last_gx) ** 2 + (my - last_gy) ** 2) ** 0.5
+            peak_distance = ((mx - sx) ** 2 + (my - sy) ** 2) ** 0.5
+            ambiguous = score >= _TRACK_THRESHOLD and _identity_uncertain(
+                score, second, peak_distance, displacement, miss == 0, template_size
+            )
+            if score >= _TRACK_THRESHOLD and not ambiguous:
                 hist_corr = float(
                     cv2.compareHist(
                         template_hist,
@@ -131,10 +174,29 @@ def track_anchor(
                     reacquired = True
                     lost = False
                 observations[f] = _observation(
-                    f, mx, my, gw, gh, hist_corr, status, full_w, full_h
+                    f, mx, my, gw, gh, hist_corr, status, full_w, full_h,
+                    second_best=second, displacement=displacement,
                 )
                 last_gx, last_gy = mx, my
                 miss = 0
+            elif ambiguous:
+                # A confident-enough score whose identity is NOT trustworthy: a
+                # near-equal competitor or an implausible jump. Never silently hop —
+                # keep the last-known box, flag ambiguity, and count it as a miss so
+                # a sustained ambiguity degrades to LOST rather than a wrong identity.
+                identity_ambiguous = True
+                observations[f] = _observation(
+                    f, last_gx, last_gy, gw, gh, None, TrackStatus.REVIEW_REQUIRED,
+                    full_w, full_h, second_best=second, displacement=displacement,
+                    ambiguous=True,
+                    note="identity ambiguous: near-equal competitor or implausible jump",
+                )
+                miss += 1
+                if miss > _OCCLUSION_MAX:
+                    saw_loss = True
+                    lost = True
+                    if miss - _OCCLUSION_MAX > _LOST_GIVEUP:
+                        break
             else:
                 miss += 1
                 if miss <= _OCCLUSION_MAX:
@@ -153,10 +215,11 @@ def track_anchor(
 
     ordered = [observations[k] for k in sorted(observations)]
     frames = [o.frame_index for o in ordered]
-    # Similarity never proves identity: a reacquired or lossy track is REVIEW.
+    # Similarity never proves identity: a reacquired, lossy, or ambiguous track is
+    # REVIEW (identity was never silently accepted).
     status = (
         TrackStatus.REVIEW_REQUIRED
-        if (reacquired or saw_loss)
+        if (reacquired or saw_loss or identity_ambiguous)
         else TrackStatus.TRACKED
     )
     return EntityTrack(
@@ -168,6 +231,7 @@ def track_anchor(
         observations=ordered,
         status=status,
         reacquired=reacquired,
+        identity_ambiguous=identity_ambiguous,
         notes=[f"seeded by anchor {anchor.anchor_id} ({anchor.temporary_label or 'unlabeled'})"],
     )
 
@@ -183,6 +247,9 @@ def _observation(
     full_w: int,
     full_h: int,
     note: str | None = None,
+    second_best: float | None = None,
+    displacement: float | None = None,
+    ambiguous: bool = False,
 ) -> TrackObservation:
     fx, fy, fw, fh = _to_full_box(gx, gy, gw, gh, full_w, full_h)
     return TrackObservation(
@@ -193,5 +260,8 @@ def _observation(
         height=fh,
         status=status,
         appearance_similarity=round(similarity, 4) if similarity is not None else None,
+        second_best_score=round(second_best, 4) if second_best is not None else None,
+        displacement=round(displacement, 4) if displacement is not None else None,
+        identity_ambiguous=ambiguous,
         notes=[note] if note else [],
     )
