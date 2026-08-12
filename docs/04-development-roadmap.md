@@ -32,14 +32,30 @@ cross-check, hard FAIL/WARN semantics, full test/lint/typecheck gates.
 - Deferred to Phase 3.x/4: diarization (adapter contract fixed), OCR,
   camera-movement phases, playback-speed analysis.
 
-## Phase 4 — Review intelligence
-- Seed parsing → `SeedClaim` extraction → claim-vs-evidence comparison →
-  KEEP / FIX_ENRICH / REDO_REBUILD proposals with evidence.
-- Character/object continuity tracking (C#/O# candidate maps).
-- Caption generation via VLM/LLM adapters (propose-only; timing injected from the
-  ledger, never from the model).
-- M2-* caption validator (rule registry from docs/00 §29).
-- Golden Example behavior gate.
+## Phase 4 — Visual review intelligence (IN PROGRESS — see docs/08)
+Delivered (slices 1–2):
+- Immutable seed snapshot → robust recoverable parser → atomic `SeedClaim`
+  extraction (typed, foundational/local) → structural comparison against Shot
+  Truth / media → claim↔evidence matrix → KEEP / FIX_ENRICH / REDO_REBUILD /
+  HUMAN_DECISION_REQUIRED proposals with structured reason codes.
+- Task-feedback structuring, review queue, seed triage, media/rules-bound
+  human-decision persistence.
+- Shared bounded frame cache + per-frame visual observation ledger + concerns +
+  provenance-tagged enriched ledger.
+- P4-SEED/CLAIM/REVIEW/OCR/QC/OBS validators; three separate status vocabularies
+  (evidence status ≠ machine proposal ≠ human decision).
+
+Staged for later slices (data model already in `models/review_intelligence.py`):
+- OCR (adapter + Tesseract + temporal consensus + timing + caption-eligibility).
+- Anchor-assisted local tracking, character/object continuity, ownership/contact,
+  final-state checks.
+- Camera global-motion segmentation, action boundaries, playback-speed evidence,
+  high-risk evidence bundles.
+- Future `VisualReasonerAdapter` (design only; propose-only, never owns the clock).
+
+Phase 4 produces structured evidence and reviewer proposals only — no final
+caption prose. Caption generation, the M2-* caption validator, and the Golden
+Example behavior gate move to a later phase.
 
 ## Phase 5 — Reviewer cockpit
 - Tauri 2 + React + TypeScript desktop UI over the Python engine: timeline, frame

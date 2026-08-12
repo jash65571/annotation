@@ -140,3 +140,4 @@ Note: the raw Manuscript II reference documents are local-only and gitignored
 - `docs/05-phase-1-verification.md` — validators, thresholds, cross-check rationale
 - `docs/06-shot-truth-engine.md` — Phase 2: metrics, verifier, transition policy, failure modes
 - `docs/07-audio-truth-engine.md` — Phase 3: audio timeline, ASR workers, language safety, review queue
+- `docs/08-visual-review-intelligence.md` — Phase 4: seed parsing/claims, structural comparison, KEEP/FIX/REDO proposals, review queue, frame observations
