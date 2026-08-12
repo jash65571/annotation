@@ -39,7 +39,7 @@ from .review.proposals import build_proposals, count_by_outcome
 from .review.queue import build_review_queue, build_triage
 from .seed import feedback as feedback_mod
 from .seed import snapshot as snapshot_mod
-from .seed.claims import extract_claims
+from .seed.claims import collect_seed_diagnostics, extract_claims
 from .seed.comparison import compare_seed
 from .seed.parser import parse_seed_text
 from .shots.decode import MetricDecodeError
@@ -134,6 +134,8 @@ def run_visual_intelligence(
     seed_text = (seed_dir / "seed_original.txt").read_text(encoding="utf-8", errors="replace")
     doc = parse_seed_text(seed_text, snapshot)
     claims = extract_claims(doc)
+    # Platform-semantic atomicity diagnostics (seed-review leads, INFO).
+    doc.issues.extend(collect_seed_diagnostics(doc))
     _timed(timings, "seed_parse", start)
     result.seed_parsed = True
     result.seed_claim_count = len(claims)

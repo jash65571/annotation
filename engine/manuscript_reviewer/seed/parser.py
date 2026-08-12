@@ -19,6 +19,8 @@ Robustness contract (mandatory):
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
+from dataclasses import field as _dc_field
 from fractions import Fraction
 
 from ..models.review_intelligence import (
@@ -232,6 +234,52 @@ def _match_shot_field(stripped: str) -> tuple[SeedFieldKind, str, str] | None:
     return kind, label_part.strip(), value_part.strip()
 
 
+def _match_field_heading(stripped: str) -> SeedFieldKind | None:
+    """A standalone per-shot field heading (label alone, no substantive value).
+
+    Supports the real Manuscript block layout where the field label sits on its
+    own line and owns the following lines until the next field or shot.
+    """
+    label_part, sep, value_part = stripped.partition(":")
+    if sep and value_part.strip():
+        return None  # this is an inline "Label: value", handled elsewhere
+    return _SHOT_FIELDS.get(_normalize_label(label_part if sep else stripped))
+
+
+#: Fields whose block content is a sequence of timestamped events.
+_TIMESTAMPED_FIELDS = frozenset(
+    {SeedFieldKind.ACTION_AUDIO, SeedFieldKind.CAMERA_MOVEMENTS, SeedFieldKind.SPEED_CHANGES}
+)
+#: A content line that begins with a timestamp (so it starts a new event).
+_STARTS_WITH_TIME = re.compile(
+    rf"^\s*[\[(]?\s*{_TIME_TOKEN}\s*(?:[–—-]|to|[:\])])"  # noqa: RUF001
+)
+
+_FIELD_LABELS: dict[SeedFieldKind, str] = {
+    SeedFieldKind.SHOT_START: "Start",
+    SeedFieldKind.SHOT_END: "End",
+    SeedFieldKind.TRANSITION: "Cut",
+    SeedFieldKind.CAMERA: "Camera",
+    SeedFieldKind.CAMERA_MOVEMENTS: "Camera Movements",
+    SeedFieldKind.SCENE: "Scene",
+    SeedFieldKind.ACTION_AUDIO: "Action & Audio",
+    SeedFieldKind.PLAYBACK_SPEED: "Playback speed",
+    SeedFieldKind.SPEED_CHANGES: "Speed Changes",
+}
+
+
+@dataclass
+class _Pending:
+    """A block-form entry accumulating its content lines until the next field."""
+
+    section: SeedSection
+    field: SeedFieldKind
+    label: str | None
+    start_line: int
+    raw_lines: list[str] = _dc_field(default_factory=list)
+    value_lines: list[str] = _dc_field(default_factory=list)
+
+
 def _extract_ids(text: str) -> tuple[list[str], list[str]]:
     characters = [f"C{m.group(1)}" for m in _CHARACTER_RE.finditer(text)]
     objects = [f"O{m.group(1)}" for m in _OBJECT_RE.finditer(text)]
@@ -266,46 +314,75 @@ def parse_seed_text(text: str, snapshot: SeedSnapshot | None = None) -> SeedDocu
     current = preamble
     entry_counter = 0
     issue_counter = 0
+    active_field: SeedFieldKind | None = None
+    pending: _Pending | None = None
+
+    def flush() -> None:
+        nonlocal pending, entry_counter
+        if pending is None:
+            return
+        entry_counter += 1
+        entry = _build_entry(
+            entry_counter,
+            pending.section,
+            pending.start_line,
+            "\n".join(pending.raw_lines),
+            pending.field,
+            pending.label,
+            "\n".join(pending.value_lines),
+            issues,
+        )
+        pending.section.entries.append(entry)
+        pending = None
+
+    def add_freeform(section: SeedSection, ln: int, raw: str, value: str) -> None:
+        nonlocal entry_counter
+        entry_counter += 1
+        section.entries.append(
+            _build_entry(
+                entry_counter, section, ln, raw, SeedFieldKind.FREEFORM, None, value, issues
+            )
+        )
 
     for line_no, raw_line in enumerate(lines, start=1):
         stripped = _strip_decoration(raw_line)
-
         if not stripped:
             continue
 
         # Video ID (anywhere; first wins).
         vid = _VIDEO_ID_RE.match(stripped)
         if vid is not None and video_id is None:
+            flush()
+            active_field = None
             video_id = vid.group(1).strip()
-            section = SeedSection(
+            current = SeedSection(
                 section_index=len(sections),
                 kind=SeedSectionKind.VIDEO_ID,
                 heading_text=stripped,
                 source_line=line_no,
             )
-            sections.append(section)
-            current = section
+            sections.append(current)
             continue
 
         # Shot header -> new SHOT section.
         shot_match = _SHOT_HEADER_RE.match(stripped)
         if shot_match is not None:
+            flush()
+            active_field = None
             shot_number = int(shot_match.group(1))
-            section = SeedSection(
+            current = SeedSection(
                 section_index=len(sections),
                 kind=SeedSectionKind.SHOT,
                 heading_text=stripped,
                 source_line=line_no,
                 shot_number=shot_number,
             )
-            sections.append(section)
-            current = section
-            # The header itself may carry the shot's start-end range.
+            sections.append(current)
             found = find_time_range(stripped)
             if found is not None:
                 entry_counter += 1
                 matched, start, end = found
-                if (start is None or end is None):
+                if start is None or end is None:
                     issue_counter += 1
                     issues.append(
                         SeedParseIssue(
@@ -319,7 +396,7 @@ def parse_seed_text(text: str, snapshot: SeedSnapshot | None = None) -> SeedDocu
                 current.entries.append(
                     SeedEntry(
                         entry_id=f"SE-{entry_counter:04d}",
-                        section_index=section.section_index,
+                        section_index=current.section_index,
                         source_line=line_no,
                         raw_line=raw_line,
                         field=SeedFieldKind.FREEFORM,
@@ -333,54 +410,65 @@ def parse_seed_text(text: str, snapshot: SeedSnapshot | None = None) -> SeedDocu
                 )
             continue
 
-        # Inside a shot: try per-shot field labels first.
         if current.kind == SeedSectionKind.SHOT:
+            # Inline "Label: value" -> a complete field entry.
             field_match = _match_shot_field(stripped)
-            if field_match is not None:
+            if field_match is not None and field_match[2] != "":
+                flush()
                 kind, label, value = field_match
+                active_field = kind
                 entry_counter += 1
                 current.entries.append(
                     _build_entry(
-                        entry_counter,
-                        current,
-                        line_no,
-                        raw_line,
-                        kind,
-                        label,
-                        value,
-                        issues,
+                        entry_counter, current, line_no, raw_line, kind, label, value, issues
                     )
                 )
                 continue
-        else:
-            # Not in a shot: an Overview heading opens a new section.
-            heading = _match_overview_heading(stripped)
-            if heading is not None:
-                kind_h, heading_text = heading
-                section = SeedSection(
-                    section_index=len(sections),
-                    kind=kind_h,
-                    heading_text=heading_text,
-                    source_line=line_no,
-                )
-                sections.append(section)
-                current = section
+            # Standalone field heading -> switch active field context (block form).
+            heading_kind = _match_field_heading(stripped)
+            if heading_kind is not None:
+                flush()
+                active_field = heading_kind
                 continue
+            # Content line owned by the active field (block form).
+            if active_field is not None:
+                starts_time = bool(_STARTS_WITH_TIME.match(stripped))
+                new_event = active_field in _TIMESTAMPED_FIELDS and starts_time
+                if pending is None or new_event or pending.field != active_field:
+                    flush()
+                    pending = _Pending(
+                        section=current,
+                        field=active_field,
+                        label=_FIELD_LABELS.get(active_field),
+                        start_line=line_no,
+                        raw_lines=[raw_line],
+                        value_lines=[stripped],
+                    )
+                else:
+                    pending.raw_lines.append(raw_line)
+                    pending.value_lines.append(stripped)
+                continue
+            add_freeform(current, line_no, raw_line, stripped)
+            continue
 
-        # Otherwise: a freeform entry belonging to the current section.
-        entry_counter += 1
-        current.entries.append(
-            _build_entry(
-                entry_counter,
-                current,
-                line_no,
-                raw_line,
-                SeedFieldKind.FREEFORM,
-                None,
-                stripped,
-                issues,
+        # Not in a shot: an Overview heading opens a new section.
+        heading = _match_overview_heading(stripped)
+        if heading is not None:
+            flush()
+            active_field = None
+            kind_h, heading_text = heading
+            current = SeedSection(
+                section_index=len(sections),
+                kind=kind_h,
+                heading_text=heading_text,
+                source_line=line_no,
             )
-        )
+            sections.append(current)
+            continue
+
+        add_freeform(current, line_no, raw_line, stripped)
+
+    flush()
 
     # Drop the PREAMBLE if it never collected anything.
     sections = [s for s in sections if not (s.kind == SeedSectionKind.PREAMBLE and not s.entries)]

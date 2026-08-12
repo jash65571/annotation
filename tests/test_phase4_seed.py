@@ -173,6 +173,104 @@ def test_parser_plain_text_without_headings() -> None:
     assert total_entries >= 3  # two freeform notes + shot content
 
 
+BLOCK_SEED = """[Shot 1: 0.0-5.0]
+
+Cut into this shot
+Opening shot
+
+Camera
+Wide shot, low angle
+
+Camera Movements
+
+0.0-0.5
+Camera pans screen-left.
+
+Action & Audio
+
+1.0-2.0
+C1 moves.
+
+2.1-2.5
+C1 speaks.
+
+Playback speed
+
+regular
+"""
+
+
+def test_parser_real_multiline_field_layout() -> None:
+    doc = parse_seed_text(BLOCK_SEED)
+    shot = doc.shot_sections[0]
+    by_field: dict[SeedFieldKind, list] = {}
+    for e in shot.entries:
+        by_field.setdefault(e.field, []).append(e)
+    assert by_field[SeedFieldKind.TRANSITION][0].value_text == "Opening shot"
+    assert "low angle" in by_field[SeedFieldKind.CAMERA][0].value_text
+    cm = by_field[SeedFieldKind.CAMERA_MOVEMENTS][0]
+    assert cm.parsed_start_exact == Fraction(0) and cm.parsed_end_exact == Fraction(1, 2)
+    aa = by_field[SeedFieldKind.ACTION_AUDIO]
+    assert len(aa) == 2  # two block events
+    assert aa[0].parsed_start_exact == Fraction(1)
+    assert aa[1].parsed_start_exact == Fraction(21, 10)
+    assert by_field[SeedFieldKind.PLAYBACK_SPEED][0].value_text == "regular"
+
+
+def test_character_description_yields_atomic_attribute_claims() -> None:
+    seed = "Characters\nC1: A man with black hair, glasses, a red shirt, and a backpack.\n"
+    claims = extract_claims(parse_seed_text(seed))
+    trait_texts = [c.text for c in claims if c.claim_type == SeedClaimType.CHARACTER_TRAIT]
+    assert any("hair" in t for t in trait_texts)
+    assert any("glasses" in t for t in trait_texts)
+    assert any("shirt" in t for t in trait_texts)
+    assert any("backpack" in t for t in trait_texts)
+    # Existence claim is still present and all attributes trace to the same entry.
+    exists = [c for c in claims if c.claim_type == SeedClaimType.CHARACTER_EXISTS]
+    assert exists and all(c.seed_entry_id == exists[0].seed_entry_id
+                          for c in claims if c.subject_ids == ["C1"])
+
+
+def test_object_description_yields_trait_claims() -> None:
+    seed = "Objects\nO1: A black skateboard with white wheels and a red logo.\n"
+    claims = extract_claims(parse_seed_text(seed))
+    traits = [c for c in claims if c.claim_type == SeedClaimType.OBJECT_TRAIT]
+    joined = " ".join(c.text for c in traits)
+    assert "wheels" in joined and "logo" in joined
+
+
+def test_action_audio_line_decomposes_into_independent_claims() -> None:
+    seed = (
+        "[Shot 1: 0.0-5.0]\nCut: Opening shot\n"
+        'Action & Audio: 1.0-2.0: C1 raises O1 and a popup appears while a chime sounds.\n'
+    )
+    claims = extract_claims(parse_seed_text(seed))
+    kinds = {c.claim_type for c in claims if c.shot_number == 1 and c.seed_time_range is not None}
+    assert SeedClaimType.ACTION in kinds
+    assert SeedClaimType.ON_SCREEN_TEXT in kinds
+    assert SeedClaimType.SOUND in kinds
+
+
+def test_inseparable_action_not_over_split() -> None:
+    seed = "[Shot 1: 0.0-5.0]\nCut: Opening shot\nAction & Audio: 1.0-2.0: C1 raises O1 and O2.\n"
+    claims = extract_claims(parse_seed_text(seed))
+    actions = [c for c in claims if c.claim_type == SeedClaimType.ACTION and c.shot_number == 1]
+    assert len(actions) == 1  # "raises O1 and O2" is one action, not two
+
+
+def test_atomicity_diagnostics_flag_mixed_line() -> None:
+    from manuscript_reviewer.seed.claims import collect_seed_diagnostics
+
+    seed = (
+        "[Shot 1: 0.0-5.0]\nCut: Opening shot\n"
+        'Action & Audio: 1.0-2.0: C1 raises O1 and a popup appears while a chime sounds.\n'
+    )
+    diagnostics = collect_seed_diagnostics(parse_seed_text(seed))
+    codes = " ".join(d.message for d in diagnostics)
+    assert "MIXED_VISUAL_AND_SOUND" in codes
+    assert "MIXED_VISUAL_AND_OVERLAY" in codes
+
+
 def test_parser_never_mutates_raw_lines() -> None:
     doc = parse_seed_text(CLEAN_SEED)
     raw_lines = [e.raw_line for s in doc.sections for e in s.entries]

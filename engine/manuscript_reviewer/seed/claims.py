@@ -23,9 +23,12 @@ from ..models.review_intelligence import (
     SeedDocument,
     SeedEntry,
     SeedFieldKind,
+    SeedParseIssue,
+    SeedParseSeverity,
     SeedSection,
     SeedSectionKind,
 )
+from .parser import _extract_ids
 
 # Character/object definition lines look like "C1: description" / "O2 - ...".
 _DEF_RE = re.compile(r"^\s*@?(?P<id>[CO]\d+)\s*[:\-–—)]", re.IGNORECASE)  # noqa: RUF001
@@ -89,6 +92,102 @@ class _Counter:
     def next(self, prefix: str) -> str:
         self.value += 1
         return f"{prefix}-{self.value:04d}"
+
+
+# --- attribute decomposition (item B) -------------------------------------
+
+#: phrase-classifier: (regex, trait subtype). First match wins.
+_CHAR_TRAIT_RULES: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\bhair\b|\bbald\b|\bbeard\b|\bmoustache\b|\bmustache\b", re.I), "hair"),
+    (re.compile(r"\bglasses\b|\bsunglasses\b|\beyewear\b|\bspectacles\b|\bmonocle\b", re.I),
+     "eyewear"),
+    (re.compile(r"\b(shirt|t-?shirt|jacket|coat|hoodie|sweater|jumper|dress|blouse|top|"
+                r"vest|uniform|tunic|robe)\b", re.I), "upper_clothing"),
+    (re.compile(r"\b(trousers|pants|jeans|shorts|skirt|leggings|shoes|boots|sneakers|"
+                r"sandals|socks)\b", re.I), "lower_clothing"),
+    (re.compile(r"\b(backpack|bag|rucksack|watch|necklace|bracelet|gloves|hat|cap|helmet|"
+                r"scarf|tie|earrings?|ring)\b", re.I), "accessory"),
+]
+_VISIBILITY_RE = re.compile(
+    r"not visible|never visible|off[-\s]?screen|lower body|out of frame|only.*visible", re.I
+)
+_OBJ_TRAIT_RULES: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\bwheels?\b|\btyres?\b|\btires?\b", re.I), "wheels"),
+    (re.compile(r"\blogo\b|\bmarking?s?\b|\bsticker\b|\blabel\b|\bemblem\b|\btext\b|\bnumber\b",
+                re.I), "marking"),
+    (re.compile(r"\b(red|orange|yellow|green|blue|purple|pink|black|white|grey|gray|brown|"
+                r"silver|gold|chrome|beige|tan|navy)\b", re.I), "color"),
+]
+
+
+def _split_phrases(text: str) -> list[str]:
+    """Split a description into candidate attribute phrases on commas / 'and' /
+    'with'. Conservative: keeps each phrase's exact words."""
+    # Remove a leading article-only head like "A man" is kept as the base claim;
+    # split the remainder on separators.
+    parts = re.split(r",|\band\b|\bwith\b|\bwearing\b", text, flags=re.IGNORECASE)
+    return [p.strip(" .;") for p in parts if p.strip(" .;")]
+
+
+def _character_attribute_claims(
+    text: str, char_id: str, entry: SeedEntry, counter: _Counter
+) -> list[SeedClaim]:
+    claims: list[SeedClaim] = []
+    seen_subtypes: set[str] = set()
+    for phrase in _split_phrases(text):
+        subtype: str | None = None
+        claim_type = SeedClaimType.CHARACTER_TRAIT
+        if _VISIBILITY_RE.search(phrase):
+            subtype = "visibility"
+            claim_type = SeedClaimType.CHARACTER_VISIBILITY
+        else:
+            for pattern, name in _CHAR_TRAIT_RULES:
+                if pattern.search(phrase):
+                    subtype = name
+                    break
+        if subtype is None or subtype in seen_subtypes:
+            continue
+        seen_subtypes.add(subtype)
+        claims.append(
+            SeedClaim(
+                claim_id=counter.next("CLM"),
+                source_field=f"Characters/{subtype}",
+                text=phrase,
+                claim_type=claim_type,
+                subject_ids=[char_id],
+                seed_source_line=entry.source_line,
+                seed_entry_id=entry.entry_id,
+                importance=ClaimImportance.LOCAL,
+                review_status=ClaimReviewStatus.MACHINE_ONLY,
+            )
+        )
+    return claims
+
+
+def _object_attribute_claims(
+    text: str, obj_id: str, entry: SeedEntry, counter: _Counter
+) -> list[SeedClaim]:
+    claims: list[SeedClaim] = []
+    seen: set[str] = set()
+    for phrase in _split_phrases(text):
+        for pattern, name in _OBJ_TRAIT_RULES:
+            if pattern.search(phrase) and name not in seen:
+                seen.add(name)
+                claims.append(
+                    SeedClaim(
+                        claim_id=counter.next("CLM"),
+                        source_field=f"Objects/{name}",
+                        text=phrase,
+                        claim_type=SeedClaimType.OBJECT_TRAIT,
+                        object_ids=[obj_id],
+                        seed_source_line=entry.source_line,
+                        seed_entry_id=entry.entry_id,
+                        importance=ClaimImportance.LOCAL,
+                        review_status=ClaimReviewStatus.MACHINE_ONLY,
+                    )
+                )
+                break
+    return claims
 
 
 def extract_claims(doc: SeedDocument) -> list[SeedClaim]:
@@ -174,6 +273,9 @@ def _cast_claims(section: SeedSection, counter: _Counter) -> list[SeedClaim]:
                     review_status=ClaimReviewStatus.MACHINE_ONLY,
                 )
             )
+            # Independent attribute claims (hair, eyewear, clothing, accessory,
+            # visibility) — each independently reviewable.
+            claims.extend(_character_attribute_claims(text, char_id, entry, counter))
         for trait in _protected_trait_hits(text):
             claims.append(
                 SeedClaim(
@@ -211,6 +313,7 @@ def _object_claims(section: SeedSection, counter: _Counter) -> list[SeedClaim]:
                     review_status=ClaimReviewStatus.MACHINE_ONLY,
                 )
             )
+            claims.extend(_object_attribute_claims(text, obj_id, entry, counter))
     return claims
 
 
@@ -243,18 +346,76 @@ _SPEECH_RE = re.compile(r"\b(say|says|said|speak|speaks|shout|shouts|asks?|repli
                         re.IGNORECASE)
 _TEXT_RE = re.compile(r"\b(on[-\s]?screen text|text reads?|caption reads?|overlay|subtitle)\b",
                       re.IGNORECASE)
-_SOUND_RE = re.compile(r"\b(sound|music|noise|beeps?|thud|bang|ambient|sfx)\b", re.IGNORECASE)
+_SOUND_RE = re.compile(
+    r"\b(sounds?|music|noise|beeps?|thud|bang|ambient|sfx|chimes?|dings?|clicks?|"
+    r"whooshe?s?|rings?|jingle|tone|plays?|rumble|crash|clang)\b",
+    re.IGNORECASE,
+)
 
 
-def _classify_action_audio(entry: SeedEntry) -> SeedClaimType:
-    text = entry.value_text or entry.raw_line
-    if _TEXT_RE.search(text):
+_UI_CUE = re.compile(
+    r"\b(popup|pop-?up|overlay|banner|notification|hud|toast|window appears|icon appears)\b",
+    re.IGNORECASE,
+)
+_CONNECTIVE = re.compile(r"\s+\b(?:and|then|while|as)\b\s+", re.IGNORECASE)
+_NEW_CLAUSE = re.compile(r"^(?:a|an|the)\s+\w+\s+\w+", re.IGNORECASE)
+
+
+def _classify_clause(clause: str, has_quote: bool) -> SeedClaimType:
+    if _TEXT_RE.search(clause) or _UI_CUE.search(clause):
         return SeedClaimType.ON_SCREEN_TEXT
-    if entry.quoted_strings and _SPEECH_RE.search(text):
+    if has_quote and _SPEECH_RE.search(clause):
         return SeedClaimType.SPEECH
-    if _SOUND_RE.search(text):
+    if _SOUND_RE.search(clause):
         return SeedClaimType.SOUND
     return SeedClaimType.ACTION
+
+
+def _clause_is_new_event(right: str) -> bool:
+    """A connective introduces a separable event when the right clause carries a
+    sound/UI/text cue, a quote, or a fresh '<article> <noun> <verb>' clause."""
+    return bool(
+        _SOUND_RE.search(right)
+        or _UI_CUE.search(right)
+        or _TEXT_RE.search(right)
+        or '"' in right
+        or _NEW_CLAUSE.match(right.strip())
+    )
+
+
+def _event_text(entry: SeedEntry) -> str:
+    """The Action & Audio text with any leading timestamp line/prefix removed."""
+    value = entry.value_text or entry.raw_line
+    if entry.timestamp_text and value.startswith(entry.timestamp_text):
+        value = value[len(entry.timestamp_text):]
+    # Block form joins "1.0-2.0\nC1 moves." — take the text after the newline.
+    if "\n" in value:
+        value = value.split("\n", 1)[1]
+    return value.strip(" :\t")
+
+
+def _decompose_action(text: str) -> list[str]:
+    """Split an Action & Audio line into independent candidate clauses at
+    connectives — but only where the separation is grammatically clear. Never
+    splits inside a quoted span; never splits an inseparable single clause."""
+    clauses: list[str] = []
+    remaining = text
+    while True:
+        cut = None
+        for match in _CONNECTIVE.finditer(remaining):
+            # Do not split inside a quoted span.
+            if remaining[: match.start()].count('"') % 2 == 1:
+                continue
+            right = remaining[match.end():]
+            if _clause_is_new_event(right):
+                cut = (match.start(), match.end())
+                break
+        if cut is None:
+            clauses.append(remaining.strip(" .;"))
+            break
+        clauses.append(remaining[: cut[0]].strip(" .;"))
+        remaining = remaining[cut[1]:]
+    return [c for c in clauses if c]
 
 
 def _shot_claims(section: SeedSection, counter: _Counter) -> list[SeedClaim]:
@@ -270,6 +431,9 @@ def _shot_claims(section: SeedSection, counter: _Counter) -> list[SeedClaim]:
 
     for entry in section.entries:
         if entry.field_label == "Shot header":
+            continue
+        if entry.field == SeedFieldKind.ACTION_AUDIO:
+            claims.extend(_action_claims(entry, shot, counter))
             continue
         claim_type, importance = _shot_entry_type(entry)
         if claim_type is None:
@@ -293,6 +457,97 @@ def _shot_claims(section: SeedSection, counter: _Counter) -> list[SeedClaim]:
             )
         )
     return claims
+
+
+def _action_claims(entry: SeedEntry, shot: int | None, counter: _Counter) -> list[SeedClaim]:
+    """Decompose one Action & Audio entry into independent candidate claims,
+    recording that they came from the same SeedEntry (seed_entry_id)."""
+    event = _event_text(entry)
+    has_quote = bool(entry.quoted_strings)
+    clauses = _decompose_action(event) or [event]
+    time_range = _time_range(entry)
+    claims: list[SeedClaim] = []
+    for clause in clauses:
+        chars, objs = _extract_ids(clause)
+        quoted = _first_quote(clause)
+        claims.append(
+            SeedClaim(
+                claim_id=counter.next("CLM"),
+                source_field=f"Shot {shot} Action & Audio" if shot else "Action & Audio",
+                text=clause,
+                claim_type=_classify_clause(clause, has_quote),
+                subject_ids=chars or entry.referenced_character_ids,
+                object_ids=objs,
+                shot_number=shot,
+                seed_source_line=entry.source_line,
+                seed_entry_id=entry.entry_id,
+                seed_time_range=time_range,
+                quoted_text=quoted,
+                importance=ClaimImportance.LOCAL,
+                review_status=ClaimReviewStatus.MACHINE_ONLY,
+            )
+        )
+    return claims
+
+
+def _first_quote(text: str) -> str | None:
+    m = re.search(r'"([^"]*)"', text)
+    return m.group(1) if m else None
+
+
+_SENTENCE_END = re.compile(r"[.!?](?:\s|$)")
+
+
+def collect_seed_diagnostics(doc: SeedDocument) -> list[SeedParseIssue]:
+    """Platform-semantic seed-review diagnostics for Action & Audio atomicity.
+
+    These are seed-review evidence (leads for the reviewer), NOT final caption
+    validation. Each is anchored to the seed source line.
+    """
+    diagnostics: list[SeedParseIssue] = []
+    counter = 0
+
+    def add(entry: SeedEntry, code: str, detail: str) -> None:
+        nonlocal counter
+        counter += 1
+        diagnostics.append(
+            SeedParseIssue(
+                issue_id=f"SDX-{counter:04d}",
+                source_line=entry.source_line,
+                raw_text=entry.raw_line,
+                message=f"{code}: {detail}",
+                severity=SeedParseSeverity.INFO,
+            )
+        )
+
+    for section in doc.shot_sections:
+        for entry in section.entries:
+            if entry.field != SeedFieldKind.ACTION_AUDIO:
+                continue
+            event = _event_text(entry)
+            sentences = [s for s in _SENTENCE_END.split(event) if s.strip()]
+            if len(sentences) >= 2:
+                add(entry, "MULTIPLE_SENTENCES", f"{len(sentences)} sentences in one line")
+            if len(entry.quoted_strings) >= 2:
+                add(entry, "MULTIPLE_QUOTED_SPANS",
+                    f"{len(entry.quoted_strings)} quoted spans in one line")
+            clauses = _decompose_action(event)
+            action_clauses = [
+                c for c in clauses if _classify_clause(c, False) == SeedClaimType.ACTION
+            ]
+            if len(action_clauses) >= 2:
+                add(entry, "MULTIPLE_ACTION_CLAUSES",
+                    f"{len(action_clauses)} distinct finite action clauses")
+            has_action = any(_classify_clause(c, bool(entry.quoted_strings)) == SeedClaimType.ACTION
+                             for c in clauses)
+            has_sound = bool(_SOUND_RE.search(event))
+            has_overlay = bool(_TEXT_RE.search(event) or _UI_CUE.search(event))
+            if has_action and has_sound:
+                add(entry, "MIXED_VISUAL_AND_SOUND", "one line mixes a visual action and a sound")
+            if has_action and has_overlay:
+                add(entry, "MIXED_VISUAL_AND_OVERLAY",
+                    "one line mixes a visual action and an on-screen text/UI event")
+    return diagnostics
 
 
 def _shot_boundary_claim(
@@ -353,7 +608,6 @@ def _shot_entry_type(entry: SeedEntry) -> tuple[SeedClaimType | None, ClaimImpor
         return SeedClaimType.SCENE_STATE, ClaimImportance.LOCAL
     if field == SeedFieldKind.PLAYBACK_SPEED or field == SeedFieldKind.SPEED_CHANGES:
         return SeedClaimType.PLAYBACK_SPEED, ClaimImportance.LOCAL
-    if field == SeedFieldKind.ACTION_AUDIO:
-        return _classify_action_audio(entry), ClaimImportance.LOCAL
-    # FREEFORM (and any future field) produces no atomic claim on its own.
+    # ACTION_AUDIO is decomposed separately (_action_claims); FREEFORM and any
+    # future field produce no atomic claim on their own.
     return None, ClaimImportance.LOCAL
