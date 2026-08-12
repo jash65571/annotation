@@ -1,22 +1,52 @@
-# Manuscript II rule set, version 1.
+# Manuscript II rule set, version 1.1.
 #
 # Every rule carries provenance: which reference document it came from.
-# Sources (./references/):
+# Raw source documents are NOT committed to the repository (distribution
+# rights unclear) — they live locally under ./references/ and must be
+# supplied separately; see references/README.md. Only these derived rules
+# and source metadata are committed.
+#
+# Sources:
 #   MASTER-REF  = manuscript-ii-master-reference.md (Master Reference, compiled from Learning Hub)
-#   HANDBOOK    = MANUSCRIPT-II-REVIEWER-HANDBOOK-v1.2 (1).md (Reviewer Handbook v1.2)
+#   HANDBOOK    = MANUSCRIPT-II-REVIEWER-HANDBOOK-v1.2 (Reviewer Handbook v1.2)
 #   GOLDEN-PDF  = Manuscript II.pdf (31-page Golden Examples export, 2026-08-10)
+#   FRAME-AUDIT = MANUSCRIPT II Master Frame Audit Protocol v1.5 (NOT YET LOCALLY SUPPLIED)
+#   PROJ-RULES  = MANUSCRIPT-II-PROJECT-RULES-CURRENT.md (NOT YET LOCALLY SUPPLIED)
+#   AUDIT-RM    = MANUSCRIPT_AUDIT_README-v3.2.md (NOT YET LOCALLY SUPPLIED)
+#   CUR-SRC     = MANUSCRIPT-II-CURRENT-SOURCES.md (NOT YET LOCALLY SUPPLIED)
+#   TASK-FEED   = current task-specific workflow feedback (Phase 2.1 hardening
+#                 directive, 2026-08-12) — highest-priority source tier; used
+#                 for rules whose controlling documents are not yet supplied.
 #
 # Conflict policy (docs/01-rule-hierarchy.md): newest live-tool rule wins over
 # older example syntax. Conflicts are recorded under `known_conflicts`.
 
-rules_version: "1.0.0"
+rules_version: "1.1.0"
 sources:
   - id: MASTER-REF
     file: references/manuscript-ii-master-reference.md
+    supplied_locally: true
   - id: HANDBOOK
     file: "references/MANUSCRIPT-II-REVIEWER-HANDBOOK-v1.2 (1).md"
+    supplied_locally: true
   - id: GOLDEN-PDF
     file: "references/Manuscript II.pdf"
+    supplied_locally: true
+  - id: FRAME-AUDIT
+    file: "references/MANUSCRIPT-II-MASTER-FRAME-AUDIT-PROTOCOL-v1.5"
+    supplied_locally: false
+  - id: PROJ-RULES
+    file: references/MANUSCRIPT-II-PROJECT-RULES-CURRENT.md
+    supplied_locally: false
+  - id: AUDIT-RM
+    file: references/MANUSCRIPT_AUDIT_README-v3.2.md
+    supplied_locally: false
+  - id: CUR-SRC
+    file: references/MANUSCRIPT-II-CURRENT-SOURCES.md
+    supplied_locally: false
+  - id: TASK-FEED
+    file: null
+    supplied_locally: true
 
 timing:
   # MASTER-REF §1/§5, HANDBOOK §20 Rule 1: graded literally at 0.1 s.
@@ -142,6 +172,55 @@ playback_speed:
   mid_shot_speed_changes_timestamped: true
   fast_motion_is_not_accelerated_playback: true     # HANDBOOK §23
   motion_blur_is_not_slow_motion: true              # HANDBOOK §23
+
+source_hierarchy:
+  # TASK-FEED / CUR-SRC: newest official or task-specific workflow material
+  # outranks all older documents; actual media is factual truth beneath it.
+  newest_official_workflow_outranks_older: true
+  actual_media_is_factual_truth: true
+  golden_examples_are_floor_not_ceiling: true       # HANDBOOK §1A
+
+action_audio_atomicity:
+  # TASK-FEED / PROJ-RULES: strict Action & Audio atomicity.
+  strict_atomicity: true
+  # One line = one independently defensible event/source, unless the events
+  # are truly inseparable.
+  one_line_one_defensible_event: true
+  # No hidden second action smuggled behind "and", "then", "while", "as".
+  hidden_second_action_forbidden: true
+  hidden_action_connectives: ["and", "then", "while", "as"]
+  # No multiple separate speech acts in one line.
+  multiple_speech_acts_per_line_forbidden: true
+  # No visual action combined with a separate popup/sound/object event.
+  mixed_event_sources_per_line_forbidden: true
+
+timing_integrity:
+  # TASK-FEED / FRAME-AUDIT: never nudge timestamps to satisfy a validator.
+  fake_timestamp_nudges_forbidden: true
+  # TASK-FEED: the final object state at shot end must be checked.
+  final_object_state_check_required: true
+  # TASK-FEED / AUDIT-RM: an incorrect annotation endpoint is a permanent
+  # failure class — the annotation interval endpoint must come from verified
+  # media evidence, never from the final frame's start PTS.
+  incorrect_annotation_endpoint_is_permanent_failure: true
+  annotation_endpoint_from_media_evidence: true
+
+validation_scope:
+  # TASK-FEED: our machine validator does not replace the platform's
+  # semantic validation; it is a pre-check, not the submit gate.
+  machine_validator_replaces_platform_validation: false
+
+audio_tooling:
+  # TASK-FEED / PROJ-RULES: Descript is disabled by default and a local ASR
+  # failure never authorizes a cloud or Descript fallback.
+  descript_enabled: false
+  local_asr_failure_authorizes_cloud_fallback: false
+  local_asr_failure_authorizes_descript_fallback: false
+  # ASR output is evidence only — never factual truth on its own.
+  asr_is_evidence_only: true
+  # The full audit continues after a local ASR failure (audio evidence
+  # degrades; the run does not abort).
+  full_audit_continues_after_asr_failure: true
 
 review:
   # HANDBOOK §1: the three valid reviewer outcomes.

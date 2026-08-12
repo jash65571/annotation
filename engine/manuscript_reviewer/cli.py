@@ -24,6 +24,7 @@ console = Console()
 def _status_style(status: RunStatus) -> str:
     return {
         RunStatus.PASS: "bold green",
+        RunStatus.REVIEW_REQUIRED: "bold yellow",
         RunStatus.PARTIAL: "bold yellow",
         RunStatus.FAILED: "bold red",
     }[status]
@@ -208,7 +209,8 @@ def audit(
 
     console.print(f"\nArtifacts:\n{result.run_dir}")
     style = _status_style(result.status)
-    console.print(f"\nOverall Phase 1 status: [{style}]{result.status.value}[/{style}]\n")
+    status_label = "Overall audit status" if shot_analysis else "Overall Phase 1 status"
+    console.print(f"\n{status_label}: [{style}]{result.status.value}[/{style}]\n")
 
     if result.status == RunStatus.FAILED:
         raise typer.Exit(code=1)

@@ -67,11 +67,14 @@ Frame accounting: PASS
 Artifacts:
 artifacts\input\20260812T005001Z-6c015bcd
 
-Overall Phase 1 status: PASS
+Overall audit status: PASS
 ```
 
-Exit codes: `0` PASS/PARTIAL, `1` FAILED (details in qc.json), `2` fatal environment
-error (missing ffmpeg, unwritable artifacts).
+Statuses: `PASS`, `REVIEW_REQUIRED` (unresolved possible cuts or unverified
+endpoint — deterministic checks passed but a human must review),
+`PARTIAL` (exact timing incomplete), `FAILED`. Exit codes: `0`
+PASS/REVIEW_REQUIRED/PARTIAL, `1` FAILED (details in qc.json), `2` fatal
+environment error (missing ffmpeg, unwritable artifacts).
 
 ## Artifacts
 
@@ -104,6 +107,14 @@ uv run mypy              # strict type checking
 ```
 
 Tests that need media are skipped with a clear message if ffmpeg is missing.
+
+GitHub Actions CI (`.github/workflows/ci.yml`) runs the same three gates on
+Ubuntu / Python 3.12 / uv with FFmpeg (libx264) on every push and pull
+request. Tested dependency versions: opencv-python-headless 5.0.0.93, numpy
+2.5.2 (bounds in pyproject reflect these).
+
+Note: the raw Manuscript II reference documents are local-only and gitignored
+(`references/README.md`); the repo ships only derived rules.
 
 ## Documentation
 

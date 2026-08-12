@@ -88,6 +88,40 @@ def run_tool(executable: Path, args: list[str], timeout: float | None = 600.0) -
     return ToolResult(command=command, stdout=completed.stdout, stderr=completed.stderr)
 
 
+@dataclass(frozen=True)
+class BinaryToolResult:
+    """Captured output of one tool invocation with binary stdout (rawvideo,
+    image pipes). stderr is still decoded text for diagnostics."""
+
+    command: list[str]
+    stdout: bytes
+    stderr: str
+
+
+def run_tool_binary(
+    executable: Path, args: list[str], timeout: float | None = 600.0
+) -> BinaryToolResult:
+    """Run a media tool capturing stdout as raw bytes.
+
+    Same contract as :func:`run_tool` (closed stdin, captured stderr,
+    :class:`ToolExecutionError` on non-zero exit) but without text decoding of
+    stdout — for rawvideo/PNG pipe output.
+    """
+    command = [str(executable), *args]
+    logger.debug("run_tool_binary: %s", " ".join(command))
+    completed = subprocess.run(
+        command,
+        capture_output=True,
+        stdin=subprocess.DEVNULL,
+        timeout=timeout,
+        check=False,
+    )
+    stderr_text = completed.stderr.decode("utf-8", errors="replace")
+    if completed.returncode != 0:
+        raise ToolExecutionError(command, completed.returncode, stderr_text)
+    return BinaryToolResult(command=command, stdout=completed.stdout, stderr=stderr_text)
+
+
 def tool_version(executable: Path) -> str:
     """First line of ``<tool> -version`` (recorded in the run manifest)."""
     result = run_tool(executable, ["-version"], timeout=30.0)

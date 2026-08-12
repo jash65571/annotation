@@ -165,14 +165,34 @@ class BoundaryCandidate(StrictModel):
 
 
 class ShotProposal(StrictModel):
-    """A provisional shot spanning two boundaries (or media start/end)."""
+    """A provisional shot spanning two boundaries (or media start/end).
+
+    Two distinct concepts are kept separate and must not be conflated:
+
+    A. **Inclusive frame ownership** — ``start_frame_index``/``end_frame_index``
+       are the first and last enumerated frames belonging to this shot.
+    B. **Continuous annotation interval** — ``start_exact``/``end_exact`` are
+       timeline boundary times: ``start_exact`` is the incoming boundary time
+       (PTS of the first owned frame), a non-final ``end_exact`` is the NEXT
+       boundary's exact time (PTS of the next shot's first frame), and the
+       final shot's ``end_exact`` is the canonical media annotation endpoint.
+       Adjacent shots therefore satisfy prev.end_exact == next.start_exact.
+
+    The final owned frame's own start time is preserved separately as
+    ``last_owned_frame_start_exact`` — it is NEVER the interval end.
+    """
 
     shot_index: int  # 1-based, matching Manuscript "Shot N"
     #: Frame range: first and last enumerated frame indexes inside this shot.
     start_frame_index: int
     end_frame_index: int
+    #: Annotation interval start = incoming boundary exact time.
     start_exact: ExactFraction | None
+    #: Annotation interval end = next boundary exact time, or the canonical
+    #: media annotation endpoint for the final shot.
     end_exact: ExactFraction | None
+    #: Start PTS time of the final owned frame (frame ownership evidence).
+    last_owned_frame_start_exact: ExactFraction | None
     start_manuscript: str | None
     end_manuscript: str | None
     #: Transition INTO this shot ("Opening shot" for shot 1 only).
@@ -195,6 +215,10 @@ class ShotTruthResult(StrictModel):
     review_required_count: int
     proposed_shot_count: int
     overall_status: str  # PASS | REVIEW_REQUIRED | FAILED
+    #: Canonical media annotation endpoint used as the final shot's end_exact.
+    annotation_endpoint_exact: ExactFraction | None = None
+    annotation_endpoint_method: str | None = None
+    annotation_endpoint_conflict: bool = False
     candidates: list[BoundaryCandidate]
     fades: list[FadeEvidence] = []
     blends: list[BlendEvidence] = []

@@ -98,6 +98,83 @@ def validate_candidates(
     return issues
 
 
+def validate_shot_timeline(
+    ledger: FrameLedger,
+    shots: list[ShotProposal],
+    candidates: list[BoundaryCandidate],
+    annotation_endpoint: object,
+) -> list[ValidatorIssue]:
+    """Continuous annotation-interval validation (separate from frame-range
+    ownership validation): the timeline must be gapless, overlap-free, anchored
+    to boundary exact times, and end at the canonical annotation endpoint."""
+    issues: list[ValidatorIssue] = []
+    if not shots or not ledger.frames:
+        return issues
+
+    timeline_start = ledger.frames[0].pts_time_seconds
+    if timeline_start is not None and shots[0].start_exact != timeline_start:
+        issues.append(
+            _issue(
+                "P2-TIME-001",
+                Severity.FAIL,
+                "shot 1",
+                "Shot 1 start_exact does not equal the media timeline start.",
+            )
+        )
+
+    for prev, current in itertools.pairwise(shots):
+        if prev.end_exact != current.start_exact:
+            issues.append(
+                _issue(
+                    "P2-TIME-002",
+                    Severity.FAIL,
+                    f"shot {current.shot_index}",
+                    f"Temporal gap/overlap: shot {prev.shot_index} end_exact "
+                    f"({prev.end_exact}) != shot {current.shot_index} start_exact "
+                    f"({current.start_exact}).",
+                )
+            )
+
+    by_id = {c.candidate_id: c for c in candidates}
+    for prev, current in itertools.pairwise(shots):
+        boundary = by_id.get(current.supporting_boundary_id or "")
+        if boundary is None:
+            continue
+        boundary_time = ledger.frames[boundary.right_frame_index].pts_time_seconds
+        if prev.end_exact != boundary_time:
+            issues.append(
+                _issue(
+                    "P2-TIME-003",
+                    Severity.FAIL,
+                    f"shot {prev.shot_index}",
+                    "Non-final shot end_exact does not equal its supporting "
+                    "boundary exact time.",
+                )
+            )
+        if current.start_exact != boundary_time:
+            issues.append(
+                _issue(
+                    "P2-TIME-004",
+                    Severity.FAIL,
+                    f"shot {current.shot_index}",
+                    "Incoming shot start_exact does not equal its supporting "
+                    "boundary exact time.",
+                )
+            )
+
+    if annotation_endpoint is not None and shots[-1].end_exact != annotation_endpoint:
+        issues.append(
+            _issue(
+                "P2-TIME-005",
+                Severity.FAIL,
+                f"shot {shots[-1].shot_index}",
+                "Final shot end_exact does not equal the canonical annotation "
+                "endpoint.",
+            )
+        )
+    return issues
+
+
 def validate_shots(
     ledger: FrameLedger,
     shots: list[ShotProposal],
@@ -225,11 +302,17 @@ def validate_evidence(
     return issues
 
 
-def compute_shot_status(candidates: list[BoundaryCandidate], had_failure: bool) -> str:
+def compute_shot_status(
+    candidates: list[BoundaryCandidate],
+    had_failure: bool,
+    endpoint_conflict: bool = False,
+) -> str:
     """Overall shot status. PASS is forbidden while unresolved potential real
-    cuts remain (P2-QC-001)."""
+    cuts remain (P2-QC-001) or while the annotation endpoint is unverified."""
     if had_failure:
         return "FAILED"
+    if endpoint_conflict:
+        return "REVIEW_REQUIRED"
     review = any(c.status == CandidateStatus.REVIEW_REQUIRED for c in candidates)
     unresolved_transition = any(
         c.status == CandidateStatus.SUPPORTED

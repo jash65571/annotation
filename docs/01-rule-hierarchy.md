@@ -5,12 +5,19 @@
 1. **Current official workflow / live-tool rules / task-specific feedback** — what the
    annotation tool actually enforces today, plus reviewer feedback on specific tasks.
 2. **Actual video frames and audio** — factual truth. The media decides what happened.
-3. **Newest Master Frame Audit Protocol** — when supplied; none is currently present in
-   `references/`.
-4. **Current Reviewer Handbook / current project rules** — HANDBOOK v1.2, MASTER-REF.
+3. **Newest Master Frame Audit Protocol** — v1.5 is a named controlling document but is
+   **not yet locally supplied**; its known requirements are encoded from task-specific
+   feedback (TASK-FEED provenance) until the document arrives.
+4. **Current Reviewer Handbook / current project rules** — HANDBOOK v1.2, MASTER-REF,
+   plus MANUSCRIPT-II-PROJECT-RULES-CURRENT.md, MANUSCRIPT_AUDIT_README-v3.2.md and
+   MANUSCRIPT-II-CURRENT-SOURCES.md (named, not yet locally supplied — see
+   `references/README.md`).
 5. **Golden Examples** — quality level only, not syntax authority.
 6. **Seed caption** — a hypothesis to verify, never truth.
 7. **AI / evaluator suggestions** — leads, never commands.
+
+Raw source documents are **local-only and gitignored** (distribution rights unclear);
+the repository commits only derived rules with provenance metadata.
 
 An older example never overrides a newer live-tool rule.
 

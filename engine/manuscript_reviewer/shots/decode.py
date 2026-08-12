@@ -12,13 +12,12 @@ this pass only supplies pixels.
 from __future__ import annotations
 
 import logging
-import subprocess
 from pathlib import Path
 
 import numpy as np
 import numpy.typing as npt
 
-from ..media.ffmpeg_tools import ToolExecutionError, find_tool
+from ..media.ffmpeg_tools import find_tool, run_tool_binary
 
 logger = logging.getLogger(__name__)
 
@@ -46,32 +45,23 @@ def decode_metric_frames(
     ledger count.
     """
     ffmpeg = find_tool("ffmpeg")
-    command = [
-        str(ffmpeg),
-        "-v", "error",
-        "-i", str(video_path),
-        "-map", f"0:v:{stream_index}",
-        "-fps_mode", "passthrough",
-        "-vf", f"scale={METRIC_WIDTH}:{METRIC_HEIGHT}:flags=area",
-        "-f", "rawvideo",
-        "-pix_fmt", "gray",
-        "-",
-    ]
-    logger.debug("metric decode: %s", " ".join(command))
-    completed = subprocess.run(
-        command,
-        capture_output=True,
-        stdin=subprocess.DEVNULL,
+    result = run_tool_binary(
+        ffmpeg,
+        [
+            "-v", "error",
+            "-i", str(video_path),
+            "-map", f"0:v:{stream_index}",
+            "-fps_mode", "passthrough",
+            "-vf", f"scale={METRIC_WIDTH}:{METRIC_HEIGHT}:flags=area",
+            "-f", "rawvideo",
+            "-pix_fmt", "gray",
+            "-",
+        ],
         timeout=1800.0,
-        check=False,
     )
-    if completed.returncode != 0:
-        raise ToolExecutionError(
-            command, completed.returncode, completed.stderr.decode("utf-8", "replace")
-        )
 
     frame_bytes = METRIC_WIDTH * METRIC_HEIGHT
-    data = completed.stdout
+    data = result.stdout
     if len(data) % frame_bytes != 0:
         raise MetricDecodeError(
             f"Metric decode produced {len(data)} bytes, not a multiple of "

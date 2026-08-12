@@ -1,9 +1,11 @@
-"""Phase 1 audit pipeline: probe → enumerate → validate → cross-check → artifacts.
+"""Full audit pipeline: media verification, frame ledger, shot truth, artifacts.
 
-Deterministic, local-only, no network. Orchestrates the vertical slice:
+Deterministic, local-only, no network:
 
-    VIDEO → MEDIA VERIFICATION → FRAME LEDGER → EVIDENCE MANIFEST
-          → VALIDATION → AUDIT ARTIFACTS
+    VIDEO → MEDIA VERIFICATION → FRAME LEDGER → CROSS-CHECK
+          → SHOT TRUTH (metrics → candidates → adversarial verification →
+            shot proposals → evidence)
+          → VALIDATION → QC + MANIFEST ARTIFACTS
 """
 
 from __future__ import annotations
@@ -81,7 +83,8 @@ def run_audit(
     extract_shot_evidence: bool = True,
     use_scdet: bool = True,
 ) -> AuditResult:
-    """Run the full Phase 1 audit and write all artifacts.
+    """Run the full audit (media verification, frame ledger, optional shot
+    truth) and write all artifacts.
 
     Never raises for media-level problems — failures are recorded in qc.json
     and the returned status. Raises only for environment problems (missing
@@ -220,7 +223,17 @@ def run_audit(
             )
 
         # --- QC REPORT ---
+        # Shot-truth uncertainty propagates to the top-level status: the audit
+        # never reports PASS while an unresolved possible real cut remains.
         status = compute_run_status(issues, ledger)
+        if result.shot_truth is not None:
+            if result.shot_truth.overall_status == "FAILED":
+                status = RunStatus.FAILED
+            elif (
+                result.shot_truth.overall_status == "REVIEW_REQUIRED"
+                and status == RunStatus.PASS
+            ):
+                status = RunStatus.REVIEW_REQUIRED
         qc = QCReport(
             status=status,
             issues=issues,

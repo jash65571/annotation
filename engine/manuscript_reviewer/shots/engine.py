@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..artifacts import shot_writer
+from ..media.endpoint import compute_annotation_endpoint
 from ..models.frame import FrameLedger
 from ..models.media import MediaInfo
 from ..models.shot_truth import (
@@ -151,9 +152,22 @@ def run_shot_analysis(
                 artifact_paths.extend(run_dir / ref for ref in ref_list)
     _timed(timings, "shot_evidence_render", start)
 
-    # --- shot proposals ---
+    # --- canonical annotation endpoint + shot proposals ---
     start = time.perf_counter()
-    shots: list[ShotProposal] = build_shot_proposals(ledger, verified)
+    endpoint = compute_annotation_endpoint(media, ledger, video_path.stem)
+    if endpoint.conflict:
+        issues.append(
+            ValidatorIssue(
+                rule_id="P2-END-001",
+                severity=Severity.WARN,
+                location=video_path.name,
+                message=(
+                    "Annotation endpoint evidence conflicts or is unverified: "
+                    + "; ".join(endpoint.notes)
+                ),
+            )
+        )
+    shots: list[ShotProposal] = build_shot_proposals(ledger, verified, endpoint.endpoint)
     _timed(timings, "shot_proposals", start)
 
     # --- validation ---
@@ -161,10 +175,15 @@ def run_shot_analysis(
     issues.extend(shot_validator.validate_pairs(ledger, pairs))
     issues.extend(shot_validator.validate_candidates(ledger, verified))
     issues.extend(shot_validator.validate_shots(ledger, shots, verified))
+    issues.extend(
+        shot_validator.validate_shot_timeline(ledger, shots, verified, endpoint.endpoint)
+    )
     if extract_evidence:
         issues.extend(shot_validator.validate_evidence(verified))
     had_failure = any(i.severity == Severity.FAIL for i in issues)
-    overall = shot_validator.compute_shot_status(verified, had_failure)
+    overall = shot_validator.compute_shot_status(
+        verified, had_failure, endpoint_conflict=endpoint.conflict
+    )
     _timed(timings, "shot_validation", start)
 
     result = ShotTruthResult(
@@ -179,6 +198,9 @@ def run_shot_analysis(
         ),
         proposed_shot_count=len(shots),
         overall_status=overall,
+        annotation_endpoint_exact=endpoint.endpoint,
+        annotation_endpoint_method=endpoint.method,
+        annotation_endpoint_conflict=endpoint.conflict,
         candidates=verified,
         fades=fades,
         blends=blends,

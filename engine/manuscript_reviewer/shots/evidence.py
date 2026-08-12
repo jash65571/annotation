@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import logging
-import subprocess
 import tempfile
 from fractions import Fraction
 from pathlib import Path
@@ -20,7 +19,7 @@ import cv2
 import numpy as np
 import numpy.typing as npt
 
-from ..media.ffmpeg_tools import ToolExecutionError, find_tool
+from ..media.ffmpeg_tools import ToolExecutionError, find_tool, run_tool
 from ..media.timestamps import format_manuscript_display, seconds_to_decimal
 from ..models.frame import FrameLedger
 from ..models.shot_truth import BoundaryCandidate
@@ -51,38 +50,29 @@ def extract_frames_by_index(
         expr = "+".join(f"eq(n\\,{i})" for i in chunk)
         with tempfile.TemporaryDirectory(prefix="mr_evidence_") as tmp:
             out_pattern = Path(tmp) / "f%06d.png"
-            command = [
-                str(ffmpeg),
-                "-v", "error",
-                "-i", str(video_path),
-                "-map", f"0:v:{stream_index}",
-                "-fps_mode", "passthrough",
-                "-vf", f"select='{expr}',scale={width}:-2",
-                "-start_number", "0",
-                str(out_pattern),
-            ]
-            completed = subprocess.run(
-                command,
-                capture_output=True,
-                stdin=subprocess.DEVNULL,
+            result = run_tool(
+                ffmpeg,
+                [
+                    "-v", "error",
+                    "-i", str(video_path),
+                    "-map", f"0:v:{stream_index}",
+                    "-fps_mode", "passthrough",
+                    "-vf", f"select='{expr}',scale={width}:-2",
+                    "-start_number", "0",
+                    str(out_pattern),
+                ],
                 timeout=1800.0,
-                check=False,
             )
-            if completed.returncode != 0:
-                raise ToolExecutionError(
-                    command, completed.returncode,
-                    completed.stderr.decode("utf-8", "replace"),
-                )
             produced = sorted(Path(tmp).glob("f??????.png"))
             if len(produced) != len(chunk):
                 raise ToolExecutionError(
-                    command, 0,
+                    result.command, 0,
                     f"select produced {len(produced)} frames, expected {len(chunk)}",
                 )
             for frame_index, path in zip(chunk, produced, strict=True):
                 image = cv2.imread(str(path), cv2.IMREAD_COLOR)
                 if image is None:
-                    raise ToolExecutionError(command, 0, f"unreadable frame {path}")
+                    raise ToolExecutionError(result.command, 0, f"unreadable frame {path}")
                 images[frame_index] = image.astype(np.uint8)
     return images
 

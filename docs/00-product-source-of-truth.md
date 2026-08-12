@@ -10,11 +10,32 @@ Converted from the Manuscript II reference material into software requirements.
 | HANDBOOK | `MANUSCRIPT-II-REVIEWER-HANDBOOK-v1.2 (1).md` | Reviewer Handbook v1.2 (2026-08-10), includes complete Golden Examples coverage |
 | GOLDEN-PDF | `Manuscript II.pdf` | 31-page Golden Examples export (game trailer + crayfish clip), frame-matched entries |
 
-> Note: the project brief expected a `MANUSCRIPT-II-MASTER-FRAME-AUDIT-PROTOCOL-v1.5.txt`
-> and a `Manuscript-II-Golden-Examples.pdf`. Those exact files are not present; the
-> supplied `Manuscript II.pdf` **is** the Golden Examples document, and the frame-audit
-> requirements are covered by MASTER-REF §8 (tool validation) + HANDBOOK. If a newer
-> Frame Audit Protocol arrives, it outranks this document per the rule hierarchy.
+> Note: the supplied `Manuscript II.pdf` **is** the Golden Examples document. The
+> current controlling source set also names four documents **not yet locally
+> supplied** — Master Frame Audit Protocol v1.5, MANUSCRIPT-II-PROJECT-RULES-CURRENT.md,
+> MANUSCRIPT_AUDIT_README-v3.2.md, MANUSCRIPT-II-CURRENT-SOURCES.md. Their known
+> requirements are encoded in `manuscript_v1.yaml` (v1.1.0) with TASK-FEED provenance;
+> when the documents arrive they outrank this file per docs/01. Raw source documents
+> are local-only and gitignored (see `references/README.md`).
+
+## Additional controlling rules (rules v1.1.0, TASK-FEED provenance)
+
+- Newest official/task-specific workflow material outranks all older material;
+  actual media remains factual truth; Golden Examples are floor, not ceiling.
+- **Action & Audio strict atomicity**: one line = one independently defensible
+  event/source unless truly inseparable; no hidden second action behind
+  "and/then/while/as"; no multiple speech acts per line; no visual action plus a
+  separate popup/sound/object event in one line.
+- **No fake timestamp nudges** — ever; re-measure real boundaries instead.
+- **Final object state must be checked** at shot end.
+- **An incorrect annotation endpoint is a permanent failure class** — annotation
+  interval endpoints come from verified media evidence, never from the final
+  frame's start PTS.
+- Our machine validator is a pre-check; it does not replace platform-semantic
+  validation.
+- **Descript is disabled by default**; local ASR failure never authorizes cloud or
+  Descript fallback; ASR is evidence only; the full audit continues after a local
+  ASR failure.
 
 ## 1. Product purpose
 Produce extremely precise, evidence-backed Manuscript II reviewer captions from short

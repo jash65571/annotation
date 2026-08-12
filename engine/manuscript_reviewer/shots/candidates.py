@@ -50,15 +50,20 @@ class Sensitivity:
 def _raw_sources(
     pair: PairMetrics, base: LocalBaseline, sens: Sensitivity
 ) -> list[str]:
-    """Which signal families flag this pair as a possible boundary."""
+    """Which signal families flag this pair as a possible boundary.
+
+    Every family judges INDEPENDENTLY with its own criteria — a cut with a low
+    luma difference (similar palettes, structural change only) must still be
+    nominated by histogram/phash/scdet. The MAD floor gates ONLY the
+    difference family; recall is the generator's job, precision the verifier's.
+    """
     sources: list[str] = []
-    if pair.mean_abs_diff >= sens.abs_diff_floor:
-        if base.diff_z >= sens.diff_z:
-            sources.append("internal_difference")
-        if base.hist_z >= sens.hist_z and pair.hist_distance > 0.05:
-            sources.append("internal_histogram")
-        if pair.phash_hamming >= sens.phash_min:
-            sources.append("internal_phash")
+    if pair.mean_abs_diff >= sens.abs_diff_floor and base.diff_z >= sens.diff_z:
+        sources.append("internal_difference")
+    if base.hist_z >= sens.hist_z and pair.hist_distance > 0.05:
+        sources.append("internal_histogram")
+    if pair.phash_hamming >= sens.phash_min:
+        sources.append("internal_phash")
     if pair.scdet_score is not None and pair.scdet_score >= sens.scdet_min:
         sources.append("ffmpeg_scdet")
     return sources

@@ -14,7 +14,7 @@ import logging
 import re
 from pathlib import Path
 
-from ..media.ffmpeg_tools import find_tool, run_tool
+from ..media.ffmpeg_tools import FFmpegNotFoundError, ToolExecutionError, find_tool, run_tool
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +28,8 @@ def scdet_scores(video_path: Path, stream_index: int = 0) -> dict[int, tuple[flo
     Returns an empty dict (with a warning) if the filter is unavailable so the
     shot stage degrades gracefully to internal metrics only.
     """
-    ffmpeg = find_tool("ffmpeg")
     try:
+        ffmpeg = find_tool("ffmpeg")
         result = run_tool(
             ffmpeg,
             [
@@ -43,8 +43,10 @@ def scdet_scores(video_path: Path, stream_index: int = 0) -> dict[int, tuple[flo
             ],
             timeout=1800.0,
         )
-    except Exception:
-        logger.warning("scdet pass failed; continuing without scdet evidence")
+    except (ToolExecutionError, FFmpegNotFoundError, OSError) as exc:
+        # Only expected tool/environment failures degrade gracefully; a
+        # programming error must NOT silently become "scdet unavailable".
+        logger.warning("scdet pass failed (%s); continuing without scdet evidence", exc)
         return {}
 
     scores: dict[int, tuple[float, float]] = {}

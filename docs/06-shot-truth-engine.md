@@ -30,6 +30,28 @@ A boundary is evidence BETWEEN two exact ledger frames, never a lone timestamp:
 Phase 1's rational timestamp infrastructure is the only clock. Floats never
 carry authoritative time.
 
+## Shot timeline semantics (Phase 2.1)
+
+Two concepts are kept strictly separate on every `ShotProposal`:
+
+- **Inclusive frame ownership** — `start_frame_index`/`end_frame_index`; the
+  boundary's left frame belongs to the outgoing shot, its right frame opens the
+  incoming shot.
+- **Continuous annotation interval** — `start_exact`/`end_exact`. The SAME
+  exact boundary time (the incoming/right frame's PTS) is both the outgoing
+  shot's interval end and the incoming shot's interval start, so adjacent
+  shots always satisfy `prev.end_exact == next.start_exact` — including after
+  0.1 s display rounding (regression-tested at a half-tenth boundary).
+  The final owned frame's own start time is preserved separately as
+  `last_owned_frame_start_exact` and is never used as an interval end.
+
+The **final shot's** `end_exact` is the canonical annotation endpoint from
+`media/endpoint.py` (final-frame presentation end preferred, then stream
+duration, container duration, filename segment length), never the final
+frame's start PTS. Material endpoint conflicts surface as WARN `P2-END-001`
+and force `REVIEW_REQUIRED` — an incorrect annotation endpoint is a permanent
+failure class (rules v1.1.0). Timeline validators: `P2-TIME-001…005`.
+
 ## Frame terminology (engineering clarification)
 
 The Manuscript sources say "every encoded frame". Technically our pipeline

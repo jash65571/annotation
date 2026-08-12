@@ -15,6 +15,10 @@ class Severity(StrEnum):
 
 class RunStatus(StrEnum):
     PASS = "PASS"
+    #: Deterministic checks passed but unresolved evidence (e.g. possible real
+    #: cuts, unverified annotation endpoint) awaits human review. Never
+    #: silently collapsed into PASS.
+    REVIEW_REQUIRED = "REVIEW_REQUIRED"
     PARTIAL = "PARTIAL"
     FAILED = "FAILED"
 

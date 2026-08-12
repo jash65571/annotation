@@ -26,5 +26,7 @@ tests/regression/media/
 Thumbs.db
 .DS_Store
 
-# Extracted scratch text from reference PDFs
-references/_*.txt
+# Raw Manuscript II project documents are local-only (distribution rights
+# unclear); only references/README.md is committed.
+references/*
+!references/README.md
