@@ -38,6 +38,7 @@ from .models.validation import (
     Severity,
     ValidatorIssue,
 )
+from .progress import NoOpProgressReporter, ProgressReporter, StageStatus
 from .rules.loader import load_rules
 from .shots.engine import run_shot_analysis
 from .validation.ledger_validator import (
@@ -49,6 +50,21 @@ from .validation.media_validator import validate_media
 from .visual_intelligence import run_visual_intelligence
 
 logger = logging.getLogger(__name__)
+
+
+def _report(
+    reporter: ProgressReporter,
+    stage: str,
+    status: StageStatus,
+    detail: str | None = None,
+    current: int | None = None,
+    total: int | None = None,
+) -> None:
+    """Progress is observability only: a reporter failure must never affect the audit."""
+    try:
+        reporter.report(stage, status, detail=detail, current=current, total=total)
+    except Exception:
+        logger.debug("Progress reporter failed for stage %s", stage, exc_info=True)
 
 
 def _vi_attr(result: AuditResult, name: str) -> str | None:
@@ -109,6 +125,7 @@ def run_audit(
     caption_brain: bool = False,
     human_facts_path: Path | None = None,
     final_review_path: Path | None = None,
+    progress: ProgressReporter | None = None,
 ) -> AuditResult:
     """Run the full audit (media verification, frame ledger, optional shot
     truth) and write all artifacts.
@@ -119,6 +136,8 @@ def run_audit(
     """
     started_at = datetime.now(UTC)
     wall_start = time.perf_counter()
+    reporter: ProgressReporter = progress if progress is not None else NoOpProgressReporter()
+    _report(reporter, "preparing", StageStatus.STARTED)
     run_id = writer.new_run_id()
     run_dir = writer.create_run_dir(artifacts_root, video_path, run_id)
     result = AuditResult(run_id=run_id, run_dir=run_dir, status=RunStatus.FAILED)
@@ -174,6 +193,7 @@ def run_audit(
             )
 
         # --- MEDIA VERIFICATION ---
+        _report(reporter, "media_verification", StageStatus.STARTED)
         try:
             with _StageTimer(timings, "probe"):
                 media, raw_probe = probe_mod.probe_media(video_path)
@@ -194,8 +214,14 @@ def run_audit(
         if media is not None:
             issues.extend(validate_media(media))
             checks_run.append("media_validator")
+        _report(
+            reporter,
+            "media_verification",
+            StageStatus.COMPLETED if media is not None else StageStatus.FAILED,
+        )
 
         # --- FRAME LEDGER ---
+        _report(reporter, "frame_ledger", StageStatus.STARTED)
         if media is not None and media.video_streams:
             video_stream = media.video_streams[0]
             try:
@@ -231,15 +257,35 @@ def run_audit(
             artifact_paths.append(writer.write_frames_jsonl(run_dir, ledger))
 
             if extract_frames:
+                _report(
+                    reporter,
+                    "frame_extraction",
+                    StageStatus.STARTED,
+                    total=ledger.frame_count,
+                )
                 with _StageTimer(timings, "extract_frames"):
                     extracted = frames_mod.extract_evidence_frames(
                         video_path, ledger, run_dir / "frames"
                     )
                 logger.info("Extracted %d evidence frames", len(extracted))
                 checks_run.append("frame_extraction")
+                _report(
+                    reporter,
+                    "frame_extraction",
+                    StageStatus.COMPLETED,
+                    current=len(extracted),
+                    total=ledger.frame_count,
+                )
+        _report(
+            reporter,
+            "frame_ledger",
+            StageStatus.COMPLETED if ledger is not None else StageStatus.FAILED,
+            total=ledger.frame_count if ledger is not None else None,
+        )
 
         # --- SHOT TRUTH (Phase 2) ---
         if shot_analysis and ledger is not None and media is not None:
+            _report(reporter, "shot_analysis", StageStatus.STARTED)
             with _StageTimer(timings, "shot_analysis_total"):
                 shot_output = run_shot_analysis(
                     video_path,
@@ -255,9 +301,11 @@ def run_audit(
             artifact_paths.extend(shot_output.artifact_paths)
             result.shot_truth = shot_output.result
             checks_run.append("shot_truth")
+            _report(reporter, "shot_analysis", StageStatus.COMPLETED)
 
         # --- AUDIO TRUTH (Phase 3) ---
         if audio_analysis and ledger is not None and media is not None:
+            _report(reporter, "audio_analysis", StageStatus.STARTED)
             with _StageTimer(timings, "audio_analysis_total"):
                 audio_output = run_audio_analysis(
                     video_path,
@@ -278,9 +326,11 @@ def run_audit(
             artifact_paths.extend(audio_output.artifact_paths)
             result.audio_truth = audio_output.result
             checks_run.append("audio_truth")
+            _report(reporter, "audio_analysis", StageStatus.COMPLETED)
 
         # --- VISUAL REVIEW INTELLIGENCE (Phase 4) ---
         if visual_intelligence:
+            _report(reporter, "visual_intelligence", StageStatus.STARTED)
             with _StageTimer(timings, "visual_intelligence_total"):
                 vi_output = run_visual_intelligence(
                     run_dir,
@@ -303,12 +353,14 @@ def run_audit(
             artifact_paths.extend(vi_output.artifact_paths)
             result.visual_intelligence = vi_output.result
             checks_run.append("visual_intelligence")
+            _report(reporter, "visual_intelligence", StageStatus.COMPLETED)
 
         # --- CAPTION BRAIN (Phase 5) ---
         # Runs from the evidence artifacts already written; never re-decodes
         # media. Unresolved review never crashes the pipeline — it produces
         # REVIEW_REQUIRED plus the reviewer packet and a draft when safe (§95).
         if caption_brain and result.shot_truth is not None:
+            _report(reporter, "caption_brain", StageStatus.STARTED)
             with _StageTimer(timings, "caption_brain_total"):
                 try:
                     cb_output = finalize_run(
@@ -336,6 +388,11 @@ def run_audit(
                 artifact_paths.extend(cb_output.artifact_paths)
                 result.caption_brain = cb_output
                 checks_run.append("caption_brain")
+            _report(
+                reporter,
+                "caption_brain",
+                StageStatus.COMPLETED if cb_output is not None else StageStatus.FAILED,
+            )
 
         # --- SOURCE STABILITY ---
         with _StageTimer(timings, "rehash_source"):
@@ -470,12 +527,14 @@ def run_audit(
         result.manifest = manifest
         writer.write_manifest_json(run_dir, manifest.model_dump(mode="json"))
         logger.info("Audit %s finished with status %s", run_id, status)
+        _report(reporter, "done", StageStatus.COMPLETED, detail=status.value)
         return result
 
     except (FFmpegNotFoundError, writer.ArtifactWriteError) as exc:
         result.fatal_error = str(exc)
         result.status = RunStatus.FAILED
         logger.error("Fatal: %s", exc)
+        _report(reporter, "done", StageStatus.FAILED, detail=str(exc))
         return result
     finally:
         root_logger.removeHandler(file_handler)
