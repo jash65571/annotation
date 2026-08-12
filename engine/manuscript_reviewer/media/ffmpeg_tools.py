@@ -11,8 +11,10 @@ import logging
 import os
 import shutil
 import subprocess
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import IO
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +122,65 @@ def run_tool_binary(
     if completed.returncode != 0:
         raise ToolExecutionError(command, completed.returncode, stderr_text)
     return BinaryToolResult(command=command, stdout=completed.stdout, stderr=stderr_text)
+
+
+def stream_tool_frames(
+    executable: Path, args: list[str], frame_bytes: int, timeout: float | None = 1800.0
+) -> Iterator[bytes]:
+    """Stream a media tool's rawvideo stdout one fixed-size frame at a time.
+
+    One subprocess, bounded memory: exactly ``frame_bytes`` bytes are yielded per
+    frame and never all buffered at once. Raises :class:`ToolExecutionError` if
+    the tool exits non-zero. This is the ONLY streaming decode primitive; callers
+    (the frame cache) use it so scan-heavy consumers never spawn one process per
+    frame.
+    """
+    command = [str(executable), *args]
+    logger.debug("stream_tool_frames: %s", " ".join(command))
+    proc = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+    )
+    assert proc.stdout is not None
+    try:
+        while True:
+            buf = _read_exact(proc.stdout, frame_bytes)
+            if buf is None:
+                break
+            yield buf
+    finally:
+        proc.stdout.close()
+        stderr_bytes = proc.stderr.read() if proc.stderr is not None else b""
+        if proc.stderr is not None:
+            proc.stderr.close()
+        returncode = proc.wait(timeout=timeout)
+        if returncode != 0:
+            raise ToolExecutionError(
+                command, returncode, stderr_bytes.decode("utf-8", errors="replace")
+            )
+
+
+def _read_exact(stream: IO[bytes], size: int) -> bytes | None:
+    """Read exactly ``size`` bytes, or return None at a clean EOF. A partial read
+    at EOF raises (a truncated final frame must never be silently accepted)."""
+    chunks: list[bytes] = []
+    remaining = size
+    while remaining > 0:
+        chunk = stream.read(remaining)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    data = b"".join(chunks)
+    if not data:
+        return None
+    if len(data) != size:
+        raise ToolExecutionError(
+            ["stream_tool_frames"], -1, f"truncated frame: got {len(data)} of {size} bytes"
+        )
+    return data
 
 
 def tool_version(executable: Path) -> str:

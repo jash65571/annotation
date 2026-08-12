@@ -7,7 +7,7 @@ carries exact frame identity; the adapter never supplies a timestamp.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -41,23 +41,22 @@ class OCRResult:
 
 
 def run_ocr(
-    frame_indices: list[int],
-    get_image: Callable[[int], npt.NDArray[np.uint8]],
+    frames: Iterable[tuple[int, npt.NDArray[np.uint8]]],
     ledger: FrameLedger,
     clock: AnnotationClock,
     adapter: _RecognizingAdapter,
     language: str = "eng",
     total_frames: int | None = None,
 ) -> OCRResult:
-    """Recognize text across the given frames and build tracks + watermarks."""
+    """Recognize text across a stream of ``(frame_index, image)`` and build
+    tracks + watermarks. The frame stream comes from one shared decode (H)."""
     info = adapter.engine_info()
     if info.status == OCRStatus.UNAVAILABLE:
         return OCRResult(engine_info=info)
 
     observations: list[OCRObservation] = []
     obs_counter = 0
-    for frame_index in frame_indices:
-        image = get_image(frame_index)
+    for frame_index, image in frames:
         try:
             words = adapter.recognize(image, language)
         except (RuntimeError, OSError, ValueError):

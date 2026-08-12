@@ -316,9 +316,10 @@ def _run_ocr_stage(
     if info.status == OCRStatus.UNAVAILABLE:
         return
     try:
+        # One shared sequential color decode feeds OCR (H) — never one ffmpeg
+        # process per frame.
         ocr_result = run_ocr(
-            list(range(ledger.frame_count)),
-            cache.color_frame,
+            cache.iter_color_frames(),
             ledger,
             clock,
             adapter,

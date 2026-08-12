@@ -146,7 +146,8 @@ def test_run_ocr_with_mock_builds_tracks() -> None:
     word = OCRWord(text="GO", x=10, y=10, width=20, height=10, confidence=95.0)
     adapter = MockOCRAdapter(scripted=[[word]])  # stable overlay every frame
     img = np.zeros((20, 40), dtype=np.uint8)
-    result = run_ocr(list(range(6)), lambda _i: img, ledger, clock, adapter, total_frames=6)
+    stream = [(i, img) for i in range(6)]
+    result = run_ocr(stream, ledger, clock, adapter, total_frames=6)
     assert result.engine_info.status == OCRStatus.AVAILABLE
     assert result.text_tracks
     assert result.text_tracks[0].consensus is not None
@@ -169,7 +170,7 @@ def test_run_ocr_unavailable_degrades() -> None:
             raise AssertionError("must not be called when unavailable")
 
     img = np.zeros((10, 10), dtype=np.uint8)
-    result = run_ocr(list(range(3)), lambda _i: img, ledger, clock, _Unavailable())
+    result = run_ocr([(i, img) for i in range(3)], ledger, clock, _Unavailable())
     assert result.engine_info.status == OCRStatus.UNAVAILABLE
     assert not result.text_tracks
     assert not result.observations

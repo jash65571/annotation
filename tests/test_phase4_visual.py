@@ -168,6 +168,35 @@ def test_frame_cache_color_lru(clip_24fps: Path) -> None:
 
 
 @requires_ffmpeg
+def test_iter_color_frames_uses_one_process(clip_24fps: Path) -> None:
+    ledger = _build_ledger(clip_24fps)
+    cache = FrameCache(clip_24fps, ledger)
+    frames = list(cache.iter_color_frames())
+    assert len(frames) == ledger.frame_count
+    for i, (idx, frame) in enumerate(frames):
+        assert idx == i  # exact ledger index mapping
+        assert frame.ndim == 3 and frame.shape[2] == 3
+    # ONE ffmpeg stream for the whole traversal; no per-frame single decode.
+    assert cache.color_stream_count == 1
+    assert cache.color_single_decode_count == 0
+
+
+@requires_ffmpeg
+def test_full_frame_ocr_traversal_does_not_spawn_per_frame(clip_24fps: Path) -> None:
+    from manuscript_reviewer.ocr.adapter import MockOCRAdapter
+    from manuscript_reviewer.ocr.pipeline import run_ocr
+
+    ledger = _build_ledger(clip_24fps)
+    cache = FrameCache(clip_24fps, ledger)
+    clock = AnnotationClock.from_ledger(ledger)
+    adapter = MockOCRAdapter(scripted=[[]])  # no text; we only measure decoding
+    run_ocr(cache.iter_color_frames(), ledger, clock, adapter, total_frames=ledger.frame_count)
+    # A full-frame OCR pass streams once, never one ffmpeg process per frame.
+    assert cache.color_stream_count == 1
+    assert cache.color_single_decode_count == 0
+
+
+@requires_ffmpeg
 def test_gray_frames_decoded_once(clip_24fps: Path) -> None:
     ledger = _build_ledger(clip_24fps)
     cache = FrameCache(clip_24fps, ledger)

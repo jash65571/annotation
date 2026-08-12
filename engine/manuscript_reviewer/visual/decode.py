@@ -13,12 +13,13 @@ from __future__ import annotations
 
 import logging
 from collections import OrderedDict
+from collections.abc import Iterator
 from pathlib import Path
 
 import numpy as np
 import numpy.typing as npt
 
-from ..media.ffmpeg_tools import find_tool, run_tool_binary
+from ..media.ffmpeg_tools import find_tool, run_tool_binary, stream_tool_frames
 from ..models.frame import FrameLedger
 from ..shots.decode import GrayFrames, decode_metric_frames
 
@@ -51,6 +52,44 @@ class FrameCache:
         self.gray_decode_count = 0
         self.color_hits = 0
         self.color_misses = 0
+        #: ffmpeg processes launched: one per full sequential stream, one per
+        #: sparse single-frame extraction. Used by the H-benchmark test.
+        self.color_stream_count = 0
+        self.color_single_decode_count = 0
+
+    def _dims(self) -> tuple[int, int]:
+        first = self._ledger.frames[0]
+        if first.width is None or first.height is None:
+            raise ValueError("Ledger frames carry no width/height; cannot decode colour.")
+        return first.width, first.height
+
+    def iter_color_frames(
+        self, indices: set[int] | None = None
+    ) -> Iterator[tuple[int, ColorFrame]]:
+        """Yield ``(frame_index, rgb_frame)`` for all frames (or the given
+        subset) from ONE sequential ffmpeg rawvideo stream — bounded memory, no
+        per-frame process launch. Decoded pixels map to exact ledger indices via
+        ``-fps_mode passthrough``."""
+        width, height = self._dims()
+        frame_bytes = width * height * 3
+        ffmpeg = find_tool("ffmpeg")
+        self.color_stream_count += 1
+        args = [
+            "-v", "error",
+            "-i", str(self._video_path),
+            "-map", f"0:v:{self._stream_index}",
+            "-fps_mode", "passthrough",
+            "-f", "rawvideo",
+            "-pix_fmt", "rgb24",
+            "-",
+        ]
+        for index, buf in enumerate(stream_tool_frames(ffmpeg, args, frame_bytes)):
+            if index >= self._ledger.frame_count:
+                break
+            if indices is not None and index not in indices:
+                continue
+            frame = np.frombuffer(buf, dtype=np.uint8).reshape((height, width, 3)).copy()
+            yield index, frame
 
     @property
     def frame_count(self) -> int:
@@ -98,6 +137,7 @@ class FrameCache:
 
     def _decode_color(self, frame_index: int) -> ColorFrame:
         ffmpeg = find_tool("ffmpeg")
+        self.color_single_decode_count += 1
         result = run_tool_binary(
             ffmpeg,
             [
