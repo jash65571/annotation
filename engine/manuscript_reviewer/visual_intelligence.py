@@ -36,6 +36,7 @@ from .models.review_intelligence import (
     FrameObservation,
     OCRObservation,
     OCRStatus,
+    PlaybackSpeedEvidence,
     TextTrack,
     VisualIntelligenceResult,
 )
@@ -120,6 +121,7 @@ def run_visual_intelligence(
     ocr_text_tracks: list[TextTrack] = []
     camera_candidates: list[CameraMotionCandidate] = []
     entity_tracks: list[EntityTrack] = []
+    speed_evidence: list[PlaybackSpeedEvidence] = []
     cache: FrameCache | None = None
     if ledger is not None and media is not None and video_path is not None:
         cache = FrameCache(video_path, ledger)
@@ -137,7 +139,9 @@ def run_visual_intelligence(
         _timed(timings, "camera_motion", start)
         if shot_truth is not None:
             start = time.perf_counter()
-            speed_evidence = build_playback_speed_evidence(cache.gray_frames(), shot_truth)
+            speed_evidence = build_playback_speed_evidence(
+                cache.gray_frames(), shot_truth, ledger
+            )
             issues.extend(visual_validator.validate_speed_evidence(speed_evidence))
             artifacts.append(
                 visual_writer.write_playback_speed_evidence(

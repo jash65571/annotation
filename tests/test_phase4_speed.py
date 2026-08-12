@@ -51,7 +51,9 @@ def _one_shot_truth(frame_count: int) -> ShotTruthResult:
 def _evidence(path: Path, n: int) -> SpeedConclusion:
     ledger = _build_ledger(path)
     cache = FrameCache(path, ledger)
-    ev = build_playback_speed_evidence(cache.gray_frames(), _one_shot_truth(ledger.frame_count))
+    ev = build_playback_speed_evidence(
+        cache.gray_frames(), _one_shot_truth(ledger.frame_count), ledger
+    )
     return ev[0].conclusion
 
 
@@ -79,6 +81,30 @@ def test_duplicated_frames_read_as_slow_motion_candidate(tmp_path: Path) -> None
         frames.append(f.copy())  # each frame duplicated -> slow-motion look
     clip = synth_clip(tmp_path / "slow.mp4", frames)
     assert _evidence(clip, 20) == SpeedConclusion.SLOW_MOTION_CANDIDATE
+
+
+def test_regular_needs_positive_evidence_not_absence() -> None:
+    from manuscript_reviewer.speed.cadence import ShotCadence
+    from manuscript_reviewer.speed.evidence import conclude_speed
+
+    cadence = ShotCadence(pair_count=10, duplicate_ratio=0.0, motion_present=True,
+                          first_half_dup=0.0, second_half_dup=0.0, diffs=[0.05] * 10)
+    # No positive PTS-cadence evidence -> not REGULAR_SUPPORTED (item 9).
+    concl, review = conclude_speed(cadence, pts_regular=False)
+    assert concl == SpeedConclusion.REVIEW_REQUIRED and review
+    # With positive PTS cadence evidence -> REGULAR_SUPPORTED.
+    concl2, review2 = conclude_speed(cadence, pts_regular=True)
+    assert concl2 == SpeedConclusion.REGULAR_SUPPORTED and not review2
+
+
+def test_accelerated_is_reachable_with_evidence() -> None:
+    from manuscript_reviewer.speed.cadence import ShotCadence
+    from manuscript_reviewer.speed.evidence import conclude_speed
+
+    cadence = ShotCadence(pair_count=10, duplicate_ratio=0.0, motion_present=True,
+                          first_half_dup=0.0, second_half_dup=0.0, diffs=[0.05] * 10)
+    concl, review = conclude_speed(cadence, pts_regular=True, accelerated_evidence=True)
+    assert concl == SpeedConclusion.ACCELERATED_CANDIDATE and review
 
 
 @requires_ffmpeg
