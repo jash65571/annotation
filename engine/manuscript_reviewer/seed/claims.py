@@ -261,25 +261,12 @@ def _shot_claims(section: SeedSection, counter: _Counter) -> list[SeedClaim]:
     claims: list[SeedClaim] = []
     shot = section.shot_number
 
-    # Shot boundary claim from the header (foundational).
-    header = next((e for e in section.entries if e.field_label == "Shot header"), None)
-    if header is not None and (
-        header.parsed_start_exact is not None or header.parsed_end_exact is not None
-    ):
-        claims.append(
-            SeedClaim(
-                claim_id=counter.next("CLM"),
-                source_field="Shot boundary",
-                text=header.value_text or header.raw_line,
-                claim_type=SeedClaimType.SHOT_BOUNDARY,
-                shot_number=shot,
-                seed_source_line=header.source_line,
-                seed_entry_id=header.entry_id,
-                seed_time_range=_time_range(header),
-                importance=ClaimImportance.FOUNDATIONAL,
-                review_status=ClaimReviewStatus.MACHINE_ONLY,
-            )
-        )
+    # One boundary claim per shot, combining the `[Shot N: start-end]` header
+    # with any explicit Start:/End: fields (so a correct Start:/End: pair is not
+    # mis-scored against the header range, and vice versa).
+    boundary = _shot_boundary_claim(section, shot, counter)
+    if boundary is not None:
+        claims.append(boundary)
 
     for entry in section.entries:
         if entry.field_label == "Shot header":
@@ -308,12 +295,56 @@ def _shot_claims(section: SeedSection, counter: _Counter) -> list[SeedClaim]:
     return claims
 
 
+def _shot_boundary_claim(
+    section: SeedSection, shot: int | None, counter: _Counter
+) -> SeedClaim | None:
+    """Build the single foundational SHOT_BOUNDARY claim for a shot.
+
+    Prefers the header's start-end range; fills a missing endpoint from an
+    explicit Start:/End: field. Returns None when no boundary time is stated.
+    """
+    header = next((e for e in section.entries if e.field_label == "Shot header"), None)
+    start_entry = next((e for e in section.entries if e.field == SeedFieldKind.SHOT_START), None)
+    end_entry = next((e for e in section.entries if e.field == SeedFieldKind.SHOT_END), None)
+
+    b_start = header.parsed_start_exact if header is not None else None
+    b_end = header.parsed_end_exact if header is not None else None
+    if b_start is None and start_entry is not None:
+        b_start = start_entry.parsed_start_exact
+    if b_end is None and end_entry is not None:
+        b_end = end_entry.parsed_start_exact  # End: field time is stored in start
+
+    if b_start is None and b_end is None:
+        return None
+    if b_end is None:
+        b_end = b_start
+    if b_start is None:
+        b_start = b_end
+    assert b_start is not None and b_end is not None
+
+    source = header or start_entry or end_entry
+    assert source is not None
+    return SeedClaim(
+        claim_id=counter.next("CLM"),
+        source_field="Shot boundary",
+        text=source.value_text or source.raw_line,
+        claim_type=SeedClaimType.SHOT_BOUNDARY,
+        shot_number=shot,
+        seed_source_line=source.source_line,
+        seed_entry_id=source.entry_id,
+        seed_time_range=ExactTimeRange(start_seconds=b_start, end_seconds=b_end),
+        importance=ClaimImportance.FOUNDATIONAL,
+        review_status=ClaimReviewStatus.MACHINE_ONLY,
+    )
+
+
 def _shot_entry_type(entry: SeedEntry) -> tuple[SeedClaimType | None, ClaimImportance]:
     field = entry.field
     if field == SeedFieldKind.TRANSITION:
         return SeedClaimType.TRANSITION, ClaimImportance.FOUNDATIONAL
     if field == SeedFieldKind.SHOT_START or field == SeedFieldKind.SHOT_END:
-        return SeedClaimType.SHOT_BOUNDARY, ClaimImportance.FOUNDATIONAL
+        # Folded into the single per-shot boundary claim above.
+        return None, ClaimImportance.FOUNDATIONAL
     if field == SeedFieldKind.CAMERA:
         return SeedClaimType.CAMERA_FRAMING, ClaimImportance.LOCAL
     if field == SeedFieldKind.CAMERA_MOVEMENTS:

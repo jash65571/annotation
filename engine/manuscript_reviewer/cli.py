@@ -137,7 +137,8 @@ def audit(
             "--visual-anchors",
             exists=True,
             dir_okay=False,
-            help="Human/detector anchors JSON for assisted local tracking",
+            help="Human/detector anchors JSON for assisted local tracking "
+            "(reserved; tracking slice not yet implemented)",
         ),
     ] = None,
     review_decisions: Annotated[
@@ -151,7 +152,11 @@ def audit(
     ] = None,
     extract_visual_evidence: Annotated[
         bool,
-        typer.Option("--extract-visual-evidence", help="Render local visual evidence bundles"),
+        typer.Option(
+            "--extract-visual-evidence",
+            help="Render local visual evidence bundles "
+            "(reserved; evidence-bundle slice not yet implemented)",
+        ),
     ] = False,
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
 ) -> None:

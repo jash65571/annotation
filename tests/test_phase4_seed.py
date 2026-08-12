@@ -249,6 +249,31 @@ def test_correct_structure_one_wrong_timestamp_is_fix_not_redo() -> None:
     assert any(c.evidence_status == EvidenceStatus.SUPPORTED for c in boundary_claims)
 
 
+def test_explicit_start_end_fields_score_as_one_boundary() -> None:
+    # A seed that uses explicit Start:/End: fields (no header range) must yield a
+    # single boundary claim scored against both endpoints, not a mis-scored point.
+    seed = (
+        "[Shot 1]\nStart: 0.0\nEnd: 3.2\nCut: Opening shot\n"
+        "[Shot 2]\nStart: 3.2\nEnd: 9.5\nCut: Hard cut\n"
+    )
+    doc = parse_seed_text(seed)
+    claims = extract_claims(doc)
+    boundary = [c for c in claims if c.claim_type == SeedClaimType.SHOT_BOUNDARY]
+    assert len(boundary) == 2  # exactly one per shot
+    truth = make_shot_truth(
+        [
+            _shot(1, Fraction(0), Fraction(32, 10), "Opening shot"),
+            _shot(2, Fraction(32, 10), Fraction(95, 10), "Hard cut"),
+        ]
+    )
+    res = compare_seed(doc, claims, None, truth)
+    shot1_boundary = next(
+        c for c in res.claims
+        if c.claim_type == SeedClaimType.SHOT_BOUNDARY and c.shot_number == 1
+    )
+    assert shot1_boundary.evidence_status == EvidenceStatus.SUPPORTED
+
+
 def test_opening_shot_supported_has_evidence() -> None:
     doc = parse_seed_text(CLEAN_SEED)
     claims = extract_claims(doc)
