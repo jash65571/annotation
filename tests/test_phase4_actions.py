@@ -82,6 +82,65 @@ def test_no_pickup_without_supporting_sequence() -> None:
     assert not any(e.kind == ContactEventKind.OBJECT_PICKUP_CANDIDATE for e in events)
 
 
+def test_pickup_pre_state_is_visible_never_on_surface() -> None:
+    # Final-fix 2: a pickup candidate must not assert ON_SURFACE (static != resting
+    # on a surface). Pre-state is VISIBLE.
+    char = _track("C", "CHARACTER", {f: (100 - f * 5, 50) for f in range(0, 12)})
+    obj = _track(
+        "O", "OBJECT",
+        {**dict.fromkeys(range(0, 5), (40, 50)),
+         **{f: (100 - f * 5 + 2, 50) for f in range(5, 12)}},
+    )
+    events = build_contact_events([char], [obj])
+    pickup = next(e for e in events if e.kind == ContactEventKind.OBJECT_PICKUP_CANDIDATE)
+    assert pickup.pre_state == ObjectStateKind.VISIBLE
+    assert pickup.pre_state != ObjectStateKind.ON_SURFACE
+
+
+def test_no_pickup_when_object_was_moving_into_contact() -> None:
+    # Final-fix 2: object already moving independently INTO the contact -> not a
+    # pickup (the local pre-contact window is not static).
+    char = _track("C", "CHARACTER", {f: (100 - f * 5, 50) for f in range(0, 12)})
+    obj = _track(
+        "O", "OBJECT",
+        {f: (10 + f * 6, 50) for f in range(0, 5)}  # moving right independently
+        | {f: (100 - f * 5 + 2, 50) for f in range(5, 12)},  # then moves with char
+    )
+    events = build_contact_events([char], [obj])
+    assert not any(e.kind == ContactEventKind.OBJECT_PICKUP_CANDIDATE for e in events)
+
+
+def test_no_pickup_when_pre_contact_frames_missing() -> None:
+    # Final-fix 2: pre-contact frames occluded/missing -> no factual pickup.
+    char = _track("C", "CHARACTER", {f: (100 - f * 5, 50) for f in range(0, 12)})
+    # Object visible only from frame 4 on (no static pre-contact window before 5).
+    obj = _track(
+        "O", "OBJECT",
+        {4: (40, 50)} | {f: (100 - f * 5 + 2, 50) for f in range(5, 12)},
+    )
+    events = build_contact_events([char], [obj])
+    assert not any(e.kind == ContactEventKind.OBJECT_PICKUP_CANDIDATE for e in events)
+
+
+def test_held_object_contact_end_is_never_on_surface() -> None:
+    # Final-fix 2: a held object whose contact ends (e.g. thrown/airborne) must NOT
+    # be assigned ON_SURFACE. Both the contact-end and release states stay honest.
+    char = _track("C", "CHARACTER",
+                  {f: (100 - f * 5, 50) for f in range(0, 9)} | {9: (9999, 9999)})
+    obj = _track(
+        "O", "OBJECT",
+        {**dict.fromkeys(range(0, 5), (40, 50)),
+         **{f: (100 - f * 5 + 2, 50) for f in range(5, 9)},  # held & moving with char
+         9: (40, 50)},  # contact ends at 9 (char left) - fate unknown
+    )
+    events = build_contact_events([char], [obj])
+    ends = [e for e in events if e.kind == ContactEventKind.CONTACT_ENDS]
+    releases = [e for e in events if e.kind == ContactEventKind.OBJECT_RELEASE]
+    assert ends and all(e.post_state != ObjectStateKind.ON_SURFACE for e in ends)
+    assert all(e.post_state == ObjectStateKind.REVIEW_REQUIRED for e in ends if releases)
+    assert all(e.post_state != ObjectStateKind.ON_SURFACE for e in releases)
+
+
 # --------------------------------------------------------------------------
 # W: final-state
 # --------------------------------------------------------------------------

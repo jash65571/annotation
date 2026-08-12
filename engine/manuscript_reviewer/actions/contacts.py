@@ -91,7 +91,7 @@ def _pair_events(
     contact_prev = False
     held = False
     held_run = 0
-    obj_static_before = _is_static(obj_frames, shared[0])
+    contact_begin_frame: int | None = None
 
     for idx, f in enumerate(shared):
         contact = _in_contact(obj_frames[f], char_frames[f])
@@ -104,20 +104,27 @@ def _pair_events(
         )
 
         if contact and not contact_prev:
+            contact_begin_frame = f
             counter += 1
             events.append(_event(counter, ContactEventKind.CONTACT_BEGINS, obj, char, f,
                                  ObjectStateKind.UNASSIGNED,
                                  ObjectStateKind.IN_CONTACT_WITH_CHARACTER, shot_of))
         elif not contact and contact_prev:
             counter += 1
-            post = ObjectStateKind.MOVING_INDEPENDENTLY if not held else ObjectStateKind.ON_SURFACE
+            # A held object whose contact ends may be placed, dropped, thrown, or
+            # still airborne — we never assert ON_SURFACE. The fate is unknown.
+            post = (
+                ObjectStateKind.REVIEW_REQUIRED if held
+                else ObjectStateKind.MOVING_INDEPENDENTLY
+            )
             events.append(_event(counter, ContactEventKind.CONTACT_ENDS, obj, char, f,
                                  ObjectStateKind.IN_CONTACT_WITH_CHARACTER, post, shot_of))
             if held:
                 counter += 1
+                # Released from the hand, but where it goes is not determined.
                 events.append(_event(counter, ContactEventKind.OBJECT_RELEASE, obj, char, f,
                                      ObjectStateKind.HELD_BY_CHARACTER,
-                                     ObjectStateKind.MOVING_INDEPENDENTLY, shot_of))
+                                     ObjectStateKind.REVIEW_REQUIRED, shot_of))
                 held = False
                 held_run = 0
 
@@ -130,10 +137,15 @@ def _pair_events(
                 events.append(_event(counter, ContactEventKind.HELD_STATE_BEGINS, obj, char,
                                      begin_frame, ObjectStateKind.IN_CONTACT_WITH_CHARACTER,
                                      ObjectStateKind.HELD_BY_CHARACTER, shot_of))
-                if obj_static_before:
+                # PICKUP requires the object to be verified separate AND locally
+                # static in the frames IMMEDIATELY before contact (not from the
+                # start of shared tracking) AND then held. Static is not ON_SURFACE.
+                if contact_begin_frame is not None and _locally_static_before(
+                    obj_frames, contact_begin_frame
+                ):
                     counter += 1
                     events.append(_event(counter, ContactEventKind.OBJECT_PICKUP_CANDIDATE,
-                                         obj, char, begin_frame, ObjectStateKind.ON_SURFACE,
+                                         obj, char, begin_frame, ObjectStateKind.VISIBLE,
                                          ObjectStateKind.HELD_BY_CHARACTER, shot_of))
         elif contact:
             held_run = 0
@@ -143,10 +155,19 @@ def _pair_events(
     return counter
 
 
-def _is_static(frames: dict[int, TrackObservation], start: int) -> bool:
-    keys = sorted(k for k in frames if k >= start)[: _HELD_MIN + 1]
-    for a, b in itertools.pairwise(keys):
-        if b - a != 1:  # non-consecutive: cannot claim static
+def _locally_static_before(
+    frames: dict[int, TrackObservation], contact_frame: int, window: int = _HELD_MIN
+) -> bool:
+    """The object is verifiably static in the ``window`` frames STRICTLY before
+    contact (at the contact frame it has already met the character). Requires a full
+    run of consecutive TRACKED frames right up to the contact frame; missing /
+    occluded / non-consecutive pre-contact evidence -> not static (so no pickup is
+    inferred). Static geometry is never read as 'on a surface'."""
+    seq = [contact_frame - k for k in range(window, 0, -1)]  # [cf-window .. cf-1]
+    if any(k not in frames for k in seq):
+        return False  # missing pre-contact evidence -> cannot claim a pickup
+    for a, b in itertools.pairwise(seq):
+        if b - a != 1:
             return False
         ca, cb = _center(frames[a]), _center(frames[b])
         if ((ca[0] - cb[0]) ** 2 + (ca[1] - cb[1]) ** 2) ** 0.5 > _STATIC_EPS:
