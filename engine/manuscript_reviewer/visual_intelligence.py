@@ -227,8 +227,13 @@ def run_visual_intelligence(
                 message=f"Review decisions rejected: {exc}"))
         ev_decisions = [d for d in loaded_decisions
                         if d.decision_type in _EVIDENCE_DECISION_TYPES]
+        frame_time_resolver = (
+            _frame_to_time(ledger, AnnotationClock.from_ledger(ledger))
+            if ledger is not None
+            else None
+        )
         decision_applications += apply_decisions(
-            ev_decisions, _evidence_decision_targets(evidence),
+            ev_decisions, _evidence_decision_targets(evidence, frame_time_resolver),
             video_sha256, rules_version or "unknown")
 
     machine_items = build_machine_review_items(evidence, result.ocr_status.value)
@@ -711,14 +716,20 @@ _CLAIM_DECISION_TYPES = frozenset({
 })
 
 
-def _evidence_decision_targets(evidence: VisualEvidence) -> DecisionTargets:
+def _evidence_decision_targets(
+    evidence: VisualEvidence,
+    frame_to_time: Callable[[int], Fraction | None] | None = None,
+) -> DecisionTargets:
     """Typed registries for the machine-evidence targets a human may resolve. Speed
-    evidence has no id of its own, so it is keyed by shot (``SPEED-<shot>``)."""
+    evidence has no id of its own, so it is keyed by shot (``SPEED-<shot>``).
+    ``frame_to_time`` lets ACTION_BOUNDARY decisions recompute exact timing."""
     return DecisionTargets(
         entity_tracks={t.track_id: t for t in evidence.entity_tracks},
         camera_candidates={c.candidate_id: c for c in evidence.camera_candidates},
         action_candidates={a.candidate_id: a for a in evidence.action_candidates},
         speed_evidence={f"SPEED-{s.shot_number}": s for s in evidence.speed_evidence},
+        text_tracks={t.track_id: t for t in evidence.text_tracks},
+        frame_to_time=frame_to_time,
     )
 
 

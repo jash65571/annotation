@@ -168,6 +168,44 @@ input SHAs (video/seed/decisions/human-facts/signoff), the rendered caption
 SHA, final status, and stage timings. The run manifest additionally records the
 Phase 5 inputs and `caption_final_status`.
 
+## Phase 5.1 hardening
+
+- **Canonical video identity comes from media truth** (manifest
+  `source_video_path` / the pipeline's video file), never the seed. The seed's
+  claimed id is kept separately; a mismatch is `M2-MEDIA-004` FAIL — a
+  wrong-video seed can never validate against itself.
+- **Every consumed Phase 1-4 evidence artifact is hash-verified** against
+  `manifest.json` before parsing (shot/audio QC, seed claims/parse, proposals,
+  feedback, camera/speed/OCR/action/track/link files, frames.jsonl). A hash
+  mismatch or a present-but-unmanifested evidence file raises; the consumed
+  hashes are recorded in `caption_manifest.json → evidence_sha256`.
+- **Phase 4 review carry-forward**: machine review items are recomputed from
+  the CURRENT (post-decision) evidence at finalize time; CRITICAL/HIGH items
+  gate readiness (a resolved item disappears; NORMAL/LOW items never demand
+  one click per weak candidate).
+- **`resolution_required`** on CaptionFact: material media content (audible
+  unverified speech, a material multi-frame unverified overlay, unresolved
+  transition/speed, any human-added fact) blocks readiness even when
+  INELIGIBLE — eligibility alone never decides materiality. The Golden gate's
+  TEXT_COVERAGE / DETAIL_COVERAGE downgrade on blocked material.
+- **New typed human decisions** resolving REAL evidence records (no duplicate
+  human fact needed): `SPEECH_VERIFICATION`/`SPEECH_CORRECTION` (SpeechRegion;
+  originals preserved), `TEXT_VERIFICATION`/`TEXT_CORRECTION`/`TEXT_TIMING`
+  (TextTrack; raw OCR never overwritten), `TRANSITION_CLASSIFICATION`
+  (ShotProposal; menu-validated, Opening-shot rules enforced).
+  `IDENTITY_MAPPING` now resolves BOTH `reacquired` and `identity_ambiguous`
+  with recorded previous state + human evidence. `ACTION_BOUNDARY` recomputes
+  `start_exact`/`end_exact` from the frame ledger — frame indices with stale
+  exact timing are INVALID_VALUE.
+- **Human facts must carry evidence**: a bound `HumanCaptionFact` with no
+  evidence reference is REVIEW_REQUIRED, plus type-specific validation (shot
+  exists, timed facts carry exact ranges, speed/transition values from the
+  menu, speech has a speaker, protected traits need an explicit allowed source
+  with human verification — appearance alone is never sufficient).
+- **`reviewed_caption.json` mirrors the render**: playback speed, camera
+  events, speech/sound/on-screen-text event records, per-shot camera/scene
+  descriptions; ActionAudioEvent text carries no duplicated timestamps.
+
 ## Fast finalize, performance, failure routes
 
 `manuscript-reviewer finalize RUN_DIR [--review-decisions ...] [--human-facts

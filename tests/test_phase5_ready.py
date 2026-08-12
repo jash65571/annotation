@@ -30,6 +30,17 @@ from .phase5_helpers import (
 
 ENGINE_DIR = Path(__file__).parent.parent / "engine" / "manuscript_reviewer"
 
+#: Every media-factual human fact must carry traceable evidence (§5.1-11).
+_EV = [
+    {
+        "evidence_id": "EV-HF",
+        "evidence_type": "FRAME_RANGE",
+        "start_frame": 0,
+        "end_frame": 24,
+        "source": "reviewer@test",
+    }
+]
+
 
 def _ready_run_dir(tmp_path: Path) -> Path:
     """A run whose caption reaches READY_FOR_FINAL_REVIEW: one supported shot,
@@ -95,6 +106,7 @@ def _human_facts_file(tmp_path: Path) -> Path:
                     "character_ids": ["C1"],
                     "start_exact": "0",
                     "end_exact": "1",
+                    "evidence_refs": _EV,
                     "decided_by": "reviewer@test",
                     "bound_video_sha256": VIDEO_SHA,
                     "bound_rules_version": RULES_VERSION,
@@ -227,6 +239,7 @@ def test_caption_change_invalidates_old_signoff(tmp_path: Path) -> None:
                     "character_ids": ["C1"],
                     "start_exact": "1",
                     "end_exact": "2",
+                    "evidence_refs": _EV,
                     "decided_by": "reviewer@test",
                     "bound_video_sha256": VIDEO_SHA,
                     "bound_rules_version": RULES_VERSION,
@@ -316,6 +329,7 @@ def test_golden_gate_keeps_short_events_and_overlap(tmp_path: Path) -> None:
                     "character_ids": ["C1"],
                     "start_exact": "73/10",
                     "end_exact": "74/10",
+                    "evidence_refs": _EV,
                     "decided_by": "reviewer@test",
                     "bound_video_sha256": VIDEO_SHA,
                     "bound_rules_version": RULES_VERSION,
@@ -328,6 +342,7 @@ def test_golden_gate_keeps_short_events_and_overlap(tmp_path: Path) -> None:
                     "character_ids": ["C1"],
                     "start_exact": "7",
                     "end_exact": "8",
+                    "evidence_refs": _EV,
                     "decided_by": "reviewer@test",
                     "bound_video_sha256": VIDEO_SHA,
                     "bound_rules_version": RULES_VERSION,

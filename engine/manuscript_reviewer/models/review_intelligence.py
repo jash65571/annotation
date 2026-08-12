@@ -739,6 +739,9 @@ class TextTrack(StrictModel):
     bbox_path: list[list[int]] = []  # per-frame [frame_index, x, y, w, h]
     observations: list[OCRObservation] = []
     consensus: TextConsensus | None = None
+    #: Human-supplied corrected wording (only when verification_status is
+    #: HUMAN_CORRECTED). Raw OCR observations/consensus are never overwritten.
+    corrected_text: str | None = None
     verification_status: SourceTextVerificationStatus = SourceTextVerificationStatus.UNVERIFIED
     review_required: bool = True
     #: Future property: OCR text is not caption text until source verification.
@@ -907,6 +910,15 @@ class DecisionType(StrEnum):
     ACTION_BOUNDARY = "ACTION_BOUNDARY"
     PLAYBACK_SPEED = "PLAYBACK_SPEED"
     REVIEW_PROPOSAL_OUTCOME = "REVIEW_PROPOSAL_OUTCOME"
+    # --- Phase 5.1 human-review flows (targets: SpeechRegion / TextTrack /
+    # ShotProposal transition). A reviewer resolves the REAL evidence record;
+    # no duplicate standalone human fact is required.
+    SPEECH_VERIFICATION = "SPEECH_VERIFICATION"
+    SPEECH_CORRECTION = "SPEECH_CORRECTION"
+    TEXT_VERIFICATION = "TEXT_VERIFICATION"
+    TEXT_CORRECTION = "TEXT_CORRECTION"
+    TEXT_TIMING = "TEXT_TIMING"
+    TRANSITION_CLASSIFICATION = "TRANSITION_CLASSIFICATION"
 
 
 class DecisionOutcome(StrEnum):

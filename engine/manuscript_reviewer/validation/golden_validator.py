@@ -74,13 +74,37 @@ def run_golden_gate(
             )
         )
 
+    #: Material media content currently blocked from eligibility (§5.1-15):
+    #: represented per fact via resolution_required, driven by Phase 4
+    #: materiality — never every weak machine candidate.
+    blocked_material = [
+        f
+        for f in facts
+        if f.resolution_required and f.eligibility != CaptionEligibility.ELIGIBLE
+    ]
+    blocked_by_type: dict[CaptionFactType, int] = {}
+    for f in blocked_material:
+        blocked_by_type[f.fact_type] = blocked_by_type.get(f.fact_type, 0) + 1
+
     # DETAIL_COVERAGE
+    non_speech_blocked = sum(
+        n
+        for t, n in blocked_by_type.items()
+        if t not in (CaptionFactType.SPEECH, CaptionFactType.ON_SCREEN_TEXT)
+    )
     if coverage.missing_required_fact_ids:
         add(
             "DETAIL_COVERAGE",
             GoldenGateStatus.FAIL,
             f"{len(coverage.missing_required_fact_ids)} material eligible fact(s) "
             "missing without a valid omission reason",
+        )
+    elif non_speech_blocked:
+        add(
+            "DETAIL_COVERAGE",
+            GoldenGateStatus.REVIEW_REQUIRED,
+            f"{non_speech_blocked} material fact(s) await resolution before the "
+            "caption is evidence-complete",
         )
     else:
         add("DETAIL_COVERAGE", GoldenGateStatus.PASS, "all material eligible facts represented")
@@ -241,16 +265,25 @@ def run_golden_gate(
         else f"{len(missing_audio)} eligible audio fact(s) missing",
     )
 
-    # TEXT_COVERAGE
+    # TEXT_COVERAGE: "no eligible OCR facts" is never PASS while a MATERIAL
+    # overlay awaits source verification (§5.1-15).
     text_facts = [f for f in eligible if f.fact_type == CaptionFactType.ON_SCREEN_TEXT]
     missing_text = [f for f in text_facts if f.fact_id not in rendered_fact_ids]
-    add(
-        "TEXT_COVERAGE",
-        GoldenGateStatus.FAIL if missing_text else GoldenGateStatus.PASS,
-        "verified on-screen text rendered"
-        if not missing_text
-        else f"{len(missing_text)} verified text track(s) missing",
-    )
+    blocked_text = blocked_by_type.get(CaptionFactType.ON_SCREEN_TEXT, 0)
+    if missing_text:
+        add(
+            "TEXT_COVERAGE",
+            GoldenGateStatus.FAIL,
+            f"{len(missing_text)} verified text track(s) missing",
+        )
+    elif blocked_text:
+        add(
+            "TEXT_COVERAGE",
+            GoldenGateStatus.REVIEW_REQUIRED,
+            f"{blocked_text} material overlay(s) await source verification",
+        )
+    else:
+        add("TEXT_COVERAGE", GoldenGateStatus.PASS, "verified on-screen text rendered")
 
     # FINAL_STATE mirrors OBJECT_CONTINUITY at gate level.
     add(

@@ -15,6 +15,7 @@ rounding logic exists here.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from fractions import Fraction
 
@@ -80,6 +81,9 @@ class FactBuildInputs:
     continuity_links: list[ContinuityLink] = field(default_factory=list)
     human_facts: list[HumanCaptionFact] = field(default_factory=list)
     ctx: EligibilityContext = field(default_factory=EligibilityContext)
+    #: Ledger frame index -> exact ANNOTATION time (frames.jsonl); frame-anchored
+    #: facts (OCR) resolve exact timing through this, never through floats.
+    frame_to_time: Callable[[int], Fraction | None] | None = None
 
 
 class _Counter:
@@ -182,7 +186,7 @@ def _build_transition_fact(
 ) -> None:
     status, basis, reason = elig.assess_transition(shot, inputs.ctx)
     decision = inputs.ctx.applied(
-        DecisionType.CLAIM_EVIDENCE, f"TRANSITION-{shot.shot_index}"
+        DecisionType.TRANSITION_CLASSIFICATION, f"TRANSITION-{shot.shot_index}"
     )
     graph.facts.append(
         CaptionFact(
@@ -205,6 +209,7 @@ def _build_transition_fact(
             human_decision_ids=[decision.decision_id] if decision is not None else [],
             required_for_caption=True,
             materiality=FactMateriality.REQUIRED,
+            resolution_required=status != CaptionEligibility.ELIGIBLE,
         )
     )
 
@@ -237,6 +242,17 @@ def _region_split_facts(inputs: FactBuildInputs, region_id: str) -> list[HumanCa
         if hf.fact_type == CaptionFactType.SPEECH
         and hf.semantic_value.get("splits_region_id") == region_id
     ]
+
+
+def _shot_for_frame(shot_truth: ShotTruthResult | None, frame: int | None) -> int | None:
+    """Resolve a ledger frame to its owning verified shot (inclusive frame
+    ownership)."""
+    if shot_truth is None or frame is None:
+        return None
+    for shot in shot_truth.shots:
+        if shot.start_frame_index <= frame <= shot.end_frame_index:
+            return shot.shot_index
+    return None
 
 
 def _shot_for_time(
@@ -320,6 +336,14 @@ def _build_speech_facts(graph: FactGraph, counter: _Counter, inputs: FactBuildIn
                 human_fact_id=enrichment.fact_id if enrichment is not None else None,
                 required_for_caption=status == CaptionEligibility.ELIGIBLE,
                 materiality=FactMateriality.REQUIRED,
+                # Audible speech is MATERIAL media content: an unverified or
+                # unattributed speech act blocks readiness (§5.1-5) — never
+                # silently omitted because it is ineligible.
+                resolution_required=(
+                    status != CaptionEligibility.ELIGIBLE
+                    and status != CaptionEligibility.REJECTED
+                    and region.text_candidate is not None
+                ),
             )
         )
 
@@ -332,15 +356,49 @@ def _build_speech_facts(graph: FactGraph, counter: _Counter, inputs: FactBuildIn
 def _build_text_facts(graph: FactGraph, counter: _Counter, inputs: FactBuildInputs) -> None:
     for track in inputs.text_tracks:
         status, basis, reason = elig.assess_on_screen_text(track)
-        text = track.consensus.consensus_text if track.consensus is not None else None
+        consensus = track.consensus.consensus_text if track.consensus is not None else None
+        # A HUMAN_CORRECTED track quotes only the human corrected text; raw
+        # machine consensus is never quoted for it.
+        if track.verification_status.value == "HUMAN_CORRECTED":
+            text = track.corrected_text
+        else:
+            text = consensus
         first = track.first_stable_frame
         last = track.last_stable_frame
+        # Material overlay defense (§5.1-5/15): a machine track with a real
+        # consensus and multi-frame support represents material screen content
+        # awaiting verification; a one-frame unverified blip does not block.
+        material_unverified = (
+            status == CaptionEligibility.INELIGIBLE
+            and bool(consensus)
+            and (track.total_support_frames >= 3 or first is not None)
+        )
+        start_frame = first if first is not None else track.first_candidate_frame
+        end_frame = last if last is not None else track.disappearance_frame
+        # OCR timing = verified TextTrack frame boundaries resolved through the
+        # frame ledger (§49); shot ownership from Shot Truth frame ranges.
+        start_exact = (
+            inputs.frame_to_time(start_frame)
+            if inputs.frame_to_time is not None and start_frame is not None
+            else None
+        )
+        end_exact = (
+            inputs.frame_to_time(end_frame)
+            if inputs.frame_to_time is not None and end_frame is not None
+            else None
+        )
+        shot_number = _shot_for_frame(inputs.shot_truth, start_frame)
         graph.facts.append(
             CaptionFact(
                 fact_id=counter.next(),
                 fact_type=CaptionFactType.ON_SCREEN_TEXT,
-                start_frame=first if first is not None else track.first_candidate_frame,
-                end_frame=last if last is not None else track.disappearance_frame,
+                shot_number=shot_number,
+                start_frame=start_frame,
+                end_frame=end_frame,
+                start_exact=start_exact,
+                end_exact=end_exact,
+                display_start=_disp(start_exact),
+                display_end=_disp(end_exact),
                 text_value=text,
                 semantic_value={"verification": track.verification_status.value},
                 eligibility=status,
@@ -350,6 +408,7 @@ def _build_text_facts(graph: FactGraph, counter: _Counter, inputs: FactBuildInpu
                 source_id=track.track_id,
                 required_for_caption=status == CaptionEligibility.ELIGIBLE,
                 materiality=FactMateriality.REQUIRED,
+                resolution_required=material_unverified,
             )
         )
 
@@ -471,6 +530,7 @@ def _build_speed_facts(graph: FactGraph, counter: _Counter, inputs: FactBuildInp
                 human_decision_ids=[decision.decision_id] if decision is not None else [],
                 required_for_caption=True,
                 materiality=FactMateriality.REQUIRED,
+                resolution_required=status != CaptionEligibility.ELIGIBLE,
             )
         )
         # Machine mid-shot speed-change candidates stay review-required (§26).
@@ -661,10 +721,13 @@ def _build_seed_claim_facts(
 
 
 def _build_human_facts(graph: FactGraph, counter: _Counter, inputs: FactBuildInputs) -> None:
+    shot_numbers = frozenset(
+        s.shot_index for s in (inputs.shot_truth.shots if inputs.shot_truth else [])
+    )
     for hf in inputs.human_facts:
         if hf.semantic_value.get("region_id"):
             continue  # enrichment records merge into their machine region fact
-        status, basis, reason = elig.assess_human_fact()
+        status, basis, reason = elig.assess_human_fact(hf, shot_numbers)
         semantic = dict(hf.semantic_value)
         semantic.pop("splits_region_id", None)
         if hf.fact_type == CaptionFactType.SPEECH:
@@ -695,5 +758,6 @@ def _build_human_facts(graph: FactGraph, counter: _Counter, inputs: FactBuildInp
                 human_fact_id=hf.fact_id,
                 required_for_caption=True,
                 materiality=FactMateriality.REQUIRED,
+                resolution_required=status != CaptionEligibility.ELIGIBLE,
             )
         )

@@ -14,10 +14,16 @@ CANDIDATE != FINAL FACT, enforced in code:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from ..models.audio import SourceVerificationStatus, SpeechRegion
-from ..models.caption_brain import CaptionEligibility, EligibilityBasis
+from ..models.caption_brain import (
+    CaptionEligibility,
+    CaptionFactType,
+    EligibilityBasis,
+    HumanCaptionFact,
+)
 from ..models.evidence import EvidenceReference, EvidenceType
 from ..models.review_intelligence import (
     ActionCandidate,
@@ -115,10 +121,19 @@ _AUDIO_SEMANTIC_TRANSITIONS = frozenset({"L-cut", "J-cut"})
 
 def assess_transition(shot: ShotProposal, ctx: EligibilityContext) -> Assessment:
     """Never default an unresolved transition; L/J never from audio crossing
-    alone (§22/§23)."""
+    alone (§22/§23). Human resolution comes through the typed
+    TRANSITION_CLASSIFICATION decision targeting the actual ShotProposal."""
     label = shot.transition_into_shot
-    human = ctx.applied(DecisionType.CLAIM_EVIDENCE, f"TRANSITION-{shot.shot_index}")
-    if label in _AUDIO_SEMANTIC_TRANSITIONS and human is None:
+    human = ctx.applied(
+        DecisionType.TRANSITION_CLASSIFICATION, f"TRANSITION-{shot.shot_index}"
+    )
+    if human is not None:
+        return (
+            CaptionEligibility.ELIGIBLE,
+            EligibilityBasis.APPLIED_HUMAN_DECISION,
+            f"human TRANSITION_CLASSIFICATION decision {human.decision_id}",
+        )
+    if label in _AUDIO_SEMANTIC_TRANSITIONS:
         return (
             CaptionEligibility.REVIEW_REQUIRED,
             None,
@@ -130,12 +145,6 @@ def assess_transition(shot: ShotProposal, ctx: EligibilityContext) -> Assessment
             CaptionEligibility.ELIGIBLE,
             EligibilityBasis.DETERMINISTIC_EVIDENCE,
             "transition supported by the Phase 2 verifier",
-        )
-    if human is not None:
-        return (
-            CaptionEligibility.ELIGIBLE,
-            EligibilityBasis.APPLIED_HUMAN_DECISION,
-            f"human transition decision {human.decision_id}",
         )
     return (
         CaptionEligibility.REVIEW_REQUIRED,
@@ -357,12 +366,117 @@ def assess_seed_claim(
     )
 
 
-def assess_human_fact() -> Assessment:
-    """A bound, non-stale HumanCaptionFact is eligible by definition (§9)."""
+#: Fact types whose events are timed and must carry an exact window.
+_TIMED_HUMAN_FACTS = frozenset(
+    {
+        CaptionFactType.VISUAL_ACTION,
+        CaptionFactType.SPEECH,
+        CaptionFactType.SOUND,
+        CaptionFactType.ON_SCREEN_TEXT,
+        CaptionFactType.CAMERA_MOVEMENT,
+        CaptionFactType.SPEED_CHANGE,
+    }
+)
+
+#: Fact types that must carry prose/verbatim text.
+_TEXT_HUMAN_FACTS = frozenset(
+    {
+        CaptionFactType.VISUAL_ACTION,
+        CaptionFactType.SOUND,
+        CaptionFactType.ON_SCREEN_TEXT,
+        CaptionFactType.SCENE,
+        CaptionFactType.STYLE,
+        CaptionFactType.OVERVIEW_AUDIO,
+        CaptionFactType.CHARACTER,
+        CaptionFactType.OBJECT,
+        CaptionFactType.VISUAL_CONCERN,
+        CaptionFactType.AUDIO_CONCERN,
+        CaptionFactType.CAMERA_FRAMING,
+    }
+)
+
+#: Conservative protected/unsupported-trait detector for human fact text (§13).
+_PROTECTED_TRAIT_PATTERN = re.compile(
+    r"\b(american|british|australian|indian|chinese|japanese|asian|african|"
+    r"caucasian|hispanic|latino|latina|white (?:man|woman)|black (?:man|woman)|"
+    r"\d{1,3}[- ]year[- ]old|years old|accent|ethnicity|nationality|race)\b",
+    re.IGNORECASE,
+)
+
+_SPEED_LABEL_VALUES = frozenset({"slow_motion", "regular", "accelerated"})
+
+
+def assess_human_fact(
+    fact: HumanCaptionFact, shot_numbers: frozenset[int] = frozenset()
+) -> Assessment:
+    """A bound, non-stale HumanCaptionFact is a human basis — but never an
+    unconditional factual bypass (§5.1-11/12/13). Every media-factual human
+    fact must carry traceable evidence and pass type-specific validation."""
+    if not fact.evidence_refs and not fact.bound_evidence_ids:
+        return (
+            CaptionEligibility.REVIEW_REQUIRED,
+            None,
+            "human fact carries no evidence reference; every factual caption "
+            "assertion must be traceable to media evidence",
+        )
+    if (
+        fact.shot_number is not None
+        and shot_numbers
+        and fact.shot_number not in shot_numbers
+    ):
+        return (
+            CaptionEligibility.REVIEW_REQUIRED,
+            None,
+            f"human fact targets shot {fact.shot_number}, which is not a "
+            "verified shot",
+        )
+    if fact.fact_type in _TIMED_HUMAN_FACTS and (
+        fact.start_exact is None or fact.end_exact is None
+    ) and (fact.start_frame is None or fact.end_frame is None):
+        return (
+            CaptionEligibility.REVIEW_REQUIRED,
+            None,
+            "timed human fact lacks an exact verified time/frame range",
+        )
+    if fact.fact_type in _TEXT_HUMAN_FACTS and not (fact.text_value or "").strip():
+        return (
+            CaptionEligibility.REVIEW_REQUIRED,
+            None,
+            f"{fact.fact_type.value} human fact requires text",
+        )
+    if fact.fact_type == CaptionFactType.PLAYBACK_SPEED and (
+        (fact.text_value or "").strip() not in _SPEED_LABEL_VALUES
+    ):
+        return (
+            CaptionEligibility.REVIEW_REQUIRED,
+            None,
+            f"playback speed {fact.text_value!r} is not an allowed value",
+        )
+    if fact.fact_type == CaptionFactType.SPEECH and not (
+        fact.character_ids or fact.semantic_value.get("speaker_id")
+    ):
+        return (
+            CaptionEligibility.REVIEW_REQUIRED,
+            None,
+            "human speech fact lacks speaker attribution",
+        )
+    if fact.fact_type == CaptionFactType.CHARACTER and fact.text_value:
+        hit = _PROTECTED_TRAIT_PATTERN.search(fact.text_value)
+        if hit is not None and not (
+            fact.semantic_value.get("protected_trait_source")
+            and has_human_verification(fact.evidence_refs)
+        ):
+            return (
+                CaptionEligibility.REVIEW_REQUIRED,
+                None,
+                f"possible protected/unsupported trait {hit.group(0)!r}: visual "
+                "appearance alone is insufficient; name an allowed explicit "
+                "source (protected_trait_source) with human verification",
+            )
     return (
         CaptionEligibility.ELIGIBLE,
         EligibilityBasis.HUMAN_ADDED_FACT,
-        "human-added bound caption fact",
+        "human-added bound caption fact with traceable evidence",
     )
 
 

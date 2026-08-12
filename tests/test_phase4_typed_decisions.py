@@ -148,13 +148,30 @@ def test_action_semantics_clears_summary_item() -> None:
 
 
 def test_action_boundary_corrects_frames_and_clears_item() -> None:
+    """Phase 5.1 (item 10): a boundary decision must recompute exact timing from
+    the frame ledger — frame indices alone (stale exact timing) are rejected."""
+    from fractions import Fraction
+
     act = _action("ACT-1")
     ev = VisualEvidence(action_candidates=[act])
+    # Without a ledger time resolver the decision is INVALID_VALUE, never a
+    # silent frame change with stale exact timestamps.
     apps = apply_decisions(
         [_d("ACT-1", DecisionType.ACTION_BOUNDARY, "3-9")],
         DecisionTargets(action_candidates={"ACT-1": act}), _SHA, _RULES)
+    assert apps[0].outcome == DecisionOutcome.INVALID_VALUE
+    assert (act.start_frame, act.end_frame) == (0, 5)
+
+    apps = apply_decisions(
+        [_d("ACT-1", DecisionType.ACTION_BOUNDARY, "3-9")],
+        DecisionTargets(
+            action_candidates={"ACT-1": act},
+            frame_to_time=lambda i: Fraction(i, 24),
+        ),
+        _SHA, _RULES)
     assert apps[0].outcome == DecisionOutcome.APPLIED
     assert (act.start_frame, act.end_frame) == (3, 9)
+    assert (act.start_exact, act.end_exact) == (Fraction(3, 24), Fraction(9, 24))
     assert not any("Semantic action" in t for t in _titles(build_machine_review_items(ev)))
 
 

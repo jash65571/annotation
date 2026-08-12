@@ -63,6 +63,9 @@ class ReadinessInputs:
     adversarial: AdversarialQCResult
     signoff_check: SignoffCheck
     unresolved_high_feedback: list[str] = field(default_factory=list)
+    #: Recomputed Phase 4 CRITICAL/HIGH machine review items (§5.1-4). Any
+    #: entry keeps the caption from reaching READY_FOR_FINAL_REVIEW.
+    visual_review_blockers: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -107,6 +110,7 @@ def compute_readiness(inputs: ReadinessInputs) -> ReadinessResult:
         review.append("required eligible facts missing from the caption")
     for directive_id in inputs.unresolved_high_feedback:
         review.append(f"unresolved HIGH feedback directive {directive_id}")
+    review.extend(inputs.visual_review_blockers)
     if review:
         return ReadinessResult(CaptionReadiness.REVIEW_REQUIRED, review)
 

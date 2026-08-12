@@ -76,10 +76,18 @@ def build_caption_plan(inputs: PlanInputs) -> CaptionPlan:
     ]
 
     for fact in facts:
-        if (
+        unresolved_required = (
             fact.eligibility == CaptionEligibility.REVIEW_REQUIRED
             and fact.materiality.value == "REQUIRED"
-        ):
+        )
+        # §5.1-5: material media content that is currently INELIGIBLE (audible
+        # unverified speech, a material unverified overlay...) also blocks —
+        # eligibility alone never decides materiality.
+        blocked_material = (
+            fact.resolution_required
+            and fact.eligibility != CaptionEligibility.ELIGIBLE
+        )
+        if unresolved_required or blocked_material:
             blockers.append(
                 f"required fact {fact.fact_id} ({fact.fact_type.value}) unresolved: "
                 f"{fact.eligibility_reason}"

@@ -27,10 +27,12 @@ import json
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from fractions import Fraction
 from pathlib import Path
 
 from pydantic import ValidationError
 
+from ..models.audio import SourceVerificationStatus, SpeechRegion
 from ..models.caption import SeedClaim
 from ..models.evidence import EvidenceReference, EvidenceType
 from ..models.review_intelligence import (
@@ -47,8 +49,12 @@ from ..models.review_intelligence import (
     PlaybackSpeedEvidence,
     ReviewProposal,
     ReviewProposalOutcome,
+    SourceTextVerificationStatus,
     SpeedConclusion,
+    TextTrack,
 )
+from ..models.shot_truth import ShotProposal, TransitionStatus
+from ..rules.loader import load_rules
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +82,15 @@ class DecisionTargets:
     action_candidates: dict[str, ActionCandidate] = field(default_factory=dict)
     speed_evidence: dict[str, PlaybackSpeedEvidence] = field(default_factory=dict)
     proposals: dict[str, ReviewProposal] = field(default_factory=dict)
+    #: Phase 5.1: real evidence records a reviewer can resolve directly.
+    speech_regions: dict[str, SpeechRegion] = field(default_factory=dict)
+    text_tracks: dict[str, TextTrack] = field(default_factory=dict)
+    #: Keyed "TRANSITION-<shot_index>".
+    transitions: dict[str, ShotProposal] = field(default_factory=dict)
+    #: Context (not a registry): ledger frame index -> exact ANNOTATION time.
+    #: Required so an ACTION_BOUNDARY decision recomputes exact timing — the
+    #: frame ledger owns timing; frame indices alone are never accepted.
+    frame_to_time: Callable[[int], Fraction | None] | None = None
 
 
 def load_decisions(path: Path) -> list[HumanReviewDecision]:
@@ -127,7 +142,7 @@ def _human_ref(decision: HumanReviewDecision) -> EvidenceReference:
     )
 
 
-def _apply_claim(target: object, decision: HumanReviewDecision) -> None:
+def _apply_claim(target: object, decision: HumanReviewDecision, _t: DecisionTargets) -> None:
     assert isinstance(target, SeedClaim)
     if decision.decision_type == DecisionType.CLAIM_EVIDENCE:
         target.evidence_status = EvidenceStatus(decision.value.strip())
@@ -137,43 +152,155 @@ def _apply_claim(target: object, decision: HumanReviewDecision) -> None:
     target.evidence.append(_human_ref(decision))
 
 
-def _apply_identity(target: object, decision: HumanReviewDecision) -> None:
+def _apply_identity(target: object, decision: HumanReviewDecision, _t: DecisionTargets) -> None:
     assert isinstance(target, EntityTrack)
-    # A human confirming identity clears the reacquired flag (the item-8 HIGH
-    # machine item for this track disappears on recompute).
+    # A human identity resolution explicitly resolves BOTH ambiguity conditions
+    # it reviewed, with provenance — never a blind flag flip (Phase 5.1 item 9).
+    previous = (
+        f"reacquired={target.reacquired}, identity_ambiguous={target.identity_ambiguous}"
+    )
     target.reacquired = False
-    target.notes.append(f"identity confirmed: {decision.value} ({decision.decided_by})")
+    target.identity_ambiguous = False
+    target.evidence_refs.append(_human_ref(decision))
+    target.notes.append(
+        f"identity resolved by human: {decision.value} ({decision.decided_by}); "
+        f"previous state: {previous}"
+    )
 
 
-def _apply_camera(target: object, decision: HumanReviewDecision) -> None:
+def _apply_camera(target: object, decision: HumanReviewDecision, _t: DecisionTargets) -> None:
     assert isinstance(target, CameraMotionCandidate)
     target.motion_class = CameraMotionClass(decision.value.strip())
     target.review_required = False
     target.notes.append(f"human classification: {decision.value} ({decision.decided_by})")
 
 
-def _apply_action_semantics(target: object, decision: HumanReviewDecision) -> None:
+def _apply_action_semantics(
+    target: object, decision: HumanReviewDecision, _t: DecisionTargets
+) -> None:
     assert isinstance(target, ActionCandidate)
     target.semantic_label = decision.value.strip()
     target.review_required = False
 
 
-def _apply_action_boundary(target: object, decision: HumanReviewDecision) -> None:
+def _apply_action_boundary(
+    target: object, decision: HumanReviewDecision, targets: DecisionTargets
+) -> None:
+    """The frame ledger owns timing: new boundary frames MUST resolve to exact
+    ledger times or the decision is INVALID_VALUE — stale exact timing is never
+    accepted (Phase 5.1 item 10)."""
     assert isinstance(target, ActionCandidate)
     lo, hi = (int(p) for p in decision.value.split("-", 1))
+    if lo > hi:
+        raise ValueError(f"boundary start {lo} > end {hi}")
+    if targets.frame_to_time is None:
+        raise ValueError(
+            "no frame-ledger time resolver available; an ACTION_BOUNDARY "
+            "decision cannot be applied without exact frame timing"
+        )
+    start_exact = targets.frame_to_time(lo)
+    end_exact = targets.frame_to_time(hi)
+    if start_exact is None or end_exact is None:
+        raise ValueError(f"frames {lo}-{hi} do not exist in the frame ledger")
     target.start_frame, target.end_frame = lo, hi
+    target.start_exact, target.end_exact = start_exact, end_exact
     target.review_required = False
+    target.evidence_refs.append(_human_ref(decision))
 
 
-def _apply_speed(target: object, decision: HumanReviewDecision) -> None:
+def _apply_speed(target: object, decision: HumanReviewDecision, _t: DecisionTargets) -> None:
     assert isinstance(target, PlaybackSpeedEvidence)
     target.conclusion = _SPEED_VALUES[decision.value.strip()]
     target.review_required = False
 
 
-def _apply_proposal(target: object, decision: HumanReviewDecision) -> None:
+def _apply_proposal(target: object, decision: HumanReviewDecision, _t: DecisionTargets) -> None:
     assert isinstance(target, ReviewProposal)
     target.outcome = ReviewProposalOutcome(decision.value.strip())
+
+
+def _apply_speech_verification(
+    target: object, decision: HumanReviewDecision, _t: DecisionTargets
+) -> None:
+    """The human listened to the source audio (§5.1-6). The original ASR text
+    candidate is preserved untouched — only the human-listen axis moves."""
+    assert isinstance(target, SpeechRegion)
+    value = decision.value.strip().lower()
+    target.source_verification_status = (
+        SourceVerificationStatus.HUMAN_VERIFIED
+        if value == "verified"
+        else SourceVerificationStatus.REJECTED
+    )
+
+
+def _apply_speech_correction(
+    target: object, decision: HumanReviewDecision, _t: DecisionTargets
+) -> None:
+    assert isinstance(target, SpeechRegion)
+    target.source_verification_status = SourceVerificationStatus.HUMAN_CORRECTED
+    target.corrected_text = decision.value
+    # text_candidate (the original ASR transcript) is deliberately untouched.
+
+
+def _apply_text_verification(
+    target: object, decision: HumanReviewDecision, _t: DecisionTargets
+) -> None:
+    assert isinstance(target, TextTrack)
+    value = decision.value.strip().lower()
+    if value == "verified":
+        target.verification_status = SourceTextVerificationStatus.HUMAN_VERIFIED
+        target.caption_text_eligible = True
+        target.review_required = False
+    else:
+        target.verification_status = SourceTextVerificationStatus.REJECTED
+        target.caption_text_eligible = False
+        target.review_required = False
+    target.evidence_refs.append(_human_ref(decision))
+
+
+def _apply_text_correction(
+    target: object, decision: HumanReviewDecision, _t: DecisionTargets
+) -> None:
+    assert isinstance(target, TextTrack)
+    target.verification_status = SourceTextVerificationStatus.HUMAN_CORRECTED
+    target.corrected_text = decision.value
+    target.caption_text_eligible = True
+    target.review_required = False
+    target.evidence_refs.append(_human_ref(decision))
+    # Raw OCR observations and machine consensus are never overwritten.
+
+
+def _apply_text_timing(
+    target: object, decision: HumanReviewDecision, targets: DecisionTargets
+) -> None:
+    assert isinstance(target, TextTrack)
+    lo, hi = (int(p) for p in decision.value.split("-", 1))
+    if lo > hi:
+        raise ValueError(f"timing start {lo} > end {hi}")
+    if targets.frame_to_time is not None and (
+        targets.frame_to_time(lo) is None or targets.frame_to_time(hi) is None
+    ):
+        raise ValueError(f"frames {lo}-{hi} do not exist in the frame ledger")
+    target.first_stable_frame = lo
+    target.last_stable_frame = hi
+    target.evidence_refs.append(_human_ref(decision))
+
+
+def _apply_transition(
+    target: object, decision: HumanReviewDecision, _t: DecisionTargets
+) -> None:
+    """Human transition resolution (§5.1-8). Value comes from the rule-file
+    menu; Shot 1 must remain Opening shot and no later shot may become it."""
+    assert isinstance(target, ShotProposal)
+    value = decision.value.strip()
+    opening = str(load_rules().get("shots.shot_one_transition", "Opening shot"))
+    if target.shot_index == 1 and value != opening:
+        raise ValueError(f"Shot 1 must remain {opening!r}")
+    if target.shot_index > 1 and value == opening:
+        raise ValueError(f"{opening!r} may appear nowhere except Shot 1")
+    target.transition_into_shot = value
+    target.transition_status = TransitionStatus.PROPOSED
+    target.evidence_refs.append(f"EV-HUMAN-{decision.decision_id}")
 
 
 def _valid_boundary(value: str) -> bool:
@@ -181,7 +308,14 @@ def _valid_boundary(value: str) -> bool:
     return len(parts) == 2 and all(p.strip().isdigit() for p in parts)
 
 
-_Applier = Callable[[object, HumanReviewDecision], None]
+def _valid_transition(value: str) -> bool:
+    allowed = {str(t) for t in load_rules().get("shots.allowed_transition_types", [])}
+    return value.strip() in allowed
+
+
+_VERIFY_VALUES = frozenset({"verified", "rejected"})
+
+_Applier = Callable[[object, HumanReviewDecision, DecisionTargets], None]
 _Validator = Callable[[str], bool]
 _Selector = Callable[[DecisionTargets], Mapping[str, object]]
 
@@ -205,6 +339,20 @@ _DISPATCH: dict[DecisionType, tuple[_Selector, _Validator, _Applier]] = {
         lambda t: t.speed_evidence, lambda v: v.strip() in _SPEED_VALUES, _apply_speed),
     DecisionType.REVIEW_PROPOSAL_OUTCOME: (
         lambda t: t.proposals, lambda v: v.strip() in _PROPOSAL_VALUES, _apply_proposal),
+    DecisionType.SPEECH_VERIFICATION: (
+        lambda t: t.speech_regions, lambda v: v.strip().lower() in _VERIFY_VALUES,
+        _apply_speech_verification),
+    DecisionType.SPEECH_CORRECTION: (
+        lambda t: t.speech_regions, lambda v: bool(v.strip()), _apply_speech_correction),
+    DecisionType.TEXT_VERIFICATION: (
+        lambda t: t.text_tracks, lambda v: v.strip().lower() in _VERIFY_VALUES,
+        _apply_text_verification),
+    DecisionType.TEXT_CORRECTION: (
+        lambda t: t.text_tracks, lambda v: bool(v.strip()), _apply_text_correction),
+    DecisionType.TEXT_TIMING: (
+        lambda t: t.text_tracks, _valid_boundary, _apply_text_timing),
+    DecisionType.TRANSITION_CLASSIFICATION: (
+        lambda t: t.transitions, _valid_transition, _apply_transition),
 }
 
 
@@ -216,11 +364,15 @@ def apply_decisions(
 ) -> list[DecisionApplication]:
     """Route each decision to the ONE registry its kind is allowed to touch and
     apply a fixed whitelisted mutation. Returns a per-decision application record."""
-    # CONFLICT: two decisions on the same subject with different values.
-    subject_values: dict[str, set[str]] = {}
+    # CONFLICT: two decisions of the SAME KIND on the same subject with
+    # different values (an ACTION_SEMANTICS + ACTION_BOUNDARY pair on one
+    # candidate is complementary, not conflicting).
+    subject_values: dict[tuple[DecisionType, str], set[str]] = {}
     for d in decisions:
-        subject_values.setdefault(d.subject_id, set()).add(d.value.strip())
-    conflicted = {s for s, vals in subject_values.items() if len(vals) > 1}
+        subject_values.setdefault((d.decision_type, d.subject_id), set()).add(
+            d.value.strip()
+        )
+    conflicted = {key for key, vals in subject_values.items() if len(vals) > 1}
 
     applications: list[DecisionApplication] = []
     for decision in decisions:
@@ -256,9 +408,9 @@ def _apply_one(
     targets: DecisionTargets,
     video_sha256: str,
     rules_version: str,
-    conflicted: set[str],
+    conflicted: set[tuple[DecisionType, str]],
 ) -> tuple[DecisionOutcome, str | None]:
-    if decision.subject_id in conflicted:
+    if (decision.decision_type, decision.subject_id) in conflicted:
         return DecisionOutcome.CONFLICT, "multiple decisions with different values"
     if decision.bound_video_sha256 != video_sha256:
         logger.warning("Skipping decision %s: bound to a different video", decision.decision_id)
@@ -278,5 +430,8 @@ def _apply_one(
         return DecisionOutcome.INVALID_VALUE, (
             f"value {decision.value!r} not admissible for {decision.decision_type.value}"
         )
-    applier(target, decision)
+    try:
+        applier(target, decision, targets)
+    except ValueError as exc:
+        return DecisionOutcome.INVALID_VALUE, str(exc)
     return DecisionOutcome.APPLIED, None

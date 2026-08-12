@@ -143,6 +143,12 @@ class CaptionFact(StrictModel):
     human_fact_id: str | None = None
     required_for_caption: bool = False
     materiality: FactMateriality = FactMateriality.MATERIAL
+    #: True when this fact represents MATERIAL media content whose current
+    #: non-eligible state must be resolved before final readiness (§5.1-5).
+    #: Distinct from eligibility: an INELIGIBLE fact (e.g. audible unverified
+    #: speech, a material unverified overlay) can still block READY while a
+    #: low-value machine candidate stays INELIGIBLE without blocking.
+    resolution_required: bool = False
     notes: list[str] = []
 
 

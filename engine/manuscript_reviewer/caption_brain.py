@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
@@ -49,12 +50,17 @@ from .caption.renderer import RenderResult, render_caption
 from .models.audio import AudioQCResult
 from .models.caption import (
     ActionAudioEvent,
+    CameraEvent,
     Character,
     ExactTimeRange,
     ObjectEntity,
+    OnScreenTextEvent,
+    PlaybackSpeed,
     ReviewedCaption,
     SeedClaim,
     Shot,
+    SoundEvent,
+    SpeechEvent,
     Transition,
 )
 from .models.caption_brain import (
@@ -152,7 +158,11 @@ class RunEvidence:
     video_sha256: str | None = None
     rules_version: str | None = None
     seed_sha256: str | None = None
-    video_id: str | None = None
+    #: Canonical video identity from Phase 1 / run provenance (media truth) —
+    #: NEVER from the seed (§5.1-2). The seed's own id is kept separately so a
+    #: wrong-video seed can be contradicted, not validated against itself.
+    canonical_video_id: str | None = None
+    seed_video_id: str | None = None
     shot_truth: ShotTruthResult | None = None
     audio_truth: AudioQCResult | None = None
     seed_claims: list[SeedClaim] = field(default_factory=list)
@@ -165,12 +175,26 @@ class RunEvidence:
     final_state_checks: list[FinalStateCheck] = field(default_factory=list)
     entity_tracks: list[EntityTrack] = field(default_factory=list)
     continuity_links: list[ContinuityLink] = field(default_factory=list)
+    ocr_status: str = "UNAVAILABLE"
+    #: Ledger frame index -> exact ANNOTATION time, from frames.jsonl. The
+    #: frame ledger owns timing (ACTION_BOUNDARY/TEXT_TIMING decisions).
+    frame_to_time: Callable[[int], Fraction | None] | None = None
 
 
-def load_run_evidence(run_dir: Path) -> RunEvidence:
-    """Reload Phase 1-4 evidence artifacts. Verifies manifest hashes for the
-    inputs it consumes (§94) — tampered evidence never silently finalizes."""
+def load_run_evidence(run_dir: Path) -> tuple[RunEvidence, dict[str, str]]:
+    """Reload Phase 1-4 evidence artifacts.
+
+    EVERY consumed evidence file is verified against manifest.json before
+    parsing (§5.1-3): a hash mismatch OR a present-but-unmanifested evidence
+    file raises — tampered or unmanifested modified evidence never silently
+    finalizes. (When no manifest exists yet — the same-process pipeline call
+    before the manifest is written — files are trusted as just-written.)
+
+    Returns the evidence plus the SHA-256 of each consumed artifact so the
+    caption manifest can record the full evidence provenance (§5.1-18).
+    """
     evidence = RunEvidence()
+    consumed_hashes: dict[str, str] = {}
     manifest_path = run_dir / "manifest.json"
     manifest_hashes: dict[str, str] = {}
     if manifest_path.exists():
@@ -180,73 +204,141 @@ def load_run_evidence(run_dir: Path) -> RunEvidence:
             raise CaptionBrainError(f"Cannot read manifest.json: {exc}") from exc
         evidence.video_sha256 = manifest.get("source_video_sha256")
         evidence.rules_version = manifest.get("rules_version")
+        source_path = manifest.get("source_video_path")
+        if source_path:
+            evidence.canonical_video_id = Path(str(source_path)).stem
         for entry in manifest.get("artifacts", []):
             manifest_hashes[str(entry.get("path", ""))] = str(entry.get("sha256", ""))
 
-    def _verify(path: Path) -> None:
+    def _consume(path: Path) -> Path:
+        """Verify one evidence file against the run manifest before parsing."""
+        if not path.exists():
+            return path
         rel = path.relative_to(run_dir).as_posix()
+        actual = sha256_file(path)
+        consumed_hashes[rel] = actual
+        if not manifest_hashes:
+            return path  # in-process call before the run manifest exists
         recorded = manifest_hashes.get(rel)
-        if recorded is not None and path.exists() and sha256_file(path) != recorded:
+        if recorded is None:
+            raise CaptionBrainError(
+                f"Evidence artifact {rel} is not listed in manifest.json — an "
+                "unmanifested (possibly modified) evidence file is never trusted."
+            )
+        if actual != recorded:
             raise CaptionBrainError(
                 f"Evidence artifact {rel} does not match its manifest hash — "
                 "the run evidence changed after analysis."
             )
+        return path
 
-    shot_qc = run_dir / "shot_qc.json"
-    _verify(shot_qc)
-    evidence.shot_truth = _load_model(shot_qc, ShotTruthResult)
-    audio_qc = run_dir / "audio" / "audio_qc.json"
-    _verify(audio_qc)
-    evidence.audio_truth = _load_model(audio_qc, AudioQCResult)
+    evidence.shot_truth = _load_model(_consume(run_dir / "shot_qc.json"), ShotTruthResult)
+    evidence.audio_truth = _load_model(
+        _consume(run_dir / "audio" / "audio_qc.json"), AudioQCResult
+    )
 
     seed_dir = run_dir / "seed"
     evidence.seed_claims = _load_model_list(
-        seed_dir / "seed_claims.json", "claims", SeedClaim
+        _consume(seed_dir / "seed_claims.json"), "claims", SeedClaim
     )
     sha_file = seed_dir / "seed_sha256.txt"
     if sha_file.exists():
+        _consume(sha_file)
         evidence.seed_sha256 = sha_file.read_text(encoding="utf-8").strip()
     parse_path = seed_dir / "seed_parse.json"
     if parse_path.exists():
+        _consume(parse_path)
         try:
             parsed = json.loads(parse_path.read_text(encoding="utf-8"))
-            evidence.video_id = parsed.get("video_id")
+            # The seed's own video id is ONLY a claim — never canonical identity.
+            evidence.seed_video_id = parsed.get("video_id")
         except (OSError, json.JSONDecodeError):
-            evidence.video_id = None
+            evidence.seed_video_id = None
 
     evidence.proposals = _load_model_list(
-        run_dir / "review" / "review_proposals.json", "proposals", ReviewProposal
+        _consume(run_dir / "review" / "review_proposals.json"), "proposals", ReviewProposal
     )
     evidence.feedback = _load_model_list(
-        run_dir / "feedback" / "feedback_directives.json", "directives", FeedbackDirective
+        _consume(run_dir / "feedback" / "feedback_directives.json"),
+        "directives",
+        FeedbackDirective,
     )
     visual = run_dir / "visual"
     evidence.camera_candidates = _load_model_list(
-        visual / "camera" / "camera_events.json", "camera_events", CameraMotionCandidate
+        _consume(visual / "camera" / "camera_events.json"),
+        "camera_events",
+        CameraMotionCandidate,
     )
     evidence.speed_evidence = _load_model_list(
-        visual / "speed" / "playback_speed_evidence.json",
+        _consume(visual / "speed" / "playback_speed_evidence.json"),
         "playback_speed_evidence",
         PlaybackSpeedEvidence,
     )
     evidence.text_tracks = _load_model_list(
-        visual / "ocr" / "text_tracks.json", "text_tracks", TextTrack
+        _consume(visual / "ocr" / "text_tracks.json"), "text_tracks", TextTrack
     )
+    ocr_status_path = visual / "ocr" / "ocr_status.json"
+    if ocr_status_path.exists():
+        _consume(ocr_status_path)
+        try:
+            evidence.ocr_status = str(
+                json.loads(ocr_status_path.read_text(encoding="utf-8")).get(
+                    "status", "UNAVAILABLE"
+                )
+            )
+        except (OSError, json.JSONDecodeError):
+            evidence.ocr_status = "UNAVAILABLE"
     evidence.action_candidates = _load_model_list(
-        visual / "actions" / "action_candidates.json", "action_candidates", ActionCandidate
+        _consume(visual / "actions" / "action_candidates.json"),
+        "action_candidates",
+        ActionCandidate,
     )
     evidence.final_state_checks = _load_model_list(
-        visual / "entities" / "final_state_checks.json",
+        _consume(visual / "entities" / "final_state_checks.json"),
         "final_state_checks",
         FinalStateCheck,
     )
     evidence.entity_tracks = _load_model_list(
-        visual / "entities" / "tracks.json", "tracks", EntityTrack
+        _consume(visual / "entities" / "tracks.json"), "tracks", EntityTrack
     )
     evidence.continuity_links = _load_model_list(
-        visual / "entities" / "continuity_links.json", "continuity_links", ContinuityLink
+        _consume(visual / "entities" / "continuity_links.json"),
+        "continuity_links",
+        ContinuityLink,
     )
-    return evidence
+    evidence.frame_to_time = _load_frame_time_resolver(_consume(run_dir / "frames.jsonl"))
+    return evidence, consumed_hashes
+
+
+def _load_frame_time_resolver(path: Path) -> Callable[[int], Fraction | None] | None:
+    """Ledger frame index -> exact annotation time, parsed from the lossless
+    frames.jsonl (no media decode). Annotation origin = first frame's exact
+    source PTS time, mirroring AnnotationClock.from_ledger."""
+    if not path.exists():
+        return None
+    times: list[Fraction | None] = []
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                record = json.loads(line)
+                if record.get("record_type") == "ledger_header":
+                    continue
+                raw = record.get("pts_time_seconds")
+                times.append(Fraction(str(raw)) if raw is not None else None)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        raise CaptionBrainError(f"Cannot parse frames.jsonl: {exc}") from exc
+    if not times:
+        return None
+    origin = times[0] if times[0] is not None else Fraction(0)
+
+    def resolve(frame_index: int) -> Fraction | None:
+        if 0 <= frame_index < len(times) and times[frame_index] is not None:
+            source = times[frame_index]
+            assert source is not None
+            return source - origin
+        return None
+
+    return resolve
 
 
 # ---------------------------------------------------------------------------
@@ -260,12 +352,15 @@ def finalize_run(
     human_facts_path: Path | None = None,
     final_review_path: Path | None = None,
     video_sha256: str | None = None,
+    canonical_video_id: str | None = None,
 ) -> CaptionBrainOutput:
     """Fast re-finalization (§94): existing evidence + current human inputs →
     facts → plan → render → validate → gates → final status. No FFmpeg.
 
-    ``video_sha256`` overrides the manifest value when the pipeline calls this
-    before the run manifest exists (same-process integration)."""
+    ``video_sha256`` / ``canonical_video_id`` override the manifest values when
+    the pipeline calls this before the run manifest exists (same-process
+    integration). The canonical id always comes from media/run provenance —
+    never from the seed."""
     timings: dict[str, float] = {}
     total_start = time.perf_counter()
     issues: list[ValidatorIssue] = []
@@ -273,9 +368,11 @@ def finalize_run(
     rules = load_rules()
 
     start = time.perf_counter()
-    evidence = load_run_evidence(run_dir)
+    evidence, consumed_hashes = load_run_evidence(run_dir)
     if video_sha256 is not None:
         evidence.video_sha256 = video_sha256
+    if canonical_video_id is not None:
+        evidence.canonical_video_id = canonical_video_id
     timings["load_evidence"] = round(time.perf_counter() - start, 4)
     rules_version = evidence.rules_version or rules.version
 
@@ -308,6 +405,21 @@ def finalize_run(
                     f"SPEED-{s.shot_number}": s for s in evidence.speed_evidence
                 },
                 proposals={p.proposal_id: p for p in evidence.proposals},
+                speech_regions=(
+                    {r.region_id: r for r in evidence.audio_truth.speech_regions}
+                    if evidence.audio_truth is not None
+                    else {}
+                ),
+                text_tracks={t.track_id: t for t in evidence.text_tracks},
+                transitions=(
+                    {
+                        f"TRANSITION-{s.shot_index}": s
+                        for s in evidence.shot_truth.shots
+                    }
+                    if evidence.shot_truth is not None
+                    else {}
+                ),
+                frame_to_time=evidence.frame_to_time,
             )
             applications = apply_decisions(
                 decisions, targets, evidence.video_sha256, rules_version
@@ -345,7 +457,7 @@ def finalize_run(
     )
     graph = build_fact_graph(
         FactBuildInputs(
-            video_id=evidence.video_id,
+            video_id=evidence.canonical_video_id,
             video_sha256=evidence.video_sha256,
             rules_version=rules_version,
             shot_truth=evidence.shot_truth,
@@ -360,9 +472,18 @@ def finalize_run(
             continuity_links=evidence.continuity_links,
             human_facts=accepted_facts,
             ctx=ctx,
+            frame_to_time=evidence.frame_to_time,
         )
     )
     timings["fact_graph"] = round(time.perf_counter() - start, 4)
+
+    # --- Phase 4 review carry-forward (§5.1-4): recompute the machine visual
+    # review state from the CURRENT (post-decision) evidence. A stale
+    # pre-decision visual_review_queue.json is never trusted; a resolved item
+    # disappears here, an unresolved CRITICAL/HIGH item gates readiness.
+    start = time.perf_counter()
+    visual_review_blockers = _visual_review_blockers(evidence)
+    timings["visual_review_carryforward"] = round(time.perf_counter() - start, 4)
 
     # --- feedback resolution (§89) ---
     resolved_directives = _resolved_directives(evidence.feedback, ctx, accepted_facts)
@@ -378,7 +499,7 @@ def finalize_run(
         PlanInputs(
             graph=graph,
             shot_truth=evidence.shot_truth,
-            video_id=evidence.video_id,
+            video_id=evidence.canonical_video_id,
             video_sha256=evidence.video_sha256,
             rules_version=rules_version,
             proposals=evidence.proposals,
@@ -413,7 +534,8 @@ def finalize_run(
             caption=render.caption,
             facts_by_id=facts_by_id,
             shot_truth=evidence.shot_truth,
-            expected_video_id=evidence.video_id,
+            expected_video_id=evidence.canonical_video_id,
+            seed_video_id=evidence.seed_video_id,
             coverage=coverage,
             assertions=assertion_check,
             annotation_endpoint=Fraction(endpoint) if endpoint is not None else None,
@@ -425,7 +547,9 @@ def finalize_run(
     platform_report = validate_platform_semantics(render.caption, facts_by_id)
     timings["platform_validation"] = round(time.perf_counter() - start, 4)
     start = time.perf_counter()
-    golden = run_golden_gate(plan, render.caption, graph.facts, coverage, platform_report)
+    golden = run_golden_gate(
+        plan, render.caption, graph.facts, coverage, platform_report
+    )
     timings["golden_gate"] = round(time.perf_counter() - start, 4)
     start = time.perf_counter()
     adversarial = run_adversarial_qc(
@@ -461,6 +585,7 @@ def finalize_run(
             adversarial=adversarial,
             signoff_check=signoff_check,
             unresolved_high_feedback=unresolved_high,
+            visual_review_blockers=visual_review_blockers,
         )
     )
 
@@ -531,6 +656,9 @@ def finalize_run(
                 "rendered_caption_sha256": render.caption.caption_sha256,
                 "final_status": readiness.readiness.value,
                 "stage_timings_seconds": timings,
+                # §5.1-18: full provenance — the SHA-256 of every Phase 1-4
+                # evidence artifact this finalization actually consumed.
+                "evidence_sha256": consumed_hashes,
             },
             artifacts,
         )
@@ -542,6 +670,30 @@ def finalize_run(
         artifact_paths=artifacts,
         stage_timings={f"caption_{k}": v for k, v in timings.items()},
     )
+
+
+def _visual_review_blockers(evidence: RunEvidence) -> list[str]:
+    """Recompute Phase 4 machine review items from CURRENT (post-decision)
+    evidence and return the CRITICAL/HIGH material items as readiness blockers.
+    NORMAL/LOW items (e.g. a per-shot semantic-action summary) inform the
+    reviewer packet but never demand one click per weak candidate."""
+    from .review.queue import build_machine_review_items
+    from .seed.comparison import VisualEvidence
+
+    visual = VisualEvidence(
+        text_tracks=evidence.text_tracks,
+        camera_candidates=evidence.camera_candidates,
+        entity_tracks=evidence.entity_tracks,
+        final_state_checks=evidence.final_state_checks,
+        action_candidates=evidence.action_candidates,
+        speed_evidence=evidence.speed_evidence,
+    )
+    items = build_machine_review_items(visual, evidence.ocr_status)
+    return [
+        f"visual review [{item.priority.value}] {item.title}: {item.reason}"
+        for item in items
+        if item.priority.value in ("CRITICAL", "HIGH")
+    ]
 
 
 def _resolved_directives(
@@ -589,7 +741,7 @@ def _summarize(
     )
     return CaptionBrainResult(
         caption_brain_version=CAPTION_BRAIN_VERSION,
-        video_id=evidence.video_id,
+        video_id=evidence.canonical_video_id,
         fact_count=len(graph.facts),
         eligible_count=sum(
             1 for f in graph.facts if f.eligibility == CaptionEligibility.ELIGIBLE
@@ -666,10 +818,31 @@ def _build_reviewed_caption(
         ]
         return " ".join(p for p in parts if p) or None
 
+    from .caption.renderer import (
+        render_camera_movement_text,
+        render_event_text,
+        render_speech_text,
+    )
+
     shots = []
     action_events = []
+    camera_events = []
+    speech_events = []
+    sound_events = []
+    text_events = []
     for shot_plan in plan.shot_plans:
         transition_fact = facts_by_id.get(shot_plan.transition_fact_id or "")
+        speed_fact = facts_by_id.get(shot_plan.playback_speed_fact_id or "")
+        camera_description = " ".join(
+            facts_by_id[fid].text_value or ""
+            for fid in shot_plan.camera_framing_fact_ids
+            if fid in facts_by_id
+        ).strip()
+        scene_description = " ".join(
+            facts_by_id[fid].text_value or ""
+            for fid in shot_plan.scene_fact_ids
+            if fid in facts_by_id
+        ).strip()
         shots.append(
             Shot(
                 shot_number=shot_plan.shot_number,
@@ -685,29 +858,81 @@ def _build_reviewed_caption(
                         else "UNRESOLVED"
                     )
                 ),
-                playback_speed=None,
+                camera_description=camera_description or None,
+                scene_description=scene_description or None,
+                playback_speed=(
+                    PlaybackSpeed(speed_fact.text_value)
+                    if shot_plan.playback_speed_resolved
+                    and speed_fact is not None
+                    and speed_fact.text_value
+                    else None
+                ),
             )
         )
-        for fid in shot_plan.event_fact_ids:
+        for fid in shot_plan.camera_movement_fact_ids:
             fact = facts_by_id[fid]
             if fact.start_exact is None or fact.end_exact is None:
                 continue
-            line_id = render.rendered_fact_lines.get(fid)
-            text = next(
-                (ln.text for ln in render.caption.lines if ln.line_id == line_id), ""
-            )
-            action_events.append(
-                ActionAudioEvent(
+            camera_events.append(
+                CameraEvent(
                     shot_number=shot_plan.shot_number,
                     time_range=ExactTimeRange(
                         start_seconds=fact.start_exact, end_seconds=fact.end_exact
                     ),
-                    text=text,
+                    description=render_camera_movement_text(fact),
+                    evidence=fact.evidence_refs,
+                )
+            )
+        for fid in shot_plan.event_fact_ids:
+            fact = facts_by_id[fid]
+            if fact.start_exact is None or fact.end_exact is None:
+                continue
+            time_range = ExactTimeRange(
+                start_seconds=fact.start_exact, end_seconds=fact.end_exact
+            )
+            # One structured ActionAudioEvent per rendered line; the text is
+            # the sentence body — timing lives in time_range, never duplicated.
+            action_events.append(
+                ActionAudioEvent(
+                    shot_number=shot_plan.shot_number,
+                    time_range=time_range,
+                    text=render_event_text(fact),
                     character_ids=fact.character_ids,
                     object_ids=fact.object_ids,
                     evidence=fact.evidence_refs,
                 )
             )
+            if fact.fact_type == CaptionFactType.SPEECH:
+                speech_events.append(
+                    SpeechEvent(
+                        shot_number=shot_plan.shot_number,
+                        time_range=time_range,
+                        speaker_id=fact.semantic_value.get("speaker_id"),
+                        verbatim_text=fact.text_value or render_speech_text(fact),
+                        tone=fact.semantic_value.get("tone"),
+                        off_screen=fact.semantic_value.get("off_screen") == "true",
+                        contains_inaudible="[inaudible]" in (fact.text_value or ""),
+                        evidence=fact.evidence_refs,
+                    )
+                )
+            elif fact.fact_type == CaptionFactType.SOUND:
+                sound_events.append(
+                    SoundEvent(
+                        shot_number=shot_plan.shot_number,
+                        time_range=time_range,
+                        description=render_event_text(fact),
+                        evidence=fact.evidence_refs,
+                    )
+                )
+            elif fact.fact_type == CaptionFactType.ON_SCREEN_TEXT:
+                text_events.append(
+                    OnScreenTextEvent(
+                        shot_number=shot_plan.shot_number,
+                        time_range=time_range,
+                        text=fact.text_value or "",
+                        evidence=fact.evidence_refs,
+                    )
+                )
     return ReviewedCaption(
         characters=characters,
         objects=objects,
@@ -717,7 +942,11 @@ def _build_reviewed_caption(
         visual_concerns=_section_text(plan.overview_plan.visual_concern_fact_ids),
         audio_concerns=_section_text(plan.overview_plan.audio_concern_fact_ids),
         shots=shots,
+        camera_events=camera_events,
         action_audio_events=action_events,
+        speech_events=speech_events,
+        sound_events=sound_events,
+        on_screen_text_events=text_events,
     )
 
 

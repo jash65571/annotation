@@ -317,6 +317,9 @@ def run_audit(
                         human_facts_path=human_facts_path,
                         final_review_path=final_review_path,
                         video_sha256=source_hash_before,
+                        # Canonical identity comes from the actual media file,
+                        # never from the seed (§5.1-2).
+                        canonical_video_id=video_path.stem,
                     )
                 except CaptionBrainError as exc:
                     cb_output = None

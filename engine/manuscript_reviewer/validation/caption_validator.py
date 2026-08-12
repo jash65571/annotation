@@ -60,7 +60,10 @@ class M2Inputs:
     caption: RenderedCaption
     facts_by_id: dict[str, CaptionFact]
     shot_truth: ShotTruthResult | None = None
+    #: Canonical id from Phase 1 media/run provenance — never the seed's.
     expected_video_id: str | None = None
+    #: The seed's own claimed id, kept separate (§5.1-2).
+    seed_video_id: str | None = None
     coverage: CoverageResult | None = None
     assertions: AssertionCheckResult | None = None
     #: Annotation-clock endpoint the final shot must end on.
@@ -127,6 +130,21 @@ def _media_rules(inputs: M2Inputs) -> list[ValidatorIssue]:
             _issue(
                 "M2-MEDIA-002", Severity.WARN, "video_id",
                 "No video id in the caption; the exact video id must open the caption.",
+            )
+        )
+    if (
+        inputs.seed_video_id is not None
+        and inputs.expected_video_id is not None
+        and inputs.seed_video_id != inputs.expected_video_id
+    ):
+        issues.append(
+            _issue(
+                "M2-MEDIA-004",
+                Severity.FAIL,
+                "video_id",
+                f"Seed claims video id {inputs.seed_video_id!r} but the actual "
+                f"media is {inputs.expected_video_id!r} — a wrong-video seed is "
+                "contradicted by media truth, never validated against itself.",
             )
         )
     return issues

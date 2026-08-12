@@ -213,7 +213,10 @@ def write_run_dir(
         json.dumps(
             {
                 "source_video_sha256": VIDEO_SHA,
+                "source_video_path": f"C:/videos/{VIDEO_ID}.mp4",
                 "rules_version": RULES_VERSION,
+                # Empty artifact list = the loader treats files as just-written
+                # (in-process trust mode); tamper tests list explicit hashes.
                 "artifacts": [],
             }
         ),
