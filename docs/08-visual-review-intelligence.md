@@ -184,15 +184,16 @@ contract only.
 
 ## Delivered vs planned
 
-**Delivered (slices 1–2):** seed snapshot/parser/claims/feedback, structural
+**Delivered (slices 1–4):** seed snapshot/parser/claims/feedback, structural
 comparison, claim↔evidence matrix, proposals, review queue, triage, human-decision
-persistence, the frame cache, the frame-observation ledger + concerns, the P4
-validators listed above, CLI + manifest integration.
+persistence, the frame cache, the frame-observation ledger + concerns, OCR
+(adapter + Tesseract + temporal consensus + sequential timing + one-frame defense
++ watermark candidates + caption-eligibility gate), deterministic camera
+global-motion segmentation with the camera-vs-subject defense, the P4 validators
+listed above, and CLI + manifest integration.
 
-**Designed, staged for later slices:** OCR (adapter + Tesseract + temporal
-consensus + timing + caption-eligibility gate), local anchor-assisted
-tracking / character & object continuity, ownership/contact events, final-state
-checks, camera global-motion segmentation, action boundaries, playback-speed
-evidence, and high-risk evidence bundles. The data model for all of these already
-exists in `models/review_intelligence.py`; each slice plugs into the tested
-orchestrator harness.
+**Designed, staged for later slices** (data model already in
+`models/review_intelligence.py`; each plugs into the tested orchestrator harness):
+local anchor-assisted tracking / character & object continuity, ownership/contact
+events, final-state checks, action boundaries, playback-speed evidence, and
+high-risk evidence bundles.
