@@ -16,6 +16,7 @@ from ..models.review_intelligence import (
     CameraMotionClass,
     CharacterHypothesis,
     ContactEvent,
+    ContinuityLink,
     EntityTrack,
     FinalStateCheck,
     FrameObservation,
@@ -135,7 +136,18 @@ def validate_camera_candidates(
     return issues
 
 
-def validate_tracks(tracks: list[EntityTrack], frame_count: int) -> list[ValidatorIssue]:
+def _shot_of_frame(shot_result: ShotTruthResult | None, frame: int) -> int | None:
+    if shot_result is None:
+        return None
+    for shot in shot_result.shots:
+        if shot.start_frame_index <= frame <= shot.end_frame_index:
+            return shot.shot_index
+    return None
+
+
+def validate_tracks(
+    tracks: list[EntityTrack], frame_count: int, shot_result: ShotTruthResult | None = None
+) -> list[ValidatorIssue]:
     issues: list[ValidatorIssue] = []
     for track in tracks:
         # P4-ENTITY-001: track frame ranges stay inside valid frames.
@@ -168,6 +180,48 @@ def validate_tracks(tracks: list[EntityTrack], frame_count: int) -> list[Validat
                     severity=Severity.FAIL,
                     location=track.track_id,
                     message="Reacquired track marked TRACKED (must stay REVIEW_REQUIRED).",
+                )
+            )
+        # P4-ENTITY-005: a single track must not silently span a shot cut. Tracks are
+        # shot-bounded; cross-shot continuity belongs to a review-required continuity
+        # link, never one track carrying the same identity across a cut.
+        if shot_result is not None:
+            shots_touched = {
+                s for o in track.observations
+                if (s := _shot_of_frame(shot_result, o.frame_index)) is not None
+            }
+            if len(shots_touched) > 1:
+                issues.append(
+                    ValidatorIssue(
+                        rule_id="P4-ENTITY-005",
+                        severity=Severity.FAIL,
+                        location=track.track_id,
+                        message=(
+                            f"Track spans {len(shots_touched)} shots "
+                            f"{sorted(shots_touched)}; cross-shot continuity must be a "
+                            "review-required link, not one track."
+                        ),
+                    )
+                )
+    return issues
+
+
+def validate_continuity_links(links: list[ContinuityLink]) -> list[ValidatorIssue]:
+    """P4-ENTITY-006: similar tracks are never auto-merged. A SAME_ENTITY_CANDIDATE
+    (or REACQUISITION) link must stay review-required until a human decides."""
+    issues: list[ValidatorIssue] = []
+    for link in links:
+        if link.relationship in ("SAME_ENTITY_CANDIDATE", "REACQUISITION") \
+                and not link.review_required:
+            issues.append(
+                ValidatorIssue(
+                    rule_id="P4-ENTITY-006",
+                    severity=Severity.FAIL,
+                    location=link.link_id,
+                    message=(
+                        f"{link.relationship} link marked resolved without review "
+                        "(similar tracks must never be auto-merged)."
+                    ),
                 )
             )
     return issues

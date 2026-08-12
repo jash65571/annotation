@@ -586,7 +586,8 @@ def _run_tracking_stage(
         if _SEED_CO_ID.match(label):
             entity_by_seed_id.setdefault(label, []).append(track)
     characters, objects, links = build_continuity(tracks)
-    issues.extend(visual_validator.validate_tracks(tracks, ledger.frame_count))
+    issues.extend(visual_validator.validate_tracks(tracks, ledger.frame_count, shot_truth))
+    issues.extend(visual_validator.validate_continuity_links(links))
     issues.extend(visual_validator.validate_hypotheses(characters, objects))
     result.character_hypothesis_count = len(characters)
     result.object_hypothesis_count = len(objects)

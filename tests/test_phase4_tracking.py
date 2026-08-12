@@ -103,6 +103,61 @@ def test_reacquired_track_cannot_be_silently_verified() -> None:
     assert any(i.rule_id == "P4-ENTITY-003" for i in issues)
 
 
+def _two_shots():  # type: ignore[no-untyped-def]
+    from fractions import Fraction
+
+    from manuscript_reviewer.models.shot_truth import (
+        CandidateStatus,
+        ShotProposal,
+        ShotTruthResult,
+        TransitionStatus,
+    )
+
+    def prop(i: int, lo: int, hi: int) -> ShotProposal:
+        return ShotProposal(
+            shot_index=i, start_frame_index=lo, end_frame_index=hi,
+            start_exact=Fraction(lo, 10), end_exact=Fraction(hi, 10),
+            last_owned_frame_start_exact=Fraction(lo, 10),
+            start_manuscript=None, end_manuscript=None, transition_into_shot=None,
+            transition_status=TransitionStatus.PROPOSED, supporting_boundary_id=None,
+            review_status=CandidateStatus.SUPPORTED,
+        )
+    return ShotTruthResult(
+        frame_count=40, adjacent_pair_count=0, raw_candidate_count=0, merged_candidate_count=0,
+        supported_count=0, rejected_count=0, review_required_count=0, proposed_shot_count=2,
+        overall_status="PASS", candidates=[], shots=[prop(1, 0, 19), prop(2, 20, 39)],
+    )
+
+
+def test_track_spanning_two_shots_is_flagged() -> None:
+    # A single track with observations in shot 1 (0-19) AND shot 2 (20-30).
+    crossing = _track("TRK-cross", "CHARACTER", 10, 30)
+    issues = validate_tracks([crossing], frame_count=40, shot_result=_two_shots())
+    assert any(i.rule_id == "P4-ENTITY-005" for i in issues)
+    # A shot-bounded track raises nothing.
+    bounded = _track("TRK-ok", "CHARACTER", 0, 15)
+    assert not any(
+        i.rule_id == "P4-ENTITY-005"
+        for i in validate_tracks([bounded], frame_count=40, shot_result=_two_shots())
+    )
+
+
+def test_same_entity_candidate_link_must_stay_review_required() -> None:
+    from manuscript_reviewer.models.review_intelligence import ContinuityLink
+    from manuscript_reviewer.validation.visual_validator import validate_continuity_links
+
+    bad = ContinuityLink(
+        link_id="L1", from_track_id="TRK-a", to_track_id="TRK-b",
+        relationship="SAME_ENTITY_CANDIDATE", review_required=False,  # illegal auto-merge
+    )
+    assert any(i.rule_id == "P4-ENTITY-006" for i in validate_continuity_links([bad]))
+    ok = ContinuityLink(
+        link_id="L2", from_track_id="TRK-a", to_track_id="TRK-b",
+        relationship="SAME_ENTITY_CANDIDATE", review_required=True,
+    )
+    assert not validate_continuity_links([ok])
+
+
 # --------------------------------------------------------------------------
 # ffmpeg: real tracking on a synthetic clip
 # --------------------------------------------------------------------------
