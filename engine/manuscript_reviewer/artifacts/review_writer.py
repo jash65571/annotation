@@ -14,7 +14,9 @@ from ..media.timestamps import seconds_to_decimal
 from ..models.caption import SeedClaim
 from ..models.review_intelligence import (
     ClaimEvidenceRow,
+    DecisionApplication,
     FeedbackDocument,
+    HumanReviewDecision,
     ReviewProposal,
     ReviewQueueItem,
     SeedDocument,
@@ -146,3 +148,19 @@ def write_visual_review_queue(review_dir: Path, items: list[ReviewQueueItem]) ->
 
 def write_visual_qc(review_dir: Path, result: VisualIntelligenceResult) -> Path:
     return _write_json(review_dir / "visual_qc.json", result.model_dump(mode="json"))
+
+
+def write_review_decisions(review_dir: Path, decisions: list[HumanReviewDecision]) -> Path:
+    return _write_json(
+        review_dir / "review_decisions.json",
+        {"decisions": [d.model_dump(mode="json") for d in decisions]},
+    )
+
+
+def write_decision_applications(
+    review_dir: Path, applications: list[DecisionApplication]
+) -> Path:
+    return _write_json(
+        review_dir / "decision_applications.json",
+        {"applications": [a.model_dump(mode="json") for a in applications]},
+    )

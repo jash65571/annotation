@@ -37,13 +37,17 @@ from .models.shot_truth import ShotTruthResult
 from .models.validation import Severity, ValidatorIssue
 from .ocr.pipeline import run_ocr
 from .ocr.tesseract_adapter import TesseractAdapter
-from .review.decisions import DecisionLoadError, apply_decisions, load_decisions
+from .review.decisions import (
+    DecisionLoadError,
+    apply_decisions_to_claims,
+    load_decisions,
+)
 from .review.proposals import build_proposals, count_by_outcome
 from .review.queue import build_review_queue, build_triage
 from .seed import feedback as feedback_mod
 from .seed import snapshot as snapshot_mod
 from .seed.claims import collect_seed_diagnostics, extract_claims
-from .seed.comparison import compare_seed
+from .seed.comparison import build_rows, compare_seed
 from .seed.parser import parse_seed_text
 from .shots.decode import MetricDecodeError
 from .validation import review_intelligence_validator as ri_validator
@@ -52,6 +56,9 @@ from .visual.decode import FrameCache
 from .visual.observations import build_frame_observations
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+    from fractions import Fraction
+
     import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -177,32 +184,20 @@ def run_visual_intelligence(
         doc, claims, media, shot_truth, ocr_text_tracks, camera_candidates
     )
     _timed(timings, "seed_comparison", start)
-    artifacts.append(review_writer.write_seed_claims(seed_dir, comparison.claims))
 
-    # --- proposals + queue + triage ---
-    start = time.perf_counter()
-    proposals = build_proposals(comparison, feedback_directives)
-    queue_items = build_review_queue(comparison, feedback_directives)
-    triage = build_triage(comparison, time.perf_counter() - stage_start)
-    _timed(timings, "review_aggregation", start)
-
-    # Link claim-level proposal outcomes back into the matrix rows.
-    claim_outcomes = {
-        p.subject_id: p.outcome for p in proposals if p.level == "claim"
-    }
-    for row in comparison.rows:
-        row.review_proposal = claim_outcomes.get(row.claim_id)
-
-    # --- optional human decisions (bound to media/rules) ---
+    # --- human decisions: apply as an evidence-override layer, THEN recompute (F) ---
     if review_decisions_path is not None and video_sha256 is not None:
         try:
             decisions = load_decisions(review_decisions_path)
-            applications = apply_decisions(
-                decisions, video_sha256, rules_version or "unknown"
+            applications = apply_decisions_to_claims(
+                decisions, comparison.claims, video_sha256, rules_version or "unknown"
             )
-            stale = [a for a in applications if a.stale]
-            if stale:
-                logger.warning("%d stale human decision(s) skipped", len(stale))
+            comparison.rows = build_rows(comparison.claims)  # reflect overrides
+            review_dir = run_dir / "review"
+            artifacts.append(review_writer.write_review_decisions(review_dir, decisions))
+            artifacts.append(
+                review_writer.write_decision_applications(review_dir, applications)
+            )
         except DecisionLoadError as exc:
             issues.append(
                 ValidatorIssue(
@@ -212,6 +207,28 @@ def run_visual_intelligence(
                     message=f"Review decisions rejected: {exc}",
                 )
             )
+
+    # Artifacts reflect the applied (post-override) claim state.
+    artifacts.append(review_writer.write_seed_claims(seed_dir, comparison.claims))
+
+    # --- proposals + queue + triage (recomputed after overrides) ---
+    start = time.perf_counter()
+    frame_for_time = (
+        _make_time_to_frame(ledger, AnnotationClock.from_ledger(ledger))
+        if ledger is not None
+        else None
+    )
+    proposals = build_proposals(comparison, feedback_directives)
+    queue_items = build_review_queue(comparison, feedback_directives, frame_for_time)
+    triage = build_triage(comparison, time.perf_counter() - stage_start)
+    _timed(timings, "review_aggregation", start)
+
+    # Link claim-level proposal outcomes back into the matrix rows.
+    claim_outcomes = {
+        p.subject_id: p.outcome for p in proposals if p.level == "claim"
+    }
+    for row in comparison.rows:
+        row.review_proposal = claim_outcomes.get(row.claim_id)
 
     # --- validation ---
     issues.extend(ri_validator.validate_matrix(comparison.rows))
@@ -377,3 +394,25 @@ def _region_boxes(gray: np.ndarray) -> list[tuple[int, int, int, int]]:
     from .ocr.regions import detect_text_regions
 
     return [(r.x, r.y, r.width, r.height) for r in detect_text_regions(gray)]
+
+
+def _make_time_to_frame(
+    ledger: FrameLedger, clock: AnnotationClock
+) -> Callable[[Fraction], int | None]:
+    """Resolve an annotation time to the containing ledger frame index (AA)."""
+    anns: list[tuple[Fraction, int]] = []
+    for record in ledger.frames:
+        if record.pts_time_seconds is not None:
+            anns.append((clock.to_annotation(record.pts_time_seconds), record.frame_index))
+    anns.sort()
+
+    def resolve(t: Fraction) -> int | None:
+        chosen: int | None = None
+        for ann_time, index in anns:
+            if ann_time <= t:
+                chosen = index
+            else:
+                break
+        return chosen if chosen is not None else (anns[0][1] if anns else None)
+
+    return resolve

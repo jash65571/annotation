@@ -7,6 +7,9 @@ a recommended reviewer action.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from fractions import Fraction
+
 from ..models.caption import SeedClaim
 from ..models.review_intelligence import (
     ClaimImportance,
@@ -33,9 +36,14 @@ class _Counter:
         return f"RQ-{self.value:04d}"
 
 
+#: Resolve an annotation time to the containing ledger frame index (AA).
+FrameResolver = Callable[[Fraction], int | None]
+
+
 def build_review_queue(
     comparison: ComparisonResult,
     feedback: list[FeedbackDirective] | None = None,
+    frame_for_time: FrameResolver | None = None,
 ) -> list[ReviewQueueItem]:
     counter = _Counter()
     items: list[ReviewQueueItem] = []
@@ -60,6 +68,7 @@ def build_review_queue(
     for claim in comparison.claims:
         item = _claim_item(counter, claim)
         if item is not None:
+            _fill_frame_range(item, frame_for_time)
             items.append(item)
 
     # Task feedback (HIGH: requirement unresolved).
@@ -118,6 +127,17 @@ def _claim_item(counter: _Counter, claim: SeedClaim) -> ReviewQueueItem | None:
         recommended_action=action,
         related_claim_ids=[claim.claim_id],
     )
+
+
+def _fill_frame_range(item: ReviewQueueItem, frame_for_time: FrameResolver | None) -> None:
+    """AA: resolve exact frame range from the item's seed time via the annotation
+    clock instead of leaving it empty."""
+    if frame_for_time is None:
+        return
+    if item.start_exact is not None and item.start_frame is None:
+        item.start_frame = frame_for_time(item.start_exact)
+    if item.end_exact is not None and item.end_frame is None:
+        item.end_frame = frame_for_time(item.end_exact)
 
 
 def _unresolved_priority(claim: SeedClaim) -> ReviewPriority:

@@ -852,28 +852,55 @@ class PlaybackSpeedEvidence(StrictModel):
 # ===========================================================================
 
 
+class DecisionType(StrEnum):
+    """Typed human-decision kinds. A decision's ``value`` must be admissible for
+    its kind (else INVALID_VALUE)."""
+
+    CLAIM_EVIDENCE = "CLAIM_EVIDENCE"
+    OCR_TEXT = "OCR_TEXT"
+    OCR_TIMING = "OCR_TIMING"
+    IDENTITY_MAPPING = "IDENTITY_MAPPING"
+    CAMERA_CLASSIFICATION = "CAMERA_CLASSIFICATION"
+    ACTION_SEMANTICS = "ACTION_SEMANTICS"
+    ACTION_BOUNDARY = "ACTION_BOUNDARY"
+    PLAYBACK_SPEED = "PLAYBACK_SPEED"
+    REVIEW_PROPOSAL_OUTCOME = "REVIEW_PROPOSAL_OUTCOME"
+
+
+class DecisionOutcome(StrEnum):
+    APPLIED = "APPLIED"
+    STALE = "STALE"
+    INVALID_SUBJECT = "INVALID_SUBJECT"
+    INVALID_VALUE = "INVALID_VALUE"
+    CONFLICT = "CONFLICT"
+
+
 class HumanReviewDecision(StrictModel):
     """A recorded human decision. ``decided_by`` is only ever set by an actual
     human-supplied decision file — machine code never fabricates one."""
 
     decision_id: str
     subject_id: str
-    decision_type: str
+    decision_type: DecisionType
     value: str
     reviewer_note: str | None = None
     evidence_refs: list[EvidenceReference] = []
+    #: From the human file; never stamped fresh at apply time (deterministic).
     decided_at_utc: str | None = None
     decided_by: str
     #: Binding keys so a decision from another video/rules is never applied.
     bound_video_sha256: str | None = None
     bound_rules_version: str | None = None
+    #: Optional binding to a specific evidence identity/hash.
+    bound_evidence_id: str | None = None
 
 
 class DecisionApplication(StrictModel):
     decision_id: str
+    outcome: DecisionOutcome
     applied: bool
     stale: bool = False
-    stale_reason: str | None = None
+    reason: str | None = None
 
 
 # ===========================================================================

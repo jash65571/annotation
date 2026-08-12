@@ -6,7 +6,6 @@ All pure-logic (no ffmpeg), so they run in any environment.
 
 from __future__ import annotations
 
-import json
 from fractions import Fraction
 from pathlib import Path
 
@@ -26,11 +25,6 @@ from manuscript_reviewer.models.shot_truth import (
     ShotProposal,
     ShotTruthResult,
     TransitionStatus,
-)
-from manuscript_reviewer.review.decisions import (
-    DecisionLoadError,
-    apply_decisions,
-    load_decisions,
 )
 from manuscript_reviewer.review.proposals import build_proposals, count_by_outcome
 from manuscript_reviewer.review.queue import build_review_queue, build_triage
@@ -476,52 +470,7 @@ def test_feedback_maps_known_pattern_but_preserves_raw() -> None:
     assert doc.directives[0].raw_text.strip().startswith("The English singing")
 
 
-# --------------------------------------------------------------------------
-# Human decisions
-# --------------------------------------------------------------------------
-
-
-def _write_decisions(path: Path, decided_by: str, bound_sha: str | None) -> None:
-    payload = {
-        "decisions": [
-            {
-                "decision_id": "D1",
-                "subject_id": "shot_1",
-                "decision_type": "confirm_boundary",
-                "value": "confirmed",
-                "decided_by": decided_by,
-                "bound_video_sha256": bound_sha,
-            }
-        ]
-    }
-    path.write_text(json.dumps(payload), encoding="utf-8")
-
-
-def test_decisions_reject_machine_authored(tmp_path: Path) -> None:
-    path = tmp_path / "d.json"
-    _write_decisions(path, "machine", "abc")
-    try:
-        load_decisions(path)
-    except DecisionLoadError:
-        pass
-    else:
-        raise AssertionError("machine-authored decision must be rejected")
-
-
-def test_stale_decision_from_other_video_not_applied(tmp_path: Path) -> None:
-    path = tmp_path / "d.json"
-    _write_decisions(path, "reviewer@example", "OTHERVIDEOHASH")
-    decisions = load_decisions(path)
-    apps = apply_decisions(decisions, video_sha256="CURRENTHASH", rules_version="1.0")
-    assert apps and apps[0].stale and not apps[0].applied
-
-
-def test_valid_decision_applied(tmp_path: Path) -> None:
-    path = tmp_path / "d.json"
-    _write_decisions(path, "reviewer@example", "CURRENTHASH")
-    decisions = load_decisions(path)
-    apps = apply_decisions(decisions, video_sha256="CURRENTHASH", rules_version="1.0")
-    assert apps and apps[0].applied and not apps[0].stale
+# Human-decision application is covered in test_phase4_decisions.py.
 
 
 # --------------------------------------------------------------------------

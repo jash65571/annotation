@@ -132,7 +132,7 @@ def compare_seed(
     _mark_semantic_unresolved(claims)
 
     foundation_status = _overall_foundation(checks)
-    rows = [_row(claim) for claim in claims]
+    rows = build_rows(claims)
     return ComparisonResult(
         claims=claims,
         rows=rows,
@@ -669,6 +669,11 @@ def _overall_foundation(checks: list[FoundationCheck]) -> FoundationStatus:
     if only_supported_or_na and FoundationStatus.SUPPORTED in statuses:
         return FoundationStatus.SUPPORTED
     return FoundationStatus.NOT_EVALUATED
+
+
+def build_rows(claims: list[SeedClaim]) -> list[ClaimEvidenceRow]:
+    """Build claim<->evidence matrix rows (recomputed after decision overrides)."""
+    return [_row(claim) for claim in claims]
 
 
 def _row(claim: SeedClaim) -> ClaimEvidenceRow:

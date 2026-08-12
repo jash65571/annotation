@@ -1,12 +1,13 @@
-"""Human review-decision persistence.
+"""Human review-decision persistence and application (F).
 
-Human decisions must survive reruns. A decision is applied only when it is bound
-to the current video SHA-256 and rules version; a decision from another video (or
-after the media/rules changed) is detected as stale and never applied.
+Human decisions survive reruns and are applied as an evidence-override layer:
+``apply_decisions_to_claims`` mutates claim evidence, then the normal
+comparison→proposals→queue→qc recompute reflects them (a decision visibly changes
+the next run). A decision is applied only when bound to the current video SHA-256
+and rules version; a decision from another video/rules is STALE and never applied.
 
-Machine code never fabricates a human decision: ``decided_by`` comes from the
-supplied decision file. Any decision missing an explicit human ``decided_by`` is
-rejected (validator P4-REVIEW-001 territory).
+Machine code never fabricates a human decision: ``decided_by`` and
+``decided_at_utc`` come from the supplied file and are never stamped fresh.
 """
 
 from __future__ import annotations
@@ -17,22 +18,30 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from ..models.review_intelligence import DecisionApplication, HumanReviewDecision
+from ..models.caption import SeedClaim
+from ..models.evidence import EvidenceReference, EvidenceType
+from ..models.review_intelligence import (
+    ClaimReviewStatus,
+    DecisionApplication,
+    DecisionOutcome,
+    DecisionType,
+    EvidenceStatus,
+    HumanReviewDecision,
+)
 
 logger = logging.getLogger(__name__)
 
+_SPEED_VALUES = {"slow_motion", "regular", "accelerated"}
+_EVIDENCE_VALUES = {s.value for s in EvidenceStatus}
+
 
 class DecisionLoadError(RuntimeError):
-    """The review-decisions file could not be read or parsed."""
+    """The review-decisions file could not be read, parsed, or was unbound."""
 
 
 def load_decisions(path: Path) -> list[HumanReviewDecision]:
-    """Load human decisions from a JSON file.
-
-    Expected shape: ``{"decisions": [ {decision_id, subject_id, decision_type,
-    value, decided_by, ...}, ... ]}``. A decision with a machine/empty
-    ``decided_by`` is rejected — machine code cannot supply human decisions.
-    """
+    """Load human decisions from JSON. Rejects machine-authored or unbound
+    decisions (a valid decision MUST carry both binding keys)."""
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -52,47 +61,98 @@ def load_decisions(path: Path) -> list[HumanReviewDecision]:
                 f"Decision {decision.decision_id} has non-human decided_by="
                 f"{decision.decided_by!r}; machine decisions are not accepted."
             )
+        if not decision.bound_video_sha256 or not decision.bound_rules_version:
+            raise DecisionLoadError(
+                f"Decision {decision.decision_id} is unbound (missing "
+                "bound_video_sha256/bound_rules_version); unbound decisions are rejected."
+            )
         decisions.append(decision)
     return decisions
 
 
-def apply_decisions(
+def _validate_value(decision: HumanReviewDecision) -> bool:
+    value = decision.value.strip()
+    if not value:
+        return False
+    if decision.decision_type == DecisionType.PLAYBACK_SPEED:
+        return value in _SPEED_VALUES
+    if decision.decision_type == DecisionType.CLAIM_EVIDENCE:
+        return value in _EVIDENCE_VALUES
+    return True  # free-text kinds (OCR text, notes, ...) just need to be non-empty
+
+
+def _resolved_status(decision: HumanReviewDecision) -> EvidenceStatus:
+    if decision.decision_type == DecisionType.CLAIM_EVIDENCE:
+        return EvidenceStatus(decision.value.strip())
+    # A human confirming OCR text / identity / a semantic label supports the claim.
+    return EvidenceStatus.SUPPORTED
+
+
+def apply_decisions_to_claims(
     decisions: list[HumanReviewDecision],
+    claims: list[SeedClaim],
     video_sha256: str,
     rules_version: str,
 ) -> list[DecisionApplication]:
-    """Return per-decision application status, rejecting stale/mismatched ones."""
+    """Apply valid, bound decisions to claim evidence; return per-decision status."""
+    by_claim = {c.claim_id: c for c in claims}
+    # CONFLICT: two decisions on the same subject with different values.
+    subject_values: dict[str, set[str]] = {}
+    for d in decisions:
+        subject_values.setdefault(d.subject_id, set()).add(d.value.strip())
+    conflicted = {s for s, vals in subject_values.items() if len(vals) > 1}
+
     applications: list[DecisionApplication] = []
     for decision in decisions:
-        if decision.bound_video_sha256 is not None and decision.bound_video_sha256 != video_sha256:
-            applications.append(
-                DecisionApplication(
-                    decision_id=decision.decision_id,
-                    applied=False,
-                    stale=True,
-                    stale_reason="bound to a different video SHA-256",
-                )
-            )
-            logger.warning(
-                "Skipping decision %s: bound to a different video", decision.decision_id
-            )
-            continue
-        if (
-            decision.bound_rules_version is not None
-            and decision.bound_rules_version != rules_version
-        ):
-            applications.append(
-                DecisionApplication(
-                    decision_id=decision.decision_id,
-                    applied=False,
-                    stale=True,
-                    stale_reason=(
-                        f"bound to rules {decision.bound_rules_version}, current {rules_version}"
-                    ),
-                )
-            )
-            continue
+        outcome, reason = _apply_one(
+            decision, by_claim, video_sha256, rules_version, conflicted
+        )
         applications.append(
-            DecisionApplication(decision_id=decision.decision_id, applied=True)
+            DecisionApplication(
+                decision_id=decision.decision_id,
+                outcome=outcome,
+                applied=outcome == DecisionOutcome.APPLIED,
+                stale=outcome == DecisionOutcome.STALE,
+                reason=reason,
+            )
         )
     return applications
+
+
+def _apply_one(
+    decision: HumanReviewDecision,
+    by_claim: dict[str, SeedClaim],
+    video_sha256: str,
+    rules_version: str,
+    conflicted: set[str],
+) -> tuple[DecisionOutcome, str | None]:
+    if decision.subject_id in conflicted:
+        return DecisionOutcome.CONFLICT, "multiple decisions with different values"
+    if decision.bound_video_sha256 != video_sha256:
+        logger.warning("Skipping decision %s: bound to a different video", decision.decision_id)
+        return DecisionOutcome.STALE, "bound to a different video SHA-256"
+    if decision.bound_rules_version != rules_version:
+        return DecisionOutcome.STALE, (
+            f"bound to rules {decision.bound_rules_version}, current {rules_version}"
+        )
+    claim = by_claim.get(decision.subject_id)
+    if claim is None:
+        return DecisionOutcome.INVALID_SUBJECT, f"no claim {decision.subject_id}"
+    if not _validate_value(decision):
+        return DecisionOutcome.INVALID_VALUE, (
+            f"value {decision.value!r} not admissible for {decision.decision_type.value}"
+        )
+    claim.evidence_status = _resolved_status(decision)
+    claim.review_status = ClaimReviewStatus.HUMAN_RESOLVED
+    claim.evidence.append(
+        EvidenceReference(
+            evidence_id=f"EV-HUMAN-{decision.decision_id}",
+            evidence_type=EvidenceType.HUMAN_VERIFICATION,
+            source=decision.decided_by,
+            notes=(
+                f"{decision.decision_type.value}={decision.value} "
+                f"(decided_at={decision.decided_at_utc})"
+            ),
+        )
+    )
+    return DecisionOutcome.APPLIED, None
