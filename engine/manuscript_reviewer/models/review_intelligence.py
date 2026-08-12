@@ -486,6 +486,20 @@ class CropArtifact(StrictModel):
     artifact_path: str | None = None
 
 
+class VisualAnchor(StrictModel):
+    """A human/detector-supplied anchor for assisted local tracking. No cloud
+    detector is required; anchors make tracking work without a neural model."""
+
+    anchor_id: str
+    frame_index: int
+    x: int
+    y: int
+    width: int
+    height: int
+    entity_type: str  # CHARACTER | OBJECT | UNKNOWN
+    temporary_label: str | None = None
+
+
 class TrackStatus(StrEnum):
     TRACKED = "TRACKED"
     OCCLUDED = "OCCLUDED"

@@ -13,7 +13,11 @@ from ..models.frame import FrameLedger
 from ..models.review_intelligence import (
     CameraMotionCandidate,
     CameraMotionClass,
+    CharacterHypothesis,
+    EntityTrack,
     FrameObservation,
+    ObjectHypothesis,
+    TrackStatus,
 )
 from ..models.shot_truth import ShotTruthResult
 from ..models.validation import Severity, ValidatorIssue
@@ -121,6 +125,77 @@ def validate_camera_candidates(
                     severity=Severity.WARN,
                     location=cand.candidate_id,
                     message="Camera movement phase has weak global-motion support.",
+                )
+            )
+    return issues
+
+
+def validate_tracks(tracks: list[EntityTrack], frame_count: int) -> list[ValidatorIssue]:
+    issues: list[ValidatorIssue] = []
+    for track in tracks:
+        # P4-ENTITY-001: track frame ranges stay inside valid frames.
+        for obs in track.observations:
+            if not (0 <= obs.frame_index < frame_count):
+                issues.append(
+                    ValidatorIssue(
+                        rule_id="P4-ENTITY-001",
+                        severity=Severity.FAIL,
+                        location=track.track_id,
+                        message=f"Track observation frame {obs.frame_index} out of range.",
+                    )
+                )
+        # P4-ENTITY-002: chronological observations are ordered.
+        frames = [o.frame_index for o in track.observations]
+        if frames != sorted(frames):
+            issues.append(
+                ValidatorIssue(
+                    rule_id="P4-ENTITY-002",
+                    severity=Severity.FAIL,
+                    location=track.track_id,
+                    message="Track observations are not in chronological order.",
+                )
+            )
+        # P4-ENTITY-003: a reacquired identity cannot silently become verified.
+        if track.reacquired and track.status == TrackStatus.TRACKED:
+            issues.append(
+                ValidatorIssue(
+                    rule_id="P4-ENTITY-003",
+                    severity=Severity.FAIL,
+                    location=track.track_id,
+                    message="Reacquired track marked TRACKED (must stay REVIEW_REQUIRED).",
+                )
+            )
+    return issues
+
+
+def validate_hypotheses(
+    characters: list[CharacterHypothesis], objects: list[ObjectHypothesis]
+) -> list[ValidatorIssue]:
+    issues: list[ValidatorIssue] = []
+    # P4-ENTITY-004: C IDs proposed in verified first-appearance order.
+    firsts = [c.first_visible_frame for c in characters if c.first_visible_frame is not None]
+    if firsts != sorted(firsts):
+        issues.append(
+            ValidatorIssue(
+                rule_id="P4-ENTITY-004",
+                severity=Severity.FAIL,
+                location="character_hypotheses",
+                message="Character labels not in verified first-appearance order.",
+            )
+        )
+    # P4-OBJECT-001: one physical track cannot silently map to two O IDs.
+    track_to_labels: dict[str, set[str]] = {}
+    for obj in objects:
+        for tid in obj.track_ids:
+            track_to_labels.setdefault(tid, set()).add(obj.proposed_label or obj.hypothesis_id)
+    for tid, labels in track_to_labels.items():
+        if len(labels) > 1:
+            issues.append(
+                ValidatorIssue(
+                    rule_id="P4-OBJECT-001",
+                    severity=Severity.FAIL,
+                    location=tid,
+                    message=f"One physical track maps to multiple O IDs: {sorted(labels)}.",
                 )
             )
     return issues

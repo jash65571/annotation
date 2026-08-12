@@ -17,7 +17,11 @@ from ..media.timestamps import seconds_to_decimal
 from ..models.frame import FrameLedger
 from ..models.review_intelligence import (
     CameraMotionCandidate,
+    CharacterHypothesis,
+    ContinuityLink,
+    EntityTrack,
     FrameObservation,
+    ObjectHypothesis,
     OCREngineInfo,
     OCRObservation,
     TextTrack,
@@ -132,6 +136,34 @@ def write_watermark_candidates(ocr_dir: Path, candidates: list[WatermarkCandidat
     return _write_json(
         ocr_dir / "watermark_candidates.json",
         {"watermark_candidates": [c.model_dump(mode="json") for c in candidates]},
+    )
+
+
+def write_entity_tracks(entities_dir: Path, tracks: list[EntityTrack]) -> Path:
+    return _write_json(
+        entities_dir / "tracks.json",
+        {"tracks": [t.model_dump(mode="json") for t in tracks]},
+    )
+
+
+def write_character_hypotheses(entities_dir: Path, hyps: list[CharacterHypothesis]) -> Path:
+    return _write_json(
+        entities_dir / "character_hypotheses.json",
+        {"character_hypotheses": [h.model_dump(mode="json") for h in hyps]},
+    )
+
+
+def write_object_hypotheses(entities_dir: Path, hyps: list[ObjectHypothesis]) -> Path:
+    return _write_json(
+        entities_dir / "object_hypotheses.json",
+        {"object_hypotheses": [h.model_dump(mode="json") for h in hyps]},
+    )
+
+
+def write_continuity_links(entities_dir: Path, links: list[ContinuityLink]) -> Path:
+    return _write_json(
+        entities_dir / "continuity_links.json",
+        {"continuity_links": [link.model_dump(mode="json") for link in links]},
     )
 
 

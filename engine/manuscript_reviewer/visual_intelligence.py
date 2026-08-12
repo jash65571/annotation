@@ -28,6 +28,7 @@ from .models.frame import FrameLedger
 from .models.media import MediaInfo
 from .models.review_intelligence import (
     CameraMotionCandidate,
+    EntityTrack,
     FrameObservation,
     OCRStatus,
     TextTrack,
@@ -50,6 +51,9 @@ from .seed.claims import collect_seed_diagnostics, extract_claims
 from .seed.comparison import build_rows, compare_seed
 from .seed.parser import parse_seed_text
 from .shots.decode import MetricDecodeError
+from .tracking.anchors import AnchorLoadError, load_anchors
+from .tracking.continuity import build_continuity
+from .tracking.tracker import track_anchor
 from .validation import review_intelligence_validator as ri_validator
 from .validation import seed_validator, visual_validator
 from .visual.decode import FrameCache
@@ -108,6 +112,7 @@ def run_visual_intelligence(
     # --- visual frame observations + OCR (media-driven; run with or without a seed) ---
     ocr_text_tracks: list[TextTrack] = []
     camera_candidates: list[CameraMotionCandidate] = []
+    entity_tracks: list[EntityTrack] = []
     if ledger is not None and media is not None and video_path is not None:
         cache = FrameCache(video_path, ledger)
         clock = AnnotationClock.from_ledger(ledger)
@@ -122,6 +127,13 @@ def run_visual_intelligence(
             cache, ledger, clock, shot_truth, run_dir, artifacts, issues, result
         )
         _timed(timings, "camera_motion", start)
+        if visual_anchors_path is not None:
+            start = time.perf_counter()
+            entity_tracks = _run_tracking_stage(
+                cache, ledger, clock, media, visual_anchors_path,
+                run_dir, artifacts, issues, result,
+            )
+            _timed(timings, "tracking", start)
         if ocr_enabled:
             start = time.perf_counter()
             ocr_text_tracks = _run_ocr_stage(
@@ -261,8 +273,9 @@ def run_visual_intelligence(
     artifacts.append(review_writer.write_visual_qc(review_dir, result))
 
     _timed(timings, "visual_intelligence_total", stage_start)
-    # Reserved for later slices (tracking, OCR, anchors, evidence bundles).
-    _ = (audio_truth, visual_anchors_path, ocr_enabled, extract_visual_evidence)
+    # entity_tracks feed the contacts/final-state/action slices; extract flag and
+    # audio_truth are reserved for the evidence-bundle and audio-linkage slices.
+    _ = (audio_truth, ocr_enabled, extract_visual_evidence, entity_tracks)
     return VisualIntelligenceOutput(result, issues, artifacts, timings)
 
 
@@ -332,6 +345,47 @@ def _run_camera_stage(
     artifacts.append(visual_writer.write_camera_events(camera_dir, candidates))
     artifacts.append(visual_writer.write_camera_pair_metrics(camera_dir, raw_pairs))
     return candidates
+
+
+def _run_tracking_stage(
+    cache: FrameCache,
+    ledger: FrameLedger,
+    clock: AnnotationClock,
+    media: MediaInfo,
+    anchors_path: Path,
+    run_dir: Path,
+    artifacts: list[Path],
+    issues: list[ValidatorIssue],
+    result: VisualIntelligenceResult,
+) -> list[EntityTrack]:
+    """Anchor-seeded local tracking + continuity hypotheses (S/T/U)."""
+    entities_dir = run_dir / "visual" / "entities"
+    stream = media.video_streams[0]
+    full_w, full_h = stream.width, stream.height
+    try:
+        anchors = load_anchors(anchors_path)
+        gray = cache.gray_frames()
+        tracks = [track_anchor(gray, ledger, clock, a, full_w, full_h) for a in anchors]
+    except (AnchorLoadError, MetricDecodeError, ValueError) as exc:
+        issues.append(
+            ValidatorIssue(
+                rule_id="P4-ENTITY-000",
+                severity=Severity.WARN,
+                location="tracking",
+                message=f"Tracking pass failed: {exc}",
+            )
+        )
+        return []
+    characters, objects, links = build_continuity(tracks)
+    issues.extend(visual_validator.validate_tracks(tracks, ledger.frame_count))
+    issues.extend(visual_validator.validate_hypotheses(characters, objects))
+    result.character_hypothesis_count = len(characters)
+    result.object_hypothesis_count = len(objects)
+    artifacts.append(visual_writer.write_entity_tracks(entities_dir, tracks))
+    artifacts.append(visual_writer.write_character_hypotheses(entities_dir, characters))
+    artifacts.append(visual_writer.write_object_hypotheses(entities_dir, objects))
+    artifacts.append(visual_writer.write_continuity_links(entities_dir, links))
+    return tracks
 
 
 def _run_ocr_stage(
