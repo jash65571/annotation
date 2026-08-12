@@ -5,12 +5,11 @@
 1. **Current official workflow / live-tool rules / task-specific feedback** — what the
    annotation tool actually enforces today, plus reviewer feedback on specific tasks.
 2. **Actual video frames and audio** — factual truth. The media decides what happened.
-3. **Newest Master Frame Audit Protocol** — v1.5 is a named controlling document but is
-   **not yet locally supplied**; its known requirements are encoded from task-specific
-   feedback (TASK-FEED provenance) until the document arrives.
+3. **Newest Master Frame Audit Protocol** — Master Frame Audit Protocol v1.5, now
+   supplied locally and read in full; rules it supports carry FRAME-AUDIT provenance.
 4. **Current Reviewer Handbook / current project rules** — HANDBOOK v1.2, MASTER-REF,
    plus MANUSCRIPT-II-PROJECT-RULES-CURRENT.md, MANUSCRIPT_AUDIT_README-v3.2.md and
-   MANUSCRIPT-II-CURRENT-SOURCES.md (named, not yet locally supplied — see
+   MANUSCRIPT-II-CURRENT-SOURCES.md (all now supplied locally — see
    `references/README.md`).
 5. **Golden Examples** — quality level only, not syntax authority.
 6. **Seed caption** — a hypothesis to verify, never truth.
@@ -31,9 +30,11 @@ An older example never overrides a newer live-tool rule.
 - Current version: **v1.3.0** (Phase 3.1). It replaced the caption-facing
   `default_transition: "Hard cut"` with `default_transition: null` +
   `unresolved_transition_is_not_hard_cut: true`: "Hard cut" stays a valid menu
-  option but is never emitted merely because a transition is unresolved. The four
-  named controlling documents remain unsupplied, so their provenance re-mapping
-  (replacing `TASK-FEED` where they directly support a rule) is still pending.
+  option but is never emitted merely because a transition is unresolved
+  (recorded as `CONFLICT-005`, grounded in FRAME-AUDIT §12/§13/§30A.1 and
+  check 11). All four named controlling documents are now supplied and read, and
+  provenance has been re-mapped from `TASK-FEED` to the actual controlling
+  sources wherever one directly supports the rule.
 
 ## Conflict-resolution procedure
 

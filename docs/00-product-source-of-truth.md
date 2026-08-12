@@ -10,15 +10,14 @@ Converted from the Manuscript II reference material into software requirements.
 | HANDBOOK | `MANUSCRIPT-II-REVIEWER-HANDBOOK-v1.2 (1).md` | Reviewer Handbook v1.2 (2026-08-10), includes complete Golden Examples coverage |
 | GOLDEN-PDF | `Manuscript II.pdf` | 31-page Golden Examples export (game trailer + crayfish clip), frame-matched entries |
 
-> Note: the supplied `Manuscript II.pdf` **is** the Golden Examples document. The
-> current controlling source set also names four documents **not yet locally
-> supplied** — Master Frame Audit Protocol v1.5, MANUSCRIPT-II-PROJECT-RULES-CURRENT.md,
-> MANUSCRIPT_AUDIT_README-v3.2.md, MANUSCRIPT-II-CURRENT-SOURCES.md. Their known
-> requirements are encoded in `manuscript_v1.yaml` (v1.3.0) with TASK-FEED provenance;
-> when the documents arrive they outrank this file per docs/01. Raw source documents
-> are local-only and gitignored (see `references/README.md`). **Phase 3.1 note:** the
-> four named controlling files are still absent, so their provenance re-mapping is
-> deferred — `TASK-FEED` entries and `supplied_locally: false` stand until they land.
+> Note: the supplied `Manuscript II.pdf` **is** the Golden Examples document. All
+> seven controlling sources — including the Master Frame Audit Protocol v1.5,
+> MANUSCRIPT-II-PROJECT-RULES-CURRENT.md, MANUSCRIPT_AUDIT_README-v3.2.md, and
+> MANUSCRIPT-II-CURRENT-SOURCES.md — are now supplied locally and read in full.
+> `manuscript_v1.yaml` (v1.3.0) provenance is re-mapped to the actual controlling
+> documents; `TASK-FEED` is retained only for genuinely engine-specific rules
+> (e.g. the never-translate ASR flag). Raw source documents are local-only and
+> gitignored (see `references/README.md`).
 
 ## Additional controlling rules (rules v1.3.0, TASK-FEED provenance)
 

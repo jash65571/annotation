@@ -1,10 +1,11 @@
 # Manuscript II rule set, version 1.3.
 #
-# NOTE (Phase 3.1): the four named controlling documents (FRAME-AUDIT,
-# PROJ-RULES, AUDIT-RM, CUR-SRC) are still NOT locally supplied, so their
-# provenance re-mapping (replacing TASK-FEED where they directly support a rule)
-# is DEFERRED — those `supplied_locally: false` markers stay false and no rule
-# cites them as evidence until the real files land under ./references/.
+# NOTE (Phase 3.1 finalization, 2026-08-12): the four named controlling
+# documents (FRAME-AUDIT, PROJ-RULES, AUDIT-RM, CUR-SRC) are now supplied locally
+# and have been read in full. Provenance below has been re-mapped from TASK-FEED
+# to the actual controlling source wherever one directly supports the rule;
+# TASK-FEED is retained only for genuinely task-/engine-specific requirements not
+# present in the controlling documents.
 #
 # Every rule carries provenance: which reference document it came from.
 # Raw source documents are NOT committed to the repository (distribution
@@ -12,17 +13,17 @@
 # supplied separately; see references/README.md. Only these derived rules
 # and source metadata are committed.
 #
-# Sources:
+# Sources (exact local filenames; two carry download-artifact "(n)" suffixes):
 #   MASTER-REF  = manuscript-ii-master-reference.md (Master Reference, compiled from Learning Hub)
-#   HANDBOOK    = MANUSCRIPT-II-REVIEWER-HANDBOOK-v1.2 (Reviewer Handbook v1.2)
+#   HANDBOOK    = MANUSCRIPT-II-REVIEWER-HANDBOOK-v1.2 (1).md (Reviewer Handbook v1.2)
 #   GOLDEN-PDF  = Manuscript II.pdf (31-page Golden Examples export, 2026-08-10)
-#   FRAME-AUDIT = MANUSCRIPT II Master Frame Audit Protocol v1.5 (NOT YET LOCALLY SUPPLIED)
-#   PROJ-RULES  = MANUSCRIPT-II-PROJECT-RULES-CURRENT.md (NOT YET LOCALLY SUPPLIED)
-#   AUDIT-RM    = MANUSCRIPT_AUDIT_README-v3.2.md (NOT YET LOCALLY SUPPLIED)
-#   CUR-SRC     = MANUSCRIPT-II-CURRENT-SOURCES.md (NOT YET LOCALLY SUPPLIED)
-#   TASK-FEED   = current task-specific workflow feedback (Phase 2.1/3
+#   FRAME-AUDIT = MANUSCRIPT-II-MASTER-FRAME-AUDIT-PROTOCOL-v1.5(4).txt (Master Frame Audit Protocol v1.5)
+#   PROJ-RULES  = MANUSCRIPT-II-PROJECT-RULES-CURRENT.md (Standing Project Memory Rules)
+#   AUDIT-RM    = MANUSCRIPT_AUDIT_README-v3.2(2).md (Audit Pipeline v3.2 README)
+#   CUR-SRC     = MANUSCRIPT-II-CURRENT-SOURCES.md (Current Project Sources index)
+#   TASK-FEED   = current task-/engine-specific workflow feedback (Phase 2.1/3
 #                 directives, 2026-08-12) — highest-priority source tier; used
-#                 for rules whose controlling documents are not yet supplied.
+#                 only where no controlling document states the requirement.
 #   AUDIT-NOTES = completed-task audit notes d97b1fc6c006_2.0_18.0_full_audit_notes.md
 #                 (local working artifact; §5 documents the approved local audio
 #                 workflow: FFmpeg -> faster-whisper large-v3-turbo -> WhisperX
@@ -47,17 +48,17 @@ sources:
     file: "references/Manuscript II.pdf"
     supplied_locally: true
   - id: FRAME-AUDIT
-    file: "references/MANUSCRIPT-II-MASTER-FRAME-AUDIT-PROTOCOL-v1.5"
-    supplied_locally: false
+    file: "references/MANUSCRIPT-II-MASTER-FRAME-AUDIT-PROTOCOL-v1.5(4).txt"
+    supplied_locally: true
   - id: PROJ-RULES
     file: references/MANUSCRIPT-II-PROJECT-RULES-CURRENT.md
-    supplied_locally: false
+    supplied_locally: true
   - id: AUDIT-RM
-    file: references/MANUSCRIPT_AUDIT_README-v3.2.md
-    supplied_locally: false
+    file: "references/MANUSCRIPT_AUDIT_README-v3.2(2).md"
+    supplied_locally: true
   - id: CUR-SRC
     file: references/MANUSCRIPT-II-CURRENT-SOURCES.md
-    supplied_locally: false
+    supplied_locally: true
   - id: TASK-FEED
     file: null
     supplied_locally: true
@@ -193,59 +194,66 @@ playback_speed:
   motion_blur_is_not_slow_motion: true              # HANDBOOK §23
 
 source_hierarchy:
-  # TASK-FEED / CUR-SRC: newest official or task-specific workflow material
-  # outranks all older documents; actual media is factual truth beneath it.
-  newest_official_workflow_outranks_older: true
-  actual_media_is_factual_truth: true
-  golden_examples_are_floor_not_ceiling: true       # HANDBOOK §1A
+  # PROJ-RULES "Mandatory source order", FRAME-AUDIT §0 priority list, CUR-SRC:
+  # newest official/task-specific workflow material outranks all older documents;
+  # actual media is factual truth beneath it.
+  newest_official_workflow_outranks_older: true      # PROJ-RULES; FRAME-AUDIT §0
+  actual_media_is_factual_truth: true                # FRAME-AUDIT §1; PROJ-RULES
+  golden_examples_are_floor_not_ceiling: true        # HANDBOOK §1A; PROJ-RULES; FRAME-AUDIT §0A
 
 action_audio_atomicity:
-  # TASK-FEED / PROJ-RULES: strict Action & Audio atomicity.
-  strict_atomicity: true
-  # One line = one independently defensible event/source, unless the events
-  # are truly inseparable.
-  one_line_one_defensible_event: true
+  # FRAME-AUDIT §30D.1 / §30E-B, PROJ-RULES "Action & Audio atomicity",
+  # AUDIT-RM "Action & Audio must be atomic": strict Action & Audio atomicity.
+  strict_atomicity: true                             # FRAME-AUDIT §30D.1; PROJ-RULES; AUDIT-RM
+  # One line = one independently defensible event/source, unless truly inseparable.
+  one_line_one_defensible_event: true                # FRAME-AUDIT §24/§30D.1; PROJ-RULES
   # No hidden second action smuggled behind "and", "then", "while", "as".
-  hidden_second_action_forbidden: true
-  hidden_action_connectives: ["and", "then", "while", "as"]
+  hidden_second_action_forbidden: true               # FRAME-AUDIT §30D.4/§30E-B.4; PROJ-RULES
+  hidden_action_connectives: ["and", "then", "while", "as"]  # FRAME-AUDIT §30D.4; PROJ-RULES
   # No multiple separate speech acts in one line.
-  multiple_speech_acts_per_line_forbidden: true
+  multiple_speech_acts_per_line_forbidden: true      # FRAME-AUDIT §30E-C; PROJ-RULES
   # No visual action combined with a separate popup/sound/object event.
-  mixed_event_sources_per_line_forbidden: true
+  mixed_event_sources_per_line_forbidden: true       # FRAME-AUDIT §30D.1/§30E-B.5; PROJ-RULES
 
 timing_integrity:
-  # TASK-FEED / FRAME-AUDIT: never nudge timestamps to satisfy a validator.
-  fake_timestamp_nudges_forbidden: true
-  # TASK-FEED: the final object state at shot end must be checked.
-  final_object_state_check_required: true
-  # TASK-FEED / AUDIT-RM: an incorrect annotation endpoint is a permanent
-  # failure class — the annotation interval endpoint must come from verified
-  # media evidence, never from the final frame's start PTS.
-  incorrect_annotation_endpoint_is_permanent_failure: true
-  annotation_endpoint_from_media_evidence: true
+  # FRAME-AUDIT §22 "Do not create fake offsets" / §30D.3 "NEVER FIX THIS WITH
+  # ARBITRARY 0.1-SECOND NUDGES", PROJ-RULES "no fake timestamp nudges".
+  fake_timestamp_nudges_forbidden: true              # FRAME-AUDIT §22/§30D.3; PROJ-RULES
+  # FRAME-AUDIT §30A.10: check the final physical state of every important object.
+  final_object_state_check_required: true            # FRAME-AUDIT §30A.10
+  # FRAME-AUDIT §3 requires the "correct annotation endpoint" as a distinct value
+  # (not container/final-frame duration) and §27 final QC checks a wrong endpoint;
+  # the "permanent failure class" framing is TASK-FEED engine policy.
+  incorrect_annotation_endpoint_is_permanent_failure: true  # FRAME-AUDIT §3/§27; TASK-FEED
+  annotation_endpoint_from_media_evidence: true      # FRAME-AUDIT §1/§3
 
 validation_scope:
-  # TASK-FEED: our machine validator does not replace the platform's
-  # semantic validation; it is a pre-check, not the submit gate.
-  machine_validator_replaces_platform_validation: false
+  # AUDIT-RM "a machine validator is not the full review", FRAME-AUDIT §30E-D
+  # "a local '0 errors' result is NOT enough", PROJ-RULES/CUR-SRC "run both static
+  # validation and the manual platform-semantic pass": the machine validator is a
+  # pre-check, not the submit gate.
+  machine_validator_replaces_platform_validation: false  # AUDIT-RM; FRAME-AUDIT §30E-D; PROJ-RULES; CUR-SRC
 
 audio_tooling:
-  # AUDIT-NOTES §5 / QC-REPORT / TASK-FEED: Descript is disabled by default and
+  # FRAME-AUDIT §0C "HARD DESCRIPT RULE" / §30B.10, PROJ-RULES "Descript rule",
+  # AUDIT-RM, CUR-SRC "Descript is disabled by default": Descript off by default;
   # a local ASR failure never authorizes a cloud or Descript fallback.
-  descript_enabled: false
-  local_asr_failure_authorizes_cloud_fallback: false
-  local_asr_failure_authorizes_descript_fallback: false
-  # QC-REPORT / TASK-FEED: ASR output is evidence only — wording leads, never
-  # factual truth on its own.
-  asr_is_evidence_only: true
-  # AUDIT-NOTES §5: the full audit continues after a local ASR failure (audio
-  # evidence degrades to waveform/spectrogram/energy; the run does not abort).
-  full_audit_continues_after_asr_failure: true
-  # AUDIT-NOTES §5: the approved local audio workflow.
-  approved_workflow: "ffmpeg -> faster-whisper -> whisperx-forced-alignment"
-  default_asr_model: "large-v3-turbo"
-  asr_task: "transcribe"          # never translate (TASK-FEED)
-  asr_isolation: "uv-bootstrap"   # isolated uv worker environments
+  descript_enabled: false                            # FRAME-AUDIT §0C/§30B.10; PROJ-RULES; AUDIT-RM; CUR-SRC
+  local_asr_failure_authorizes_cloud_fallback: false # FRAME-AUDIT §0C/§30B.12; PROJ-RULES; AUDIT-RM
+  local_asr_failure_authorizes_descript_fallback: false  # FRAME-AUDIT §0C/§30B.10; PROJ-RULES; AUDIT-RM
+  # FRAME-AUDIT §18 "transcription may be used only as a lead, never as truth" /
+  # §30B.4 "AUTOMATIC SPEECH IS NEVER FINAL TRUTH", AUDIT-RM "ASR is evidence only".
+  asr_is_evidence_only: true                         # FRAME-AUDIT §18/§30B.4; AUDIT-RM; PROJ-RULES
+  # FRAME-AUDIT §0C "The audit must continue" / §30B.12, AUDIT-RM "records the ASR
+  # failure and continues": the full audit continues after a local ASR failure.
+  full_audit_continues_after_asr_failure: true       # FRAME-AUDIT §0C/§30B.12; AUDIT-RM
+  # FRAME-AUDIT §30B, AUDIT-RM, PROJ-RULES: the approved local audio workflow.
+  approved_workflow: "ffmpeg -> faster-whisper -> whisperx-forced-alignment"  # FRAME-AUDIT §30B; AUDIT-RM; PROJ-RULES
+  default_asr_model: "large-v3-turbo"                # FRAME-AUDIT §30B.9; AUDIT-RM
+  # Transcription workflow: FRAME-AUDIT §30B/AUDIT-RM. The explicit never-translate
+  # engine flag (task="transcribe") is not stated in the docs → TASK-FEED policy.
+  asr_task: "transcribe"                             # FRAME-AUDIT §30B (transcription); TASK-FEED (never translate)
+  asr_isolation: "uv-bootstrap"                      # FRAME-AUDIT §30B.8; AUDIT-RM
 
 review:
   # HANDBOOK §1: the three valid reviewer outcomes.
@@ -289,3 +297,20 @@ known_conflicts:
     newer: "UI may display human-readable labels"
     winner: "exact option offered by the current tool"
     provenance: "HANDBOOK §36"
+  - id: CONFLICT-005
+    topic: default transition selection
+    older: >-
+      MASTER-REF §6 / HANDBOOK §14 call Hard cut "the overwhelming default —
+      when in doubt, it's a hard cut" (a statistical prior).
+    newer: >-
+      FRAME-AUDIT §12/§13 "classify only after verification / only create a
+      boundary when the sequence proves an edit", §30A.1 "map the transition to
+      how the new shot actually enters; never invent an unavailable label", and
+      MASTER-REF check 11 / HANDBOOK check 11 "do not auto-label all transitions
+      Hard cut" require evidence-first selection.
+    winner: >-
+      No automatic Hard-cut default. Hard cut stays a valid menu option but is
+      never emitted merely because a transition is unresolved; unresolved
+      transitions stay UNRESOLVED (rules v1.3.0 default_transition: null,
+      unresolved_transition_is_not_hard_cut). Confirms the Phase 3.1 §22 change.
+    provenance: "FRAME-AUDIT §12/§13/§30A.1; MASTER-REF check 11; HANDBOOK check 11/§14"
