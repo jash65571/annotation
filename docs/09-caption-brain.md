@@ -206,6 +206,29 @@ Phase 5 inputs and `caption_final_status`.
   events, speech/sound/on-screen-text event records, per-shot camera/scene
   descriptions; ActionAudioEvent text carries no duplicated timestamps.
 
+## Phase 5.2 pre-lock micro hardening
+
+- Speech **enrichment/split human facts pass the same evidence gate** as every
+  other human fact before any rendered semantic (speaker, tone, off-screen,
+  language, split behavior) can change; an evidence-free enrichment is rejected
+  with the reason recorded on the fact. Splits supersede a machine region only
+  when every fragment passes full validation.
+- A human fact may **resolve a task-feedback directive only after it passes
+  its validation/evidence gate** (`FactGraph.validated_human_fact_ids`); a
+  merely-loaded fact never clears HIGH feedback.
+- Timed human facts (action/speech/sound/text/camera/speed-change) are
+  validated **against Shot Truth**: start ≤ end, verified shot exists, exact
+  and frame ranges fully inside the shot, frames resolvable via frames.jsonl.
+- `ACTION_BOUNDARY` and `TEXT_TIMING` decisions validate against
+  `shot_frame_ranges`: a cross-shot boundary/text range is INVALID_VALUE.
+- Manifest existence is tracked separately from its hash map: a manifest with
+  an empty/missing artifacts list is STRICT mode — any consumed evidence file
+  must be listed or it is rejected as unmanifested.
+- Applied `SPEECH_VERIFICATION`/`SPEECH_CORRECTION` decisions leave traceable
+  provenance on the speech CaptionFact itself (`human_decision_ids` + a
+  HUMAN_VERIFICATION evidence ref) — never only a mutated enum. Legitimate
+  Phase 3 HUMAN_VERIFIED records are unchanged.
+
 ## Fast finalize, performance, failure routes
 
 `manuscript-reviewer finalize RUN_DIR [--review-decisions ...] [--human-facts

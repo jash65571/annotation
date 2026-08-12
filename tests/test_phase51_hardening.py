@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from manuscript_reviewer.caption_brain import CaptionBrainError, finalize_run
+from manuscript_reviewer.caption_brain import CaptionBrainError
 from manuscript_reviewer.models.caption_brain import CaptionReadiness
 from manuscript_reviewer.models.review_intelligence import SeedClaimType
 from manuscript_reviewer.models.shot_truth import TransitionStatus
@@ -21,6 +21,7 @@ from .phase5_helpers import (
     RULES_VERSION,
     VIDEO_ID,
     VIDEO_SHA,
+    finalize,
     make_audio_truth,
     make_shot,
     make_shot_truth,
@@ -72,7 +73,7 @@ def test_wrong_seed_video_id_fails_m2_media(tmp_path: Path) -> None:
     """Actual video ABC, seed says XYZ → the caption begins with ABC and
     M2-MEDIA-004 FAILS. The seed can never validate against itself."""
     run_dir = _one_shot_run(tmp_path, video_id="XYZ_totally_wrong")
-    output = finalize_run(run_dir)
+    output = finalize(run_dir)
     draft = (run_dir / "caption" / "draft_review_only.md").read_text(encoding="utf-8")
     assert draft.splitlines()[0] == VIDEO_ID  # canonical id from media truth
     assert "XYZ_totally_wrong" not in draft
@@ -82,7 +83,7 @@ def test_wrong_seed_video_id_fails_m2_media(tmp_path: Path) -> None:
 
 def test_no_seed_video_id_caption_still_knows_actual_id(tmp_path: Path) -> None:
     run_dir = _one_shot_run(tmp_path, video_id=None)
-    output = finalize_run(run_dir)
+    output = finalize(run_dir)
     draft = (run_dir / "caption" / "draft_review_only.md").read_text(encoding="utf-8")
     assert draft.splitlines()[0] == VIDEO_ID
     assert not any("M2-MEDIA-004" in b for b in output.result.blockers)
@@ -149,13 +150,13 @@ def test_tampered_evidence_never_finalizes(
     target = run_dir / rel_path
     write_json(target, payload)
     _manifest_with(run_dir, _hash_all_consumed(run_dir))
-    finalize_run(run_dir)  # untampered baseline passes
+    finalize(run_dir)  # untampered baseline passes
 
     tampered = dict(payload)
     tampered["injected"] = "changed after analysis"
     target.write_text(json.dumps(tampered), encoding="utf-8")
     with pytest.raises(CaptionBrainError, match="manifest hash"):
-        finalize_run(run_dir)
+        finalize(run_dir)
 
 
 def test_unmanifested_evidence_file_is_rejected(tmp_path: Path) -> None:
@@ -168,7 +169,7 @@ def test_unmanifested_evidence_file_is_rejected(tmp_path: Path) -> None:
         {"action_candidates": []},
     )
     with pytest.raises(CaptionBrainError, match="not listed in manifest"):
-        finalize_run(run_dir)
+        finalize(run_dir)
 
 
 # --- Phase 4 review carry-forward (§5.1-4) + identity decision (§5.1-9) ----
@@ -189,7 +190,7 @@ def _ambiguous_track_run(tmp_path: Path) -> Path:
 
 def test_phase4_high_identity_review_gates_phase5(tmp_path: Path) -> None:
     run_dir = _ambiguous_track_run(tmp_path)
-    output = finalize_run(run_dir)
+    output = finalize(run_dir)
     assert output.result.readiness == CaptionReadiness.REVIEW_REQUIRED
     assert any("Ambiguous identity: T-AMB" in b for b in output.result.blockers)
 
@@ -199,7 +200,7 @@ def test_identity_decision_resolves_ambiguity_and_clears_gate(tmp_path: Path) ->
     decisions = _decisions_file(
         tmp_path, [_decision("D-ID", "T-AMB", "IDENTITY_MAPPING", "C1")]
     )
-    output = finalize_run(run_dir, review_decisions_path=decisions)
+    output = finalize(run_dir, review_decisions_path=decisions)
     assert not any("Ambiguous identity" in b for b in output.result.blockers)
 
 
@@ -236,7 +237,7 @@ def _speaker_facts(tmp_path: Path) -> Path:
 
 def test_speech_verification_e2e(tmp_path: Path) -> None:
     run_dir = _speech_run(tmp_path)
-    blocked = finalize_run(run_dir, human_facts_path=_speaker_facts(tmp_path))
+    blocked = finalize(run_dir, human_facts_path=_speaker_facts(tmp_path))
     assert blocked.result.speech_blocked_count == 1
     draft = (run_dir / "caption" / "draft_review_only.md").read_text(encoding="utf-8")
     assert "hello world" not in draft
@@ -244,7 +245,7 @@ def test_speech_verification_e2e(tmp_path: Path) -> None:
     decisions = _decisions_file(
         tmp_path, [_decision("D-SV", "SR-1", "SPEECH_VERIFICATION", "verified")]
     )
-    verified = finalize_run(
+    verified = finalize(
         run_dir,
         review_decisions_path=decisions,
         human_facts_path=_speaker_facts(tmp_path),
@@ -266,7 +267,7 @@ def test_speech_correction_e2e_preserves_asr_original(tmp_path: Path) -> None:
         tmp_path,
         [_decision("D-SC", "SR-1", "SPEECH_CORRECTION", "hello there, world")],
     )
-    output = finalize_run(
+    output = finalize(
         run_dir,
         review_decisions_path=decisions,
         human_facts_path=_speaker_facts(tmp_path),
@@ -333,7 +334,7 @@ def test_material_unverified_ocr_blocks_and_gates_golden(tmp_path: Path) -> None
     """§5.1-15: 'no eligible OCR facts' is never PASS while a material overlay
     awaits verification."""
     run_dir = _ocr_run(tmp_path)
-    output = finalize_run(run_dir)
+    output = finalize(run_dir)
     assert output.result.readiness == CaptionReadiness.REVIEW_REQUIRED
     golden = json.loads(
         (run_dir / "caption" / "golden_gate.json").read_text(encoding="utf-8")
@@ -347,7 +348,7 @@ def test_ocr_verification_e2e(tmp_path: Path) -> None:
     decisions = _decisions_file(
         tmp_path, [_decision("D-TV", "TT-1", "TEXT_VERIFICATION", "verified")]
     )
-    output = finalize_run(run_dir, review_decisions_path=decisions)
+    output = finalize(run_dir, review_decisions_path=decisions)
     assert output.result.text_verified_count == 1
     draft = (run_dir / "caption" / "draft_review_only.md").read_text(encoding="utf-8")
     # Exact odd capitalization preserved; the original machine TextTrack became
@@ -361,7 +362,7 @@ def test_ocr_correction_e2e_never_overwrites_observations(tmp_path: Path) -> Non
         tmp_path,
         [_decision("D-TC", "TT-1", "TEXT_CORRECTION", "best Drone that I have ever owned")],
     )
-    output = finalize_run(run_dir, review_decisions_path=decisions)
+    output = finalize(run_dir, review_decisions_path=decisions)
     assert output.result.text_verified_count == 1
     draft = (run_dir / "caption" / "draft_review_only.md").read_text(encoding="utf-8")
     assert "best Drone that I have ever owned" in draft
@@ -386,14 +387,14 @@ def test_transition_classification_e2e(tmp_path: Path) -> None:
         ]
     )
     run_dir = write_run_dir(tmp_path, shots)
-    unresolved = finalize_run(run_dir)
+    unresolved = finalize(run_dir)
     assert any("transition" in b for b in unresolved.result.blockers)
 
     decisions = _decisions_file(
         tmp_path,
         [_decision("D-TR", "TRANSITION-2", "TRANSITION_CLASSIFICATION", "Hard cut")],
     )
-    resolved = finalize_run(run_dir, review_decisions_path=decisions)
+    resolved = finalize(run_dir, review_decisions_path=decisions)
     assert not any("transition unresolved" in b for b in resolved.result.blockers)
     draft = (run_dir / "caption" / "draft_review_only.md").read_text(encoding="utf-8")
     assert "Hard cut" in draft
@@ -411,7 +412,7 @@ def test_transition_decision_cannot_make_later_shot_opening(tmp_path: Path) -> N
         tmp_path,
         [_decision("D-TR", "TRANSITION-2", "TRANSITION_CLASSIFICATION", "Opening shot")],
     )
-    output = finalize_run(run_dir, review_decisions_path=decisions)
+    output = finalize(run_dir, review_decisions_path=decisions)
     # INVALID_VALUE: the transition stays unresolved; never applied.
     assert any("transition unresolved" in b for b in output.result.blockers)
 
@@ -446,7 +447,7 @@ def test_action_boundary_changes_rendered_timestamps(tmp_path: Path) -> None:
             _decision("D-AB", "AC-1", "ACTION_BOUNDARY", "12-24"),
         ],
     )
-    output = finalize_run(run_dir, review_decisions_path=decisions)
+    output = finalize(run_dir, review_decisions_path=decisions)
     assert output.result.action_verified_count == 1
     draft = (run_dir / "caption" / "draft_review_only.md").read_text(encoding="utf-8")
     # 12/24 = 0.5s, 24/24 = 1.0s — the rendered stamps visibly moved with the
@@ -474,7 +475,7 @@ def test_human_fact_without_evidence_cannot_reach_ready(tmp_path: Path) -> None:
             "bound_rules_version": RULES_VERSION,
         }]},
     )
-    output = finalize_run(run_dir, human_facts_path=facts)
+    output = finalize(run_dir, human_facts_path=facts)
     assert output.result.readiness == CaptionReadiness.REVIEW_REQUIRED
     assert any("no evidence reference" in b for b in output.result.blockers)
     draft = (run_dir / "caption" / "draft_review_only.md").read_text(encoding="utf-8")
@@ -497,7 +498,7 @@ def test_protected_trait_human_fact_guard(tmp_path: Path) -> None:
             "bound_rules_version": RULES_VERSION,
         }]},
     )
-    output = finalize_run(run_dir, human_facts_path=facts)
+    output = finalize(run_dir, human_facts_path=facts)
     draft = (run_dir / "caption" / "draft_review_only.md").read_text(encoding="utf-8")
     assert "25-year-old" not in draft
     assert any("protected" in b for b in output.result.blockers)
@@ -520,7 +521,7 @@ def test_blocked_material_action_gates_detail_coverage(tmp_path: Path) -> None:
             "bound_rules_version": RULES_VERSION,
         }]},
     )
-    finalize_run(run_dir, human_facts_path=facts)
+    finalize(run_dir, human_facts_path=facts)
     golden = json.loads(
         (run_dir / "caption" / "golden_gate.json").read_text(encoding="utf-8")
     )
@@ -567,7 +568,7 @@ def test_reviewed_caption_parity(tmp_path: Path) -> None:
             _decision("D-TV", "TT-1", "TEXT_VERIFICATION", "verified"),
         ],
     )
-    finalize_run(
+    finalize(
         run_dir,
         review_decisions_path=decisions,
         human_facts_path=_speaker_facts(tmp_path),

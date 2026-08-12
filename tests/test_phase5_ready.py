@@ -9,7 +9,6 @@ import re
 from fractions import Fraction
 from pathlib import Path
 
-from manuscript_reviewer.caption_brain import finalize_run
 from manuscript_reviewer.models.caption_brain import (
     CaptionReadiness,
     FinalReviewSignoff,
@@ -21,6 +20,7 @@ from manuscript_reviewer.validation.final_caption_validator import check_signoff
 from .phase5_helpers import (
     RULES_VERSION,
     VIDEO_SHA,
+    finalize,
     make_shot,
     make_shot_truth,
     supported_claim,
@@ -118,7 +118,7 @@ def _human_facts_file(tmp_path: Path) -> Path:
 
 def test_no_signoff_stops_at_ready_for_final_review(tmp_path: Path) -> None:
     run_dir = _ready_run_dir(tmp_path)
-    output = finalize_run(
+    output = finalize(
         run_dir,
         review_decisions_path=_decisions_file(tmp_path),
         human_facts_path=_human_facts_file(tmp_path),
@@ -133,7 +133,7 @@ def test_valid_signoff_reaches_ready_to_enter(tmp_path: Path) -> None:
     run_dir = _ready_run_dir(tmp_path)
     decisions = _decisions_file(tmp_path)
     facts = _human_facts_file(tmp_path)
-    first = finalize_run(run_dir, review_decisions_path=decisions, human_facts_path=facts)
+    first = finalize(run_dir, review_decisions_path=decisions, human_facts_path=facts)
     assert first.result.readiness == CaptionReadiness.READY_FOR_FINAL_REVIEW
     manifest = json.loads(
         (run_dir / "caption" / "caption_manifest.json").read_text(encoding="utf-8")
@@ -154,7 +154,7 @@ def test_valid_signoff_reaches_ready_to_enter(tmp_path: Path) -> None:
             "no_known_hallucinations_confirmed": True,
         },
     )
-    second = finalize_run(
+    second = finalize(
         run_dir,
         review_decisions_path=decisions,
         human_facts_path=facts,
@@ -206,7 +206,7 @@ def test_caption_change_invalidates_old_signoff(tmp_path: Path) -> None:
     run_dir = _ready_run_dir(tmp_path)
     decisions = _decisions_file(tmp_path)
     facts = _human_facts_file(tmp_path)
-    first = finalize_run(run_dir, review_decisions_path=decisions, human_facts_path=facts)
+    first = finalize(run_dir, review_decisions_path=decisions, human_facts_path=facts)
     manifest = json.loads(
         (run_dir / "caption" / "caption_manifest.json").read_text(encoding="utf-8")
     )
@@ -247,7 +247,7 @@ def test_caption_change_invalidates_old_signoff(tmp_path: Path) -> None:
             ]
         },
     )
-    changed = finalize_run(
+    changed = finalize(
         run_dir,
         review_decisions_path=decisions,
         human_facts_path=more_facts,
@@ -269,7 +269,7 @@ def test_unresolved_transition_blocks_ready(tmp_path: Path) -> None:
         ]
     )
     run_dir = write_run_dir(tmp_path, shots)
-    output = finalize_run(run_dir)
+    output = finalize(run_dir)
     assert output.result.readiness in (
         CaptionReadiness.REVIEW_REQUIRED,
         CaptionReadiness.BLOCKED,
@@ -301,7 +301,7 @@ def test_stale_human_fact_from_other_video_rejected(tmp_path: Path) -> None:
             ]
         },
     )
-    output = finalize_run(run_dir, human_facts_path=stale_facts)
+    output = finalize(run_dir, human_facts_path=stale_facts)
     record = json.loads(
         (run_dir / "caption" / "human_facts_applied.json").read_text(encoding="utf-8")
     )
@@ -353,7 +353,7 @@ def test_golden_gate_keeps_short_events_and_overlap(tmp_path: Path) -> None:
     # Widen the single shot so the 7.3-7.4 event is inside it.
     shots = make_shot_truth([make_shot(1, Fraction(0), Fraction(10), "Opening shot")])
     (run_dir / "shot_qc.json").write_text(shots.model_dump_json(), encoding="utf-8")
-    output = finalize_run(
+    output = finalize(
         run_dir,
         review_decisions_path=_decisions_file(tmp_path),
         human_facts_path=facts,

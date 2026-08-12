@@ -15,7 +15,9 @@ CANDIDATE != FINAL FACT, enforced in code:
 from __future__ import annotations
 
 import re
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from fractions import Fraction
 
 from ..models.audio import SourceVerificationStatus, SpeechRegion
 from ..models.caption_brain import (
@@ -406,12 +408,26 @@ _PROTECTED_TRAIT_PATTERN = re.compile(
 _SPEED_LABEL_VALUES = frozenset({"slow_motion", "regular", "accelerated"})
 
 
+@dataclass(frozen=True)
+class ShotBounds:
+    """Verified Shot Truth bounds one shot exposes to human-fact validation."""
+
+    start_exact: Fraction | None
+    end_exact: Fraction | None
+    start_frame: int
+    end_frame: int
+
+
 def assess_human_fact(
-    fact: HumanCaptionFact, shot_numbers: frozenset[int] = frozenset()
+    fact: HumanCaptionFact,
+    shot_bounds: Mapping[int, ShotBounds] | None = None,
+    frame_to_time: Callable[[int], Fraction | None] | None = None,
 ) -> Assessment:
     """A bound, non-stale HumanCaptionFact is a human basis — but never an
     unconditional factual bypass (§5.1-11/12/13). Every media-factual human
-    fact must carry traceable evidence and pass type-specific validation."""
+    fact must carry traceable evidence and pass type-specific validation,
+    including full Shot Truth containment for timed facts (§5.2-3)."""
+    bounds = shot_bounds or {}
     if not fact.evidence_refs and not fact.bound_evidence_ids:
         return (
             CaptionEligibility.REVIEW_REQUIRED,
@@ -419,25 +435,89 @@ def assess_human_fact(
             "human fact carries no evidence reference; every factual caption "
             "assertion must be traceable to media evidence",
         )
-    if (
-        fact.shot_number is not None
-        and shot_numbers
-        and fact.shot_number not in shot_numbers
-    ):
+    if fact.shot_number is not None and bounds and fact.shot_number not in bounds:
         return (
             CaptionEligibility.REVIEW_REQUIRED,
             None,
             f"human fact targets shot {fact.shot_number}, which is not a "
             "verified shot",
         )
-    if fact.fact_type in _TIMED_HUMAN_FACTS and (
-        fact.start_exact is None or fact.end_exact is None
-    ) and (fact.start_frame is None or fact.end_frame is None):
-        return (
-            CaptionEligibility.REVIEW_REQUIRED,
-            None,
-            "timed human fact lacks an exact verified time/frame range",
-        )
+    if fact.fact_type in _TIMED_HUMAN_FACTS:
+        if (fact.start_exact is None or fact.end_exact is None) and (
+            fact.start_frame is None or fact.end_frame is None
+        ):
+            return (
+                CaptionEligibility.REVIEW_REQUIRED,
+                None,
+                "timed human fact lacks an exact verified time/frame range",
+            )
+        if (
+            fact.start_exact is not None
+            and fact.end_exact is not None
+            and fact.start_exact > fact.end_exact
+        ):
+            return (
+                CaptionEligibility.REVIEW_REQUIRED,
+                None,
+                "timed human fact has start > end",
+            )
+        if (
+            fact.start_frame is not None
+            and fact.end_frame is not None
+            and fact.start_frame > fact.end_frame
+        ):
+            return (
+                CaptionEligibility.REVIEW_REQUIRED,
+                None,
+                "timed human fact has start frame > end frame",
+            )
+        if (
+            frame_to_time is not None
+            and fact.start_frame is not None
+            and fact.end_frame is not None
+            and (
+                frame_to_time(fact.start_frame) is None
+                or frame_to_time(fact.end_frame) is None
+            )
+        ):
+            return (
+                CaptionEligibility.REVIEW_REQUIRED,
+                None,
+                "timed human fact references frames that do not exist in the "
+                "frame ledger",
+            )
+        shot = bounds.get(fact.shot_number) if fact.shot_number is not None else None
+        if shot is not None:
+            if (
+                fact.start_exact is not None
+                and fact.end_exact is not None
+                and shot.start_exact is not None
+                and shot.end_exact is not None
+                and (
+                    fact.start_exact < shot.start_exact
+                    or fact.end_exact > shot.end_exact
+                )
+            ):
+                return (
+                    CaptionEligibility.REVIEW_REQUIRED,
+                    None,
+                    f"timed human fact range falls outside verified shot "
+                    f"{fact.shot_number}",
+                )
+            if (
+                fact.start_frame is not None
+                and fact.end_frame is not None
+                and (
+                    fact.start_frame < shot.start_frame
+                    or fact.end_frame > shot.end_frame + 1
+                )
+            ):
+                return (
+                    CaptionEligibility.REVIEW_REQUIRED,
+                    None,
+                    f"timed human fact frame range falls outside verified shot "
+                    f"{fact.shot_number}",
+                )
     if fact.fact_type in _TEXT_HUMAN_FACTS and not (fact.text_value or "").strip():
         return (
             CaptionEligibility.REVIEW_REQUIRED,
@@ -477,6 +557,27 @@ def assess_human_fact(
         CaptionEligibility.ELIGIBLE,
         EligibilityBasis.HUMAN_ADDED_FACT,
         "human-added bound caption fact with traceable evidence",
+    )
+
+
+def assess_speech_enrichment(fact: HumanCaptionFact) -> Assessment:
+    """An enrichment/split HumanCaptionFact (semantic ``region_id`` /
+    ``splits_region_id``) is NOT a standalone fact, but it still passes the
+    same evidence gate before it may alter any rendered semantic — speaker,
+    tone, off-screen state, language level/name, split behavior (§5.2-1).
+    Timing comes from the machine region, so the timed-range rule does not
+    apply; the evidence rule always does."""
+    if not fact.evidence_refs and not fact.bound_evidence_ids:
+        return (
+            CaptionEligibility.REVIEW_REQUIRED,
+            None,
+            "speech enrichment carries no evidence reference; an evidence-free "
+            "enrichment never alters final caption text",
+        )
+    return (
+        CaptionEligibility.ELIGIBLE,
+        EligibilityBasis.HUMAN_ADDED_FACT,
+        "evidence-backed speech enrichment",
     )
 
 

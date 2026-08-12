@@ -91,6 +91,9 @@ class DecisionTargets:
     #: Required so an ACTION_BOUNDARY decision recomputes exact timing — the
     #: frame ledger owns timing; frame indices alone are never accepted.
     frame_to_time: Callable[[int], Fraction | None] | None = None
+    #: Context: verified shot index -> inclusive (start_frame, end_frame).
+    #: Boundary/timing decisions must stay inside their shot (§5.2-4).
+    shot_frame_ranges: dict[int, tuple[int, int]] = field(default_factory=dict)
 
 
 def load_decisions(path: Path) -> list[HumanReviewDecision]:
@@ -202,6 +205,13 @@ def _apply_action_boundary(
     end_exact = targets.frame_to_time(hi)
     if start_exact is None or end_exact is None:
         raise ValueError(f"frames {lo}-{hi} do not exist in the frame ledger")
+    if target.shot_number is not None:
+        shot_range = targets.shot_frame_ranges.get(target.shot_number)
+        if shot_range is not None and (lo < shot_range[0] or hi > shot_range[1] + 1):
+            raise ValueError(
+                f"frames {lo}-{hi} fall outside shot {target.shot_number} "
+                f"(frames {shot_range[0]}-{shot_range[1]})"
+            )
     target.start_frame, target.end_frame = lo, hi
     target.start_exact, target.end_exact = start_exact, end_exact
     target.review_required = False
@@ -281,6 +291,24 @@ def _apply_text_timing(
         targets.frame_to_time(lo) is None or targets.frame_to_time(hi) is None
     ):
         raise ValueError(f"frames {lo}-{hi} do not exist in the frame ledger")
+    if targets.shot_frame_ranges:
+        # The corrected range must lie entirely inside ONE verified shot — a
+        # text overlay never spans an unrelated shot (§5.2-4).
+        owning = next(
+            (
+                (idx, rng)
+                for idx, rng in targets.shot_frame_ranges.items()
+                if rng[0] <= lo <= rng[1]
+            ),
+            None,
+        )
+        if owning is None:
+            raise ValueError(f"frame {lo} is not inside any verified shot")
+        if hi > owning[1][1] + 1:
+            raise ValueError(
+                f"text range {lo}-{hi} spans beyond shot {owning[0]} "
+                f"(frames {owning[1][0]}-{owning[1][1]})"
+            )
     target.first_stable_frame = lo
     target.last_stable_frame = hi
     target.evidence_refs.append(_human_ref(decision))

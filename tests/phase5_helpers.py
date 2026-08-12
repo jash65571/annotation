@@ -9,6 +9,7 @@ from pathlib import Path
 
 from manuscript_reviewer.caption.eligibility import EligibilityContext
 from manuscript_reviewer.caption.facts import FactBuildInputs
+from manuscript_reviewer.caption_brain import CaptionBrainOutput, finalize_run
 from manuscript_reviewer.media.timestamps import format_manuscript_display
 from manuscript_reviewer.models.audio import (
     AlignmentStatus,
@@ -209,19 +210,10 @@ def write_run_dir(
     (no media analysis, §94/§123)."""
     run_dir = tmp_path / "run"
     run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "manifest.json").write_text(
-        json.dumps(
-            {
-                "source_video_sha256": VIDEO_SHA,
-                "source_video_path": f"C:/videos/{VIDEO_ID}.mp4",
-                "rules_version": RULES_VERSION,
-                # Empty artifact list = the loader treats files as just-written
-                # (in-process trust mode); tamper tests list explicit hashes.
-                "artifacts": [],
-            }
-        ),
-        encoding="utf-8",
-    )
+    # No manifest.json: a manifest's mere existence forces STRICT hash mode
+    # (§5.2-5), so synthetic dirs run in the in-process trust mode and pass
+    # video sha / canonical id explicitly via finalize(). Tamper regressions
+    # write explicit full-hash manifests instead.
     (run_dir / "shot_qc.json").write_text(
         shot_truth.model_dump_json(), encoding="utf-8"
     )
@@ -254,3 +246,21 @@ def write_json(path: Path, payload: object) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     return path
+
+
+def finalize(
+    run_dir: Path,
+    review_decisions_path: Path | None = None,
+    human_facts_path: Path | None = None,
+    final_review_path: Path | None = None,
+) -> CaptionBrainOutput:
+    """finalize_run with the synthetic run's provenance supplied explicitly
+    (manifest-less trust mode)."""
+    return finalize_run(
+        run_dir,
+        review_decisions_path=review_decisions_path,
+        human_facts_path=human_facts_path,
+        final_review_path=final_review_path,
+        video_sha256=VIDEO_SHA,
+        canonical_video_id=VIDEO_ID,
+    )

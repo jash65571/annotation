@@ -197,6 +197,10 @@ def load_run_evidence(run_dir: Path) -> tuple[RunEvidence, dict[str, str]]:
     consumed_hashes: dict[str, str] = {}
     manifest_path = run_dir / "manifest.json"
     manifest_hashes: dict[str, str] = {}
+    #: Existence is tracked separately from the hash map (§5.2-5): a manifest
+    #: with an empty/missing artifacts list still means STRICT mode — every
+    #: consumed evidence file must then be listed, or it is rejected.
+    manifest_exists = manifest_path.exists()
     if manifest_path.exists():
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -217,7 +221,7 @@ def load_run_evidence(run_dir: Path) -> tuple[RunEvidence, dict[str, str]]:
         rel = path.relative_to(run_dir).as_posix()
         actual = sha256_file(path)
         consumed_hashes[rel] = actual
-        if not manifest_hashes:
+        if not manifest_exists:
             return path  # in-process call before the run manifest exists
         recorded = manifest_hashes.get(rel)
         if recorded is None:
@@ -420,6 +424,14 @@ def finalize_run(
                     else {}
                 ),
                 frame_to_time=evidence.frame_to_time,
+                shot_frame_ranges=(
+                    {
+                        s.shot_index: (s.start_frame_index, s.end_frame_index)
+                        for s in evidence.shot_truth.shots
+                    }
+                    if evidence.shot_truth is not None
+                    else {}
+                ),
             )
             applications = apply_decisions(
                 decisions, targets, evidence.video_sha256, rules_version
@@ -486,7 +498,9 @@ def finalize_run(
     timings["visual_review_carryforward"] = round(time.perf_counter() - start, 4)
 
     # --- feedback resolution (§89) ---
-    resolved_directives = _resolved_directives(evidence.feedback, ctx, accepted_facts)
+    resolved_directives = _resolved_directives(
+        evidence.feedback, ctx, accepted_facts, graph.validated_human_fact_ids
+    )
     unresolved_high = [
         d.directive_id
         for d in evidence.feedback
@@ -700,15 +714,19 @@ def _resolved_directives(
     feedback: list[FeedbackDirective],
     ctx: EligibilityContext,
     human_facts: list[HumanCaptionFact],
+    validated_human_fact_ids: set[str],
 ) -> frozenset[str]:
     """A directive is RESOLVED/NOT_APPLICABLE only via explicit human input:
-    an applied decision on the directive subject, or a human fact naming it."""
+    an applied decision on the directive subject, or a human fact naming it.
+    A human fact may resolve a directive ONLY after it passed the human-fact
+    validation/evidence gate (§5.2-2) — a merely-loaded fact, including a
+    region-enrichment record, never resolves HIGH feedback on its own."""
     resolved: set[str] = set()
     for (_, subject_id), _decision in ctx.applied_decisions.items():
         resolved.add(subject_id)
     for hf in human_facts:
         target = hf.semantic_value.get("resolves_directive")
-        if target:
+        if target and hf.fact_id in validated_human_fact_ids:
             resolved.add(target)
     return frozenset(d.directive_id for d in feedback if d.directive_id in resolved)
 

@@ -32,6 +32,7 @@ from ..models.caption_brain import (
     HumanCaptionFact,
     LanguageRenderLevel,
 )
+from ..models.evidence import EvidenceReference, EvidenceType
 from ..models.review_intelligence import (
     ActionCandidate,
     CameraMotionCandidate,
@@ -53,6 +54,10 @@ _SPEED_LABELS = {"slow_motion", "regular", "accelerated"}
 @dataclass
 class FactGraph:
     facts: list[CaptionFact] = field(default_factory=list)
+    #: Human fact ids that passed their validation/evidence gate (standalone
+    #: facts that became ELIGIBLE, plus evidence-backed enrichments/splits).
+    #: Only these may resolve task-feedback directives (§5.2-2).
+    validated_human_fact_ids: set[str] = field(default_factory=set)
 
     def by_id(self) -> dict[str, CaptionFact]:
         return {f.fact_id: f for f in self.facts}
@@ -220,28 +225,62 @@ def _build_transition_fact(
 
 
 def _speech_enrichment(
-    inputs: FactBuildInputs, region_id: str
-) -> HumanCaptionFact | None:
+    graph: FactGraph, inputs: FactBuildInputs, region_id: str
+) -> tuple[HumanCaptionFact | None, str | None]:
     """A human SPEECH fact that ENRICHES a machine region (speaker/tone/level)
-    references it via ``semantic_value["region_id"]``."""
+    references it via ``semantic_value["region_id"]``. An enrichment passes the
+    SAME evidence gate as every other human fact (§5.2-1); an evidence-free
+    enrichment never alters final caption text. Returns (enrichment-or-None,
+    rejection-reason-or-None)."""
     for hf in inputs.human_facts:
         if (
             hf.fact_type == CaptionFactType.SPEECH
             and hf.semantic_value.get("region_id") == region_id
         ):
-            return hf
-    return None
+            status, _, reason = elig.assess_speech_enrichment(hf)
+            if status != CaptionEligibility.ELIGIBLE:
+                return None, f"enrichment {hf.fact_id} rejected: {reason}"
+            graph.validated_human_fact_ids.add(hf.fact_id)
+            return hf, None
+    return None, None
 
 
-def _region_split_facts(inputs: FactBuildInputs, region_id: str) -> list[HumanCaptionFact]:
-    """Human SPEECH facts that SPLIT a machine region at a shot boundary
-    (§34) reference it via ``semantic_value["splits_region_id"]``."""
-    return [
+def _region_split_facts(
+    inputs: FactBuildInputs, region_id: str
+) -> list[HumanCaptionFact]:
+    """Human SPEECH facts that SPLIT a machine region at a shot boundary (§34)
+    reference it via ``semantic_value["splits_region_id"]``. Splits supersede
+    the machine region ONLY when every split fragment passes full human-fact
+    validation (evidence + Shot Truth containment, §5.2-1/3) — otherwise the
+    region stays and remains review-required."""
+    splits = [
         hf
         for hf in inputs.human_facts
         if hf.fact_type == CaptionFactType.SPEECH
         and hf.semantic_value.get("splits_region_id") == region_id
     ]
+    if not splits:
+        return []
+    bounds = _shot_bounds(inputs)
+    for hf in splits:
+        status, _, _ = elig.assess_human_fact(hf, bounds, inputs.frame_to_time)
+        if status != CaptionEligibility.ELIGIBLE:
+            return []
+    return splits
+
+
+def _shot_bounds(inputs: FactBuildInputs) -> dict[int, elig.ShotBounds]:
+    if inputs.shot_truth is None:
+        return {}
+    return {
+        s.shot_index: elig.ShotBounds(
+            start_exact=s.start_exact,
+            end_exact=s.end_exact,
+            start_frame=s.start_frame_index,
+            end_frame=s.end_frame_index,
+        )
+        for s in inputs.shot_truth.shots
+    }
 
 
 def _shot_for_frame(shot_truth: ShotTruthResult | None, frame: int | None) -> int | None:
@@ -280,7 +319,9 @@ def _build_speech_facts(graph: FactGraph, counter: _Counter, inputs: FactBuildIn
         return
     for region in inputs.audio_truth.speech_regions:
         status, basis, reason = elig.assess_speech(region)
-        enrichment = _speech_enrichment(inputs, region.region_id)
+        enrichment, enrichment_rejection = _speech_enrichment(
+            graph, inputs, region.region_id
+        )
         splits = _region_split_facts(inputs, region.region_id)
         if splits:
             # The human-supplied per-shot fragments are built later from
@@ -316,6 +357,22 @@ def _build_speech_facts(graph: FactGraph, counter: _Counter, inputs: FactBuildIn
             and region.corrected_text is not None
         ):
             semantic["text_source"] = "human_corrected"
+        # §5.2-6: an APPLIED speech decision leaves traceable provenance on the
+        # fact itself — never only a mutated SourceVerificationStatus enum.
+        decision_ids: list[str] = []
+        decision_refs: list[EvidenceReference] = []
+        for dtype in (DecisionType.SPEECH_VERIFICATION, DecisionType.SPEECH_CORRECTION):
+            applied = inputs.ctx.applied(dtype, region.region_id)
+            if applied is not None:
+                decision_ids.append(applied.decision_id)
+                decision_refs.append(
+                    EvidenceReference(
+                        evidence_id=f"EV-HUMAN-{applied.decision_id}",
+                        evidence_type=EvidenceType.HUMAN_VERIFICATION,
+                        source=applied.decided_by,
+                        notes=f"{dtype.value} (decided_at={applied.decided_at_utc})",
+                    )
+                )
         graph.facts.append(
             CaptionFact(
                 fact_id=counter.next(),
@@ -331,9 +388,12 @@ def _build_speech_facts(graph: FactGraph, counter: _Counter, inputs: FactBuildIn
                 eligibility=status,
                 eligibility_basis=basis,
                 eligibility_reason=reason,
+                evidence_refs=decision_refs,
                 source_kind=FactSourceKind.AUDIO_TRUTH,
                 source_id=region.region_id,
+                human_decision_ids=decision_ids,
                 human_fact_id=enrichment.fact_id if enrichment is not None else None,
+                notes=[enrichment_rejection] if enrichment_rejection else [],
                 required_for_caption=status == CaptionEligibility.ELIGIBLE,
                 materiality=FactMateriality.REQUIRED,
                 # Audible speech is MATERIAL media content: an unverified or
@@ -721,13 +781,13 @@ def _build_seed_claim_facts(
 
 
 def _build_human_facts(graph: FactGraph, counter: _Counter, inputs: FactBuildInputs) -> None:
-    shot_numbers = frozenset(
-        s.shot_index for s in (inputs.shot_truth.shots if inputs.shot_truth else [])
-    )
+    bounds = _shot_bounds(inputs)
     for hf in inputs.human_facts:
         if hf.semantic_value.get("region_id"):
             continue  # enrichment records merge into their machine region fact
-        status, basis, reason = elig.assess_human_fact(hf, shot_numbers)
+        status, basis, reason = elig.assess_human_fact(hf, bounds, inputs.frame_to_time)
+        if status == CaptionEligibility.ELIGIBLE:
+            graph.validated_human_fact_ids.add(hf.fact_id)
         semantic = dict(hf.semantic_value)
         semantic.pop("splits_region_id", None)
         if hf.fact_type == CaptionFactType.SPEECH:
