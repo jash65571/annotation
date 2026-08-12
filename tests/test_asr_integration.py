@@ -12,8 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from manuscript_reviewer.audio.asr.runtime import FW_ENV, WX_ENV
-from manuscript_reviewer.audio.asr.runtime import ASRConfig
+from manuscript_reviewer.audio.asr.runtime import FW_ENV, WX_ENV, ASRConfig
 from manuscript_reviewer.models.audio import AlignmentStatus, ASRStatus
 from tests.conftest import requires_ffmpeg
 from tests.test_audio_truth import _analyze
