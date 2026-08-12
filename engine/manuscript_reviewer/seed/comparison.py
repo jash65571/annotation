@@ -15,8 +15,10 @@ always ``UNRESOLVED`` (never visually inferable).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import Decimal
 from fractions import Fraction
 
+from ..media.timestamps import to_manuscript_display
 from ..models.caption import SeedClaim
 from ..models.evidence import EvidenceReference, EvidenceType
 from ..models.media import MediaInfo
@@ -31,18 +33,24 @@ from ..models.review_intelligence import (
     SeedDocument,
 )
 from ..models.shot_truth import ShotProposal, ShotTruthResult
-
-_TENTH = Fraction(1, 10)
-
-
-def _round_tenth(value: Fraction) -> Fraction:
-    return Fraction(round(value * 10), 10)
+from ..rules.loader import load_rules
 
 
-def _same_tenth(a: Fraction | None, b: Fraction | None) -> bool | None:
-    if a is None or b is None:
+def _display(value: Fraction | None) -> Decimal | None:
+    """Manuscript 0.1 s display projection (ROUND_HALF_UP) — the ONE rounding."""
+    return to_manuscript_display(value) if value is not None else None
+
+
+def _same_display(a: Fraction | None, b: Fraction | None) -> bool | None:
+    da, db = _display(a), _display(b)
+    if da is None or db is None:
         return None
-    return _round_tenth(a) == _round_tenth(b)
+    return da == db
+
+
+def _disp(value: Fraction | None) -> str:
+    d = _display(value)
+    return f"{d}s" if d is not None else "?"
 
 
 @dataclass
@@ -56,12 +64,35 @@ class ComparisonResult:
     foundational_conflicts: list[str] = field(default_factory=list)
 
 
-def _struct_ref(ref_id: str, source: str, notes: str) -> EvidenceReference:
+def _struct_ref(
+    ref_id: str,
+    source: str,
+    notes: str,
+    start_frame: int | None = None,
+    end_frame: int | None = None,
+    artifact_paths: list[str] | None = None,
+    evidence_type: EvidenceType = EvidenceType.STRUCTURAL_CHECK,
+) -> EvidenceReference:
     return EvidenceReference(
         evidence_id=ref_id,
-        evidence_type=EvidenceType.STRUCTURAL_CHECK,
+        evidence_type=evidence_type,
+        start_frame=start_frame,
+        end_frame=end_frame,
+        artifact_paths=artifact_paths or [],
         source=source,
         notes=notes,
+    )
+
+
+def is_graded(ref: EvidenceReference) -> bool:
+    """A reference is *graded* (can back a SUPPORTED claim) only when it anchors
+    to concrete media — exact frames, an artifact, PTS, or human verification.
+    Prose-only references never grade a claim as SUPPORTED (validator AB)."""
+    return (
+        ref.start_frame is not None
+        or ref.start_pts is not None
+        or bool(ref.artifact_paths)
+        or ref.is_factual
     )
 
 
@@ -130,7 +161,10 @@ def _verify_shot_count(
         return status
 
     ref = _struct_ref(
-        "EV-SHOTCOUNT", "shot_truth", f"verified proposed_shot_count={verified_count}"
+        "EV-SHOTCOUNT",
+        "shot_truth",
+        f"verified proposed_shot_count={verified_count}",
+        artifact_paths=["shot_qc.json", "shots_proposed.json"],
     )
     if seed_count == verified_count:
         status = FoundationStatus.SUPPORTED
@@ -245,12 +279,20 @@ def _verify_shot_boundaries(
         if seed_range is None:
             claim.evidence_status = EvidenceStatus.UNRESOLVED
             continue
-        start_ok = _same_tenth(seed_range.start_seconds, proposal.start_exact)
-        end_ok = _same_tenth(seed_range.end_seconds, proposal.end_exact)
+        start_ok = _same_display(seed_range.start_seconds, proposal.start_exact)
+        end_ok = _same_display(seed_range.end_seconds, proposal.end_exact)
+        artifacts = ["shots_proposed.json"]
+        if proposal.supporting_boundary_id is not None:
+            artifacts.append(f"boundary:{proposal.supporting_boundary_id}")
         ref = _struct_ref(
             f"EV-BOUND-{shot}",
             "shot_truth",
-            f"verified [{_fmt(proposal.start_exact)}, {_fmt(proposal.end_exact)}]",
+            f"verified shot {shot} interval "
+            f"[{_disp(proposal.start_exact)}, {_disp(proposal.end_exact)}] "
+            f"frames {proposal.start_frame_index}-{proposal.end_frame_index}",
+            start_frame=proposal.start_frame_index,
+            end_frame=proposal.end_frame_index,
+            artifact_paths=artifacts,
         )
         if start_ok and end_ok:
             claim.evidence_status = EvidenceStatus.SUPPORTED
@@ -270,8 +312,8 @@ def _verify_shot_boundaries(
                 check_id=f"FC-BOUND-{shot}",
                 subject=f"shot_{shot}_boundary",
                 status=status,
-                seed_value=f"[{_fmt(seed_range.start_seconds)}, {_fmt(seed_range.end_seconds)}]",
-                verified_value=f"[{_fmt(proposal.start_exact)}, {_fmt(proposal.end_exact)}]",
+                seed_value=f"[{_disp(seed_range.start_seconds)}, {_disp(seed_range.end_seconds)}]",
+                verified_value=f"[{_disp(proposal.start_exact)}, {_disp(proposal.end_exact)}]",
                 evidence_refs=[ref],
             )
         )
@@ -289,11 +331,15 @@ def _verify_transitions(
         seed_text = (claim.text or "").strip()
         seed_type = _extract_transition(seed_text)
         if shot == 1:
-            # Shot 1 must be "Opening shot" (rule shots.shot_one_transition).
+            # Shot 1 must be the rule-defined opening transition.
+            opening = shot_one_transition()
             ref1 = _struct_ref(
-                "EV-TRANS-1", "rules", "shot 1 transition is 'Opening shot' by rule"
+                "EV-TRANS-1",
+                "rules",
+                f"shot 1 transition is '{opening}' by rule shots.shot_one_transition",
+                artifact_paths=["shots_proposed.json"],
             )
-            if seed_type is not None and seed_type.lower() == "opening shot":
+            if seed_type is not None and seed_type.lower() == opening.lower():
                 claim.evidence_status = EvidenceStatus.SUPPORTED
                 claim.evidence.append(ref1)
             elif seed_type is not None:
@@ -305,9 +351,9 @@ def _verify_transitions(
                         subject="shot_1_transition",
                         status=FoundationStatus.CONTRADICTED,
                         seed_value=seed_type,
-                        verified_value="Opening shot",
+                        verified_value=opening,
                         evidence_refs=[ref1],
-                        detail="Shot 1 transition must be 'Opening shot'.",
+                        detail=f"Shot 1 transition must be '{opening}'.",
                     )
                 )
             else:
@@ -319,7 +365,16 @@ def _verify_transitions(
             # Unresolved transition is NOT Hard cut; cannot confirm.
             claim.evidence_status = EvidenceStatus.UNRESOLVED
             continue
-        ref = _struct_ref(f"EV-TRANS-{shot}", "shot_truth", f"verified={verified}")
+        boundary_artifacts = ["shots_proposed.json"]
+        if proposal is not None and proposal.supporting_boundary_id is not None:
+            boundary_artifacts.append(f"boundary:{proposal.supporting_boundary_id}")
+        ref = _struct_ref(
+            f"EV-TRANS-{shot}",
+            "shot_truth",
+            f"verified transition into shot {shot} = {verified}",
+            start_frame=proposal.start_frame_index if proposal is not None else None,
+            artifact_paths=boundary_artifacts,
+        )
         if seed_type is not None and seed_type.lower() == verified.lower():
             claim.evidence_status = EvidenceStatus.SUPPORTED
             claim.evidence.append(ref)
@@ -344,17 +399,29 @@ def _verify_timestamp_containment(
         proposal = shots_by_index.get(shot)
         if proposal is None or proposal.start_exact is None or proposal.end_exact is None:
             continue
-        start = seed_range.start_seconds
-        end = seed_range.end_seconds
-        outside = start < proposal.start_exact - _TENTH or end > proposal.end_exact + _TENTH
+        # Compare on the Manuscript 0.1 s display grid (the projection the seed
+        # times were themselves written at); no extra tolerance is added.
+        # Boundaries are inclusive: seed_end == shot_end is inside; +0.1 is out.
+        seed_start_d = _display(seed_range.start_seconds)
+        seed_end_d = _display(seed_range.end_seconds)
+        shot_start_d = _display(proposal.start_exact)
+        shot_end_d = _display(proposal.end_exact)
+        if None in (seed_start_d, seed_end_d, shot_start_d, shot_end_d):
+            continue
+        assert seed_start_d is not None and seed_end_d is not None
+        assert shot_start_d is not None and shot_end_d is not None
+        outside = seed_start_d < shot_start_d or seed_end_d > shot_end_d
         if outside:
             claim.evidence_status = EvidenceStatus.CONTRADICTED
             claim.evidence.append(
                 _struct_ref(
                     f"EV-CONTAIN-{claim.claim_id}",
                     "shot_truth",
-                    f"seed time [{_fmt(start)},{_fmt(end)}] outside verified shot {shot} "
-                    f"[{_fmt(proposal.start_exact)},{_fmt(proposal.end_exact)}]",
+                    f"seed time [{seed_start_d}s,{seed_end_d}s] outside verified shot {shot} "
+                    f"[{shot_start_d}s,{shot_end_d}s]",
+                    start_frame=proposal.start_frame_index,
+                    end_frame=proposal.end_frame_index,
+                    artifact_paths=["shots_proposed.json"],
                 )
             )
 
@@ -469,14 +536,12 @@ def _overall_foundation(checks: list[FoundationCheck]) -> FoundationStatus:
 
 def _row(claim: SeedClaim) -> ClaimEvidenceRow:
     status = claim.evidence_status or EvidenceStatus.UNRESOLVED
-    supporting = [e for e in claim.evidence if e.notes and "outside" not in (e.notes or "")]
-    contradicting = [e for e in claim.evidence if e.notes and "outside" in (e.notes or "")]
+    supporting: list[EvidenceReference] = []
+    contradicting: list[EvidenceReference] = []
     if status == EvidenceStatus.CONTRADICTED:
         contradicting = list(claim.evidence)
-        supporting = []
     elif status in (EvidenceStatus.SUPPORTED, EvidenceStatus.PARTIALLY_SUPPORTED):
         supporting = list(claim.evidence)
-        contradicting = []
     seed_range = claim.seed_time_range
     reasons: list[str] = []
     if status == EvidenceStatus.UNRESOLVED:
@@ -500,33 +565,23 @@ def _row(claim: SeedClaim) -> ClaimEvidenceRow:
 
 # --- helpers --------------------------------------------------------------
 
-_ALLOWED_TRANSITIONS = [
-    "Opening shot",
-    "Hard cut",
-    "Cross dissolve",
-    "Fade in",
-    "Fade out",
-    "Match cut",
-    "Jump cut",
-    "Smash cut",
-    "Wipe",
-    "Iris",
-    "L-cut",
-    "J-cut",
-    "Whip pan",
-    "Swish pan",
-]
+
+def allowed_transitions() -> list[str]:
+    """The single controlling transition vocabulary — from the rule file, never
+    a hardcoded copy (rules ``shots.allowed_transition_types``)."""
+    values = load_rules().get("shots.allowed_transition_types", [])
+    return [str(v) for v in values] if isinstance(values, list) else []
+
+
+def shot_one_transition() -> str:
+    """The rule-defined shot-1 transition (rules ``shots.shot_one_transition``)."""
+    return str(load_rules().get("shots.shot_one_transition", "Opening shot"))
 
 
 def _extract_transition(text: str) -> str | None:
     lowered = text.lower()
-    for name in _ALLOWED_TRANSITIONS:
+    # Longest names first so "Whip pan" is not shadowed by a shorter substring.
+    for name in sorted(allowed_transitions(), key=len, reverse=True):
         if name.lower() in lowered:
             return name
     return None
-
-
-def _fmt(value: Fraction | None) -> str:
-    if value is None:
-        return "?"
-    return f"{float(value):.3f}"

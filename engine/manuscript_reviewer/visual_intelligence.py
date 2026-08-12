@@ -114,7 +114,7 @@ def run_visual_intelligence(
     # does not downgrade the run. Emit a real (not fake) visual QC reflecting the
     # observations that did run, so the manifest still records the stage.
     if seed_path is None:
-        result.overall_status = ri_validator.compute_overall_status([])
+        result.overall_status = ri_validator.compute_overall_status([], issues)
         review_dir = run_dir / "review"
         artifacts.append(review_writer.write_visual_qc(review_dir, result))
         _timed(timings, "visual_intelligence_total", stage_start)
@@ -200,7 +200,8 @@ def run_visual_intelligence(
     # --- validation ---
     issues.extend(ri_validator.validate_matrix(comparison.rows))
     issues.extend(ri_validator.validate_proposals(proposals, comparison.rows))
-    overall = ri_validator.compute_overall_status(queue_items)
+    # Compute status AFTER all P4 validators so a P4 FAIL forces FAILED (G).
+    overall = ri_validator.compute_overall_status(queue_items, issues)
     issues.extend(ri_validator.validate_qc_gate(overall, queue_items))
 
     # --- populate result summary ---

@@ -6,6 +6,7 @@ new subsystems can never silently regress a safety property.
 
 from __future__ import annotations
 
+from ..models.evidence import EvidenceReference
 from ..models.review_intelligence import (
     ClaimEvidenceRow,
     EvidenceStatus,
@@ -34,6 +35,18 @@ _STRUCTURAL_REASONS = frozenset(
 )
 
 
+def _is_graded(ref: EvidenceReference) -> bool:
+    """A reference can back a SUPPORTED claim only when it anchors to concrete
+    media (exact frames, PTS, an artifact) or is human verification — never a
+    prose-only note (AB)."""
+    return (
+        ref.start_frame is not None
+        or ref.start_pts is not None
+        or bool(ref.artifact_paths)
+        or ref.is_factual
+    )
+
+
 def validate_matrix(rows: list[ClaimEvidenceRow]) -> list[ValidatorIssue]:
     issues: list[ValidatorIssue] = []
     for row in rows:
@@ -48,6 +61,19 @@ def validate_matrix(rows: list[ClaimEvidenceRow]) -> list[ValidatorIssue]:
                     severity=Severity.FAIL,
                     location=f"claim {row.claim_id}",
                     message="Claim marked SUPPORTED with no supporting evidence.",
+                )
+            )
+        # AB: a fully SUPPORTED claim needs at least one *graded* reference; a
+        # prose-only structural note is not enough to call a claim factual.
+        elif row.evidence_status == EvidenceStatus.SUPPORTED and not any(
+            _is_graded(e) for e in row.supporting_evidence_refs
+        ):
+            issues.append(
+                ValidatorIssue(
+                    rule_id="P4-CLAIM-004",
+                    severity=Severity.FAIL,
+                    location=f"claim {row.claim_id}",
+                    message="SUPPORTED claim has only prose evidence (no frame/artifact anchor).",
                 )
             )
         # P4-CLAIM-002: CONTRADICTED claim must cite contradiction evidence.
@@ -164,9 +190,19 @@ def validate_qc_gate(
     return issues
 
 
-def compute_overall_status(queue_items: list[ReviewQueueItem]) -> str:
-    """Phase 4 never reports PASS while any review item remains, and never PASS
-    with a CRITICAL item. Phase 4 is a review-preparation stage."""
-    if not queue_items:
-        return "PASS"
-    return "REVIEW_REQUIRED"
+def compute_overall_status(
+    queue_items: list[ReviewQueueItem], issues: list[ValidatorIssue] | None = None
+) -> str:
+    """Phase 4 QC status (G):
+
+    * any P4 validator FAIL  -> FAILED (visual_qc and the audit must agree);
+    * otherwise any review item -> REVIEW_REQUIRED (never PASS with work left);
+    * a clean completed stage  -> PASS.
+    """
+    if issues and any(
+        i.severity == Severity.FAIL and i.rule_id.startswith("P4") for i in issues
+    ):
+        return "FAILED"
+    if queue_items:
+        return "REVIEW_REQUIRED"
+    return "PASS"

@@ -248,7 +248,8 @@ def _seed_proposal(
     proposals: list[ReviewProposal],
 ) -> ReviewProposal:
     reasons: list[ProposalReasonCode] = []
-    any_redo = any(p.outcome == ReviewProposalOutcome.REDO_REBUILD for p in proposals)
+    redo_proposals = [p for p in proposals if p.outcome == ReviewProposalOutcome.REDO_REBUILD]
+    any_redo = bool(redo_proposals)
     any_human = any(
         p.outcome == ReviewProposalOutcome.HUMAN_DECISION_REQUIRED for p in proposals
     )
@@ -256,7 +257,16 @@ def _seed_proposal(
 
     if comparison.foundation_status == FoundationStatus.CONTRADICTED or any_redo:
         outcome = ReviewProposalOutcome.REDO_REBUILD
-        reasons.append(ProposalReasonCode.SHOT_BOUNDARY_FOUNDATION_INVALID)
+        # AC: inherit the ACTUAL structural reason(s) from the REDO sub-proposals
+        # and the foundation checks — never mislabel to satisfy a validator.
+        inherited: list[ProposalReasonCode] = []
+        for redo in redo_proposals:
+            inherited.extend(r for r in redo.reason_codes if r in _STRUCTURAL_REASONS)
+        for check in comparison.foundation_checks:
+            inherited.extend(r for r in check.reason_codes if r in _STRUCTURAL_REASONS)
+        reasons.extend(_dedup_reasons(inherited))
+        if not reasons:
+            reasons.append(ProposalReasonCode.SHOT_BOUNDARY_FOUNDATION_INVALID)
     elif any_human:
         outcome = ReviewProposalOutcome.HUMAN_DECISION_REQUIRED
         reasons.append(ProposalReasonCode.EVIDENCE_CANNOT_DECIDE)

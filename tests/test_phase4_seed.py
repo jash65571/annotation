@@ -431,6 +431,97 @@ def test_valid_decision_applied(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------
 
 
+def _shot_truth_two_shots() -> ShotTruthResult:
+    return make_shot_truth(
+        [
+            _shot(1, Fraction(0), Fraction(5), "Opening shot"),
+            _shot(2, Fraction(5), Fraction(9), "Hard cut"),
+        ]
+    )
+
+
+def _action_claim(action_range: str) -> object:
+    seed = (
+        "[Shot 1: 0.0-5.0]\nCut: Opening shot\n"
+        f"Action & Audio: {action_range}: C1 acts.\n"
+    )
+    doc = parse_seed_text(seed)
+    claims = extract_claims(doc)
+    res = compare_seed(doc, claims, None, _shot_truth_two_shots())
+    return next(c for c in res.claims if c.claim_type == SeedClaimType.ACTION)
+
+
+def test_manuscript_round_half_up_used_not_bankers() -> None:
+    from decimal import Decimal
+
+    from manuscript_reviewer.media.timestamps import to_manuscript_display
+
+    # ROUND_HALF_UP, not banker's rounding (which would give 0.0 / 0.2).
+    assert to_manuscript_display(Fraction(5, 100)) == Decimal("0.1")  # 0.05 -> 0.1
+    assert to_manuscript_display(Fraction(15, 100)) == Decimal("0.2")
+    assert to_manuscript_display(Fraction(25, 100)) == Decimal("0.3")
+    assert to_manuscript_display(Fraction(45, 100)) == Decimal("0.5")
+    assert to_manuscript_display(Fraction(55, 100)) == Decimal("0.6")
+    # An NTSC-derived exact fraction still projects deterministically.
+    assert to_manuscript_display(Fraction(30000, 1001) * 3) == Decimal("89.9")
+
+
+def test_containment_event_exactly_at_boundary_is_inside() -> None:
+    claim = _action_claim("4.9-5.0")
+    assert claim.evidence_status != EvidenceStatus.CONTRADICTED  # type: ignore[attr-defined]
+
+
+def test_containment_event_0_1_outside_is_contradicted() -> None:
+    claim = _action_claim("4.9-5.1")
+    assert claim.evidence_status == EvidenceStatus.CONTRADICTED  # type: ignore[attr-defined]
+
+
+def test_containment_event_inside_is_not_contradicted() -> None:
+    claim = _action_claim("1.0-2.0")
+    assert claim.evidence_status != EvidenceStatus.CONTRADICTED  # type: ignore[attr-defined]
+
+
+def test_containment_event_crossing_into_next_shot_is_contradicted() -> None:
+    claim = _action_claim("4.5-6.5")
+    assert claim.evidence_status == EvidenceStatus.CONTRADICTED  # type: ignore[attr-defined]
+
+
+def test_transitions_loaded_from_rule_file() -> None:
+    from manuscript_reviewer.seed.comparison import allowed_transitions, shot_one_transition
+
+    menu = allowed_transitions()
+    assert "Hard cut" in menu and "Cross dissolve" in menu and "Whip pan" in menu
+    assert shot_one_transition() == "Opening shot"
+
+
+def test_whole_seed_redo_inherits_real_structural_reason() -> None:
+    from manuscript_reviewer.models.review_intelligence import (
+        ProposalReasonCode,
+        ReviewProposalOutcome,
+    )
+
+    # Seed says 2 shots; verified truth has 1 -> shot-count contradiction.
+    doc = parse_seed_text(CLEAN_SEED)
+    claims = extract_claims(doc)
+    truth = make_shot_truth([_shot(1, Fraction(0), Fraction(95, 10), "Opening shot")])
+    res = compare_seed(doc, claims, None, truth)
+    proposals = build_proposals(res)
+    seed_level = next(p for p in proposals if p.level == "seed")
+    assert seed_level.outcome == ReviewProposalOutcome.REDO_REBUILD
+    assert ProposalReasonCode.SHOT_COUNT_CONTRADICTION in seed_level.reason_codes
+
+
+def test_p4_fail_forces_failed_status() -> None:
+    from manuscript_reviewer.models.validation import Severity, ValidatorIssue
+    from manuscript_reviewer.validation.review_intelligence_validator import compute_overall_status
+
+    fail = ValidatorIssue(
+        rule_id="P4-CLAIM-001", severity=Severity.FAIL, location="x", message="y"
+    )
+    assert compute_overall_status([], [fail]) == "FAILED"
+    assert compute_overall_status([], []) == "PASS"
+
+
 def test_foundational_vs_local_importance() -> None:
     doc = parse_seed_text(CLEAN_SEED)
     claims = extract_claims(doc)
