@@ -1,0 +1,203 @@
+/* Reviewer Cockpit — professional, dense, calm. Dark default (video review). */
+
+:root {
+  color-scheme: dark;
+  --bg: #14161a;
+  --bg-raised: #1b1e24;
+  --bg-inset: #101216;
+  --border: #2a2e36;
+  --border-strong: #3a4050;
+  --text: #d8dce3;
+  --text-dim: #9aa1ad;
+  --text-faint: #6b7280;
+  --accent: #4f8cc9;
+  --accent-strong: #6ea8e0;
+
+  /* Status colors always pair with text/icons, never color alone. */
+  --status-pass: #4f9e6b;
+  --status-review: #c9a24f;
+  --status-fail: #c95a4f;
+  --status-blocked: #c95a4f;
+  --status-neutral: #8891a0;
+
+  /* Machine vs human provenance (spec §124): visibly distinct families. */
+  --machine: #8a7fc9;
+  --human-verified: #4f9e6b;
+  --human-corrected: #4f8cc9;
+  --unresolved: #c9a24f;
+
+  --font-ui: "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", "Consolas", monospace;
+  --radius: 4px;
+  --gap: 8px;
+  --gap-lg: 16px;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f4f5f7;
+  --bg-raised: #ffffff;
+  --bg-inset: #e9ebee;
+  --border: #d4d8de;
+  --border-strong: #b6bcc7;
+  --text: #23272e;
+  --text-dim: #555c68;
+  --text-faint: #8891a0;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+button.primary:hover:not(:disabled) {
+  background: var(--accent-strong);
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: 1px;
+}
+
+input,
+textarea,
+select {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px 8px;
+}
+
+code,
+.mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* Status badges: text + color, never color alone. */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  border: 1px solid transparent;
+}
+
+.badge.pass {
+  color: var(--status-pass);
+  border-color: var(--status-pass);
+}
+
+.badge.review {
+  color: var(--status-review);
+  border-color: var(--status-review);
+}
+
+.badge.fail,
+.badge.blocked {
+  color: var(--status-fail);
+  border-color: var(--status-fail);
+}
+
+.badge.neutral {
+  color: var(--status-neutral);
+  border-color: var(--status-neutral);
+}
+
+.badge.machine {
+  color: var(--machine);
+  border-color: var(--machine);
+}
+
+.badge.human {
+  color: var(--human-verified);
+  border-color: var(--human-verified);
+}
+
+.badge.corrected {
+  color: var(--human-corrected);
+  border-color: var(--human-corrected);
+}
+
+.badge.unresolved {
+  color: var(--unresolved);
+  border-color: var(--unresolved);
+}
+
+/* Layout primitives */
+.row {
+  display: flex;
+  gap: var(--gap);
+  align-items: center;
+}
+
+.col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+.panel {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--gap-lg);
+}
+
+.muted {
+  color: var(--text-dim);
+}
+
+.faint {
+  color: var(--text-faint);
+}
