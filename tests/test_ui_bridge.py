@@ -1,4 +1,4 @@
-"""UI bridge protocol + worker tests (Phase 6, spec §100).
+﻿"""UI bridge protocol + worker tests (Phase 6, spec §100).
 
 Every request id must match its response; malformed input must produce typed
 errors, never arbitrary execution; the worker must expose engine truth without
@@ -297,8 +297,8 @@ def test_atomic_write_json_replaces_not_corrupts(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Full worker flow on a real (synthetic) clip: audit → summary → frames →
-# decisions → finalize. ASR/OCR disabled: deterministic evidence only.
+# Full worker flow on a real (synthetic) clip: audit -> summary -> frames ->
+# decisions -> finalize. ASR/OCR disabled: deterministic evidence only.
 # ---------------------------------------------------------------------------
 
 
@@ -379,3 +379,190 @@ def test_worker_full_flow(clip_24fps: Path, tmp_path: Path) -> None:
     assert signoff_state.status == "ok"
     assert signoff_state.payload is not None
     assert signoff_state.payload["present"] is False
+
+
+# ---------------------------------------------------------------------------
+# Full E2E through the worker to READY_TO_ENTER (spec §98): fixture run with
+# a hash-complete manifest -> typed speed decision -> human fact -> finalize ->
+# READY_FOR_FINAL_REVIEW -> human signoff -> READY_TO_ENTER -> export equals the
+# ready artifact byte-for-byte.
+# ---------------------------------------------------------------------------
+
+
+def _manifested_ready_run(tmp_path: Path) -> Path:
+    from fractions import Fraction
+
+    from manuscript_reviewer.artifacts.writer import sha256_file
+    from manuscript_reviewer.models.review_intelligence import SeedClaimType
+
+    from .phase5_helpers import (
+        RULES_VERSION,
+        VIDEO_ID,
+        VIDEO_SHA,
+        make_shot,
+        make_shot_truth,
+        supported_claim,
+        write_json,
+        write_run_dir,
+    )
+
+    shots = make_shot_truth([make_shot(1, Fraction(0), Fraction(2), "Opening shot")])
+    claims = [
+        supported_claim(
+            "CLM-C1",
+            SeedClaimType.CHARACTER_EXISTS,
+            "A person in a dark green jacket.",
+            subject_ids=["C1"],
+        ),
+        supported_claim(
+            "CLM-SC",
+            SeedClaimType.SCENE_STATE,
+            "A flat dirt path beside a canal.",
+            source_field="SCENE",
+        ),
+    ]
+    run_dir = write_run_dir(tmp_path, shots, seed_claims=claims)
+    write_json(
+        run_dir / "visual" / "speed" / "playback_speed_evidence.json",
+        {
+            "playback_speed_evidence": [
+                {"shot_number": 1, "conclusion": "REGULAR_CANDIDATE", "review_required": True}
+            ]
+        },
+    )
+    # A REAL manifest with the actual hash of every artifact: STRICT evidence
+    # verification passes because nothing was tampered with.
+    artifacts = [
+        {"path": p.relative_to(run_dir).as_posix(), "sha256": sha256_file(p)}
+        for p in sorted(run_dir.rglob("*"))
+        if p.is_file()
+    ]
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "source_video_sha256": VIDEO_SHA,
+                "rules_version": RULES_VERSION,
+                "source_video_path": f"C:/videos/{VIDEO_ID}.mp4",
+                "run_id": "fixture-ready-run",
+                "artifacts": artifacts,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return run_dir
+
+
+def test_worker_reaches_ready_to_enter_and_exports_exact_bytes(tmp_path: Path) -> None:
+    from .phase5_helpers import RULES_VERSION, VIDEO_SHA
+
+    worker, _ = make_worker()
+    run_dir = str(_manifested_ready_run(tmp_path))
+    reviewer = "reviewer@test"
+
+    saved = worker.handle_request(
+        request(
+            "save_review_decisions",
+            {
+                "run_dir": run_dir,
+                "decisions": [
+                    {
+                        "decision_id": "D-SPEED",
+                        "subject_id": "SPEED-1",
+                        "decision_type": "PLAYBACK_SPEED",
+                        "value": "regular",
+                        "decided_by": reviewer,
+                        "decided_at_utc": "2026-08-12T00:00:00Z",
+                        "bound_video_sha256": VIDEO_SHA,
+                        "bound_rules_version": RULES_VERSION,
+                    }
+                ],
+            },
+        )
+    )
+    assert saved.status == "ok", saved.error
+    facts = worker.handle_request(
+        request(
+            "save_human_facts",
+            {
+                "run_dir": run_dir,
+                "facts": [
+                    {
+                        "fact_id": "HF-ACT",
+                        "fact_type": "VISUAL_ACTION",
+                        "text_value": "C1 stands beside the canal.",
+                        "shot_number": 1,
+                        "character_ids": ["C1"],
+                        "start_exact": "0",
+                        "end_exact": "1",
+                        "evidence_refs": [
+                            {
+                                "evidence_id": "EV-HF",
+                                "evidence_type": "FRAME_RANGE",
+                                "start_frame": 0,
+                                "end_frame": 24,
+                                "source": reviewer,
+                            }
+                        ],
+                        "decided_by": reviewer,
+                        "bound_video_sha256": VIDEO_SHA,
+                        "bound_rules_version": RULES_VERSION,
+                    }
+                ],
+            },
+        )
+    )
+    assert facts.status == "ok", facts.error
+
+    first = worker.handle_request(request("finalize", {"run_dir": run_dir}))
+    assert first.status == "ok", first.error
+    assert first.payload is not None
+    assert first.payload["result"]["readiness"] == "READY_FOR_FINAL_REVIEW"
+    caption_sha = first.payload["caption_state"]["rendered_caption_sha256"]
+    assert caption_sha
+
+    # Export must be refused below READY_TO_ENTER.
+    refused = worker.handle_request(request("export_caption", {"run_dir": run_dir}))
+    assert refused.status == "error"
+    assert refused.error is not None
+    assert refused.error.code == BridgeErrorCode.NOT_READY
+
+    signed = worker.handle_request(
+        request(
+            "create_final_signoff",
+            {
+                "run_dir": run_dir,
+                "signoff": {
+                    "video_sha256": VIDEO_SHA,
+                    "rules_version": RULES_VERSION,
+                    "caption_sha256": caption_sha,
+                    "reviewer": reviewer,
+                    "reviewed_at_utc": "2026-08-12T01:00:00Z",
+                    "golden_example_comparison_complete": True,
+                    "platform_semantic_pass_complete": True,
+                    "final_adversarial_read_complete": True,
+                    "no_known_omissions_confirmed": True,
+                    "no_known_hallucinations_confirmed": True,
+                },
+            },
+        )
+    )
+    assert signed.status == "ok", signed.error
+
+    second = worker.handle_request(request("finalize", {"run_dir": run_dir}))
+    assert second.status == "ok", second.error
+    assert second.payload is not None
+    assert second.payload["result"]["readiness"] == "READY_TO_ENTER"
+
+    exported = worker.handle_request(request("export_caption", {"run_dir": run_dir}))
+    assert exported.status == "ok", exported.error
+    assert exported.payload is not None
+    on_disk = (Path(run_dir) / "caption" / "ready_to_enter.md").read_text(encoding="utf-8")
+    assert exported.payload["markdown"] == on_disk
+
+    validated = worker.handle_request(
+        request("validate_final_signoff", {"run_dir": run_dir})
+    )
+    assert validated.status == "ok"
+    assert validated.payload is not None
+    assert validated.payload["valid"] is True
+    assert validated.payload["stale"] is False
