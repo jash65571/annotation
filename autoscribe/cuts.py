@@ -42,9 +42,18 @@ def _content(video: Path, threshold: float = 27.0) -> list[float]:
     return [round(s.get_seconds(), 2) for i, (s, _e) in enumerate(scenes) if i > 0]
 
 
+def _fades(video: Path) -> list[float]:
+    """Fade to/from black boundaries (ThresholdDetector) — gradual transitions
+    that content detectors and the motion-robust detector both miss."""
+    from scenedetect import ThresholdDetector, detect
+
+    scenes = detect(str(video), ThresholdDetector())
+    return [round(s.get_seconds(), 2) for i, (s, _e) in enumerate(scenes) if i > 0]
+
+
 def candidate_boundaries(video: Path, min_gap: float = 0.4) -> list[float]:
-    """Union of robust + sensitive detectors, de-duplicated within ``min_gap``."""
-    raw = sorted(set(_adaptive(video) + _content(video)))
+    """Union of robust + sensitive + fade detectors, de-duped within ``min_gap``."""
+    raw = sorted(set(_adaptive(video) + _content(video) + _fades(video)))
     merged: list[float] = []
     for t in raw:
         if not merged or t - merged[-1] > min_gap:
@@ -65,11 +74,17 @@ def _near(
 _VERIFY = (
     "These frames straddle a POSSIBLE shot boundary in a video. The first images are the "
     "last frames before it; the later images are the first frames after it.\n"
-    "Decide: is this a GENUINE shot change (a cut or transition to a DIFFERENT shot — the "
-    "scene, framing, or subjects change discontinuously), or is it the SAME continuous "
-    "shot where only the camera or subjects moved (a pan, fast motion, or a lighting/"
-    "strobe change is NOT a cut)?\n"
-    "If it is a genuine change, also give the cut type from: Hard cut, Cross dissolve, "
+    "Decide: is this a GENUINE shot boundary?\n"
+    "It IS a boundary when the content changes to a different shot. This includes:\n"
+    "- an instant change of scene, framing, or subjects (hard cut, jump cut);\n"
+    "- a GRADUAL transition: fade to/from black or white, cross dissolve, wipe;\n"
+    "- live footage replaced by (or emerging from) a GRAPHIC: a logo, title card, "
+    "full-screen animation, scoreboard or branding screen. A footage-to-graphic "
+    "transition is ALWAYS a boundary, even when it happens gradually.\n"
+    "It is NOT a boundary when it is the same continuous shot with only camera or "
+    "subject motion (pans, fast movement of the same people/scene) or lighting/strobe "
+    "changes over the same scene.\n"
+    "If it is a boundary, also give the cut type from: Hard cut, Cross dissolve, "
     "Fade in, Fade out, Match cut, Jump cut, Smash cut, Wipe, Iris, Whip pan, Swish pan "
     "(use 'Hard cut' if unsure).\n"
     'Return JSON {"is_cut": true|false, "cut": "<type>"}.'

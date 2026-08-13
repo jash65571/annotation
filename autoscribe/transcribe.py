@@ -21,6 +21,26 @@ class Segment:
     start: float
     end: float
     text: str
+    #: Whisper confidence signals (verbose_json). Used to catch hallucinated
+    #: transcripts — Whisper invents plausible words over unclear music/noise.
+    avg_logprob: float = 0.0
+    no_speech_prob: float = 0.0
+    compression_ratio: float = 1.0
+
+    @property
+    def reliable(self) -> bool:
+        """Standard Whisper hallucination heuristics: low log-prob, high
+        no-speech probability, or repetitive output all mean the words cannot
+        be trusted as verbatim (Manuscript: use [inaudible], never guess).
+
+        Thresholds calibrated on real clips: correct transcripts (EN/PL) sit at
+        avg_logprob >= -0.59 and no_speech_prob <= 0.29; a garbled Russian
+        hallucination sat at -0.75 / 0.34. -0.70 separates them cleanly."""
+        return (
+            self.avg_logprob >= -0.70
+            and self.no_speech_prob <= 0.5
+            and self.compression_ratio <= 2.4
+        )
 
 
 @dataclass(frozen=True)
@@ -32,6 +52,18 @@ class Transcript:
     @property
     def has_speech(self) -> bool:
         return bool(self.text.strip())
+
+    @property
+    def reliable_segments(self) -> list[Segment]:
+        return [s for s in self.segments if s.reliable]
+
+    @property
+    def language_confident(self) -> bool:
+        """Name the language (Rule 7) only when the transcription itself is
+        trustworthy; a hallucinated transcript means a guessed language."""
+        if not self.segments:
+            return False
+        return len(self.reliable_segments) * 2 >= len(self.segments)
 
 
 def _multipart(fields: dict[str, str], file_bytes: bytes, boundary: str) -> bytes:
@@ -75,7 +107,12 @@ def transcribe(wav: Path, model: str = "whisper-1") -> Transcript:
     with urllib.request.urlopen(req, timeout=240) as resp:
         data = json.loads(resp.read())
     segments = [
-        Segment(float(s["start"]), float(s["end"]), str(s["text"]).strip())
+        Segment(
+            float(s["start"]), float(s["end"]), str(s["text"]).strip(),
+            avg_logprob=float(s.get("avg_logprob", 0.0)),
+            no_speech_prob=float(s.get("no_speech_prob", 0.0)),
+            compression_ratio=float(s.get("compression_ratio", 1.0)),
+        )
         for s in data.get("segments", [])
         if str(s.get("text", "")).strip()
     ]

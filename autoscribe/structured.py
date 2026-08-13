@@ -93,10 +93,19 @@ def _sample(
     return [picked[i] for i in sorted(picked)]
 
 
-def _labelled(frames: list[frames_mod.GridFrame]) -> list[dict[str, object]]:
+def _labelled(
+    frames: list[frames_mod.GridFrame],
+    shot_bounds: list[tuple[float, float, str]] | None = None,
+) -> list[dict[str, object]]:
     content: list[dict[str, object]] = []
     for f in frames:
-        content.append(text_content(f"Frame at t={f.time_seconds:.1f}s:"))
+        label = f"Frame at t={f.time_seconds:.1f}s"
+        if shot_bounds:
+            for i, (s, e, _c) in enumerate(shot_bounds):
+                if s <= f.time_seconds < e or (i == len(shot_bounds) - 1 and f.time_seconds >= s):
+                    label += f" (Shot {i + 1})"
+                    break
+        content.append(text_content(label + ":"))
         content.append(image_content(f.path))
     return content
 
@@ -106,16 +115,29 @@ def _labelled(frames: list[frames_mod.GridFrame]) -> list[dict[str, object]]:
 # --------------------------------------------------------------------------
 _CAST_PROMPT = (
     "You are writing the [Overview] of a Manuscript-II video caption. The images are "
-    "timestamped frames spanning the whole clip. Describe ONLY what is genuinely visible "
-    "— never invent, never guess. If something is uncertain, omit it.\n\n"
+    "timestamped frames spanning the whole clip; each label says which SHOT it belongs to. "
+    "Describe ONLY what is genuinely visible — never invent, never guess. If something is "
+    "uncertain, omit it.\n\n"
     "CHARACTERS: assign C1, C2, ... in order of appearance to each DISTINCT person "
-    "(disambiguate by appearance). Any off-screen/unseen voice also gets a C-ID. Give a "
-    "full head-to-toe description: apparent race/ethnicity (only if confident), apparent "
-    "age range, build, hair (length/color/style), facial hair, and EVERY visible clothing "
-    "item and accessory (jacket, shirt, tie/bow tie, dress cut/color, hat, glasses, watch, "
-    "pocket square, lanyard, in-ear monitor). When the lower body or shoes are not visible, "
-    "state 'Lower body and shoes not visible.'. Use ONE aggregate character for an "
+    "(disambiguate by appearance). Give a full head-to-toe description: apparent "
+    "race/ethnicity (only if confident), apparent age range, build, hair "
+    "(length/color/style), facial hair, and EVERY visible clothing item and accessory "
+    "(jacket, shirt, tie/bow tie, dress cut/color, hat, glasses, watch, pocket square, "
+    "lanyard, in-ear monitor). When the lower body or shoes are not visible, state "
+    "'Lower body and shoes not visible.'. Use ONE aggregate character for an "
     "indistinguishable crowd. Do NOT invent names.\n"
+    "IDENTITY RULES (critical — get these right):\n"
+    "- ONE C-ID per real person. The SAME person often reappears across shots of a vlog "
+    "or montage in different clothing or locations: judge by the FACE — if it is the same "
+    "person, keep ONE C-ID and mention the outfit changes inside that one description. "
+    "Never split one person into several IDs just because the outfit or room changed.\n"
+    "- Different shots may show completely UNRELATED scenes or people (e.g. two different "
+    "games, two different events). NEVER reuse a C-ID across shots for different people. "
+    "When the clip has multiple shots, say in each description which shot(s) that "
+    "character appears in (e.g. 'Appears in Shot 2 only.').\n"
+    "- Every off-screen voice in the audio (narrator, commentator, unseen vocalist) gets "
+    "its OWN C-ID with a description like 'Off-screen male commentator, never visible.' "
+    "Shots must attribute speech to that C-ID — never to a bracket placeholder.\n"
     "OBJECTS: assign O1, O2, ... to LARGE or prominent objects referenced repeatedly "
     "(describe color/material/shape and any legible branding/text EXACTLY as written). "
     "Skip formal IDs for small common props. Only describe an object's placement in terms "
@@ -149,7 +171,19 @@ _SHOT_PROMPT = (
     "entries. Overlapping actions get their own precise, different ranges.\n"
     "3. Camera motion goes ONLY in camera_movements — never in actions.\n"
     "4. Describe only what is visible; never invent. Only transcribe words you can truly "
-    "read/lip-read — otherwise write [inaudible]. Never fabricate lyrics or dialogue.\n\n"
+    "read/lip-read — otherwise write [inaudible]. Never fabricate lyrics or dialogue.\n"
+    "5. Reference ONLY cast members actually visible in THIS shot (plus off-screen voice "
+    "C-IDs). Do not mention characters who belong to other shots.\n"
+    "6. SINGER/SPEAKER ATTRIBUTION: attribute singing or speech to an on-screen character "
+    "ONLY if that character is visibly performing it (at or holding a microphone, mouth "
+    "clearly performing vocals). A person who is dancing is NOT the singer. If no visible "
+    "performer exists, attribute to the off-screen voice C-ID from the cast.\n"
+    "7. ON-SCREEN TEXT: transcribe ALL legible on-screen text VERBATIM in quotes — "
+    "captions, subtitles, tweets, user comments, headlines, scoreboards, signs, logos "
+    "with words. Put static text in the scene field; text that appears/changes gets its "
+    "own timed action line (e.g. 'On-screen text appears: \\\"...\\\".'). Never write "
+    "merely that text is present without quoting it; summarize only when many near-"
+    "identical comments repeat the same words (quote the repeated words once).\n\n"
     "Produce, referencing cast IDs:\n"
     "- shot_type: e.g. 'long shot', 'medium-wide shot', 'close-up'.\n"
     "- camera: base framing + angle + field of view.\n"
@@ -177,22 +211,47 @@ _SHOT_PROMPT = (
 # --------------------------------------------------------------------------
 # passes
 # --------------------------------------------------------------------------
+def _lang_label(transcript: tr.Transcript) -> str:
+    """Rule 7 ladder: name the language only when the transcript is trustworthy;
+    otherwise the safe, always-accepted answer is 'a foreign language'."""
+    if transcript.language_confident and transcript.language:
+        return transcript.language.capitalize()
+    return "a foreign language"
+
+
 def _cast_pass(
     backend: OpenAIVisionBackend, grid: list[frames_mod.GridFrame], duration: float,
-    transcript: tr.Transcript,
+    transcript: tr.Transcript, shot_bounds: list[tuple[float, float, str]],
 ) -> Globals:
     frames = _sample(grid, 0.0, duration, step=max(0.6, duration / 14))
     prompt = _CAST_PROMPT
-    if transcript.has_speech:
-        prompt += (
-            f"\n\nAUDIO TRANSCRIPT (verbatim, detected language = {transcript.language}): "
-            f'"{transcript.text}". This is {transcript.language} audio. In the Audio field, '
-            f"describe it accurately (note if a voice is singing and that it is "
-            f"{transcript.language}); the verbatim words belong in the shots, not here. Add a "
-            f"C-ID for the singer/speaker if a likely on-screen performer is visible (e.g. a "
-            f"person holding a microphone), or an off-screen C-ID if not."
+    if len(shot_bounds) > 1:
+        shot_list = "; ".join(
+            f"Shot {i + 1} [{s:.1f}s-{e:.1f}s]" for i, (s, e, _c) in enumerate(shot_bounds)
         )
-    content = [text_content(prompt), *_labelled(frames)]
+        prompt += (
+            f"\n\nSHOT STRUCTURE: this clip has {len(shot_bounds)} shots: {shot_list}. "
+            f"Apply the identity rules across them."
+        )
+    if transcript.has_speech:
+        lang = _lang_label(transcript)
+        if transcript.language_confident:
+            prompt += (
+                f"\n\nAUDIO TRANSCRIPT (verbatim, detected language = {lang}): "
+                f'"{transcript.text}". In the Audio field, describe it accurately (note if '
+                f"a voice is singing and that it is {lang}); the verbatim words belong in "
+                f"the shots, not here. Add a C-ID for the performer only if one is visibly "
+                f"performing vocals (at/holding a microphone); otherwise add an off-screen "
+                f"voice C-ID."
+            )
+        else:
+            prompt += (
+                f"\n\nAUDIO: vocals/speech are audible but the words are NOT intelligible "
+                f"(automatic transcription was unreliable — do not treat it as verbatim). "
+                f"Describe the audio as vocals in {lang}; never quote specific words. Add "
+                f"an off-screen voice C-ID unless a character is visibly performing vocals."
+            )
+    content = [text_content(prompt), *_labelled(frames, shot_bounds)]
     data = _complete_json(backend, content, max_tokens=2000)
     return Globals(
         characters=[Entity(e["id"], e["description"]) for e in data.get("characters", [])],
@@ -279,17 +338,29 @@ def _shot_pass(
     prompt = _SHOT_PROMPT.format(cast=cast, start=start, end=end)
     segs = [s for s in transcript.segments if s.end > start and s.start < end]
     if segs:
-        lang = transcript.language.capitalize()
-        lines = "\n".join(f'  ({s.start:.1f}s-{s.end:.1f}s) "{s.text}"' for s in segs)
-        prompt += (
-            f"\n\nVERBATIM AUDIO TRANSCRIPT for this shot (detected language = {lang}); "
-            f"these are the ACTUAL spoken/sung words with real timestamps:\n{lines}\n"
-            f"You MUST add each of these as an Action & Audio line, attributed to the "
-            f"visible performer (the character holding a microphone is the singer) or an "
-            f"off-screen C-ID: '(start-end) C# sings in {lang}: \\\"exact words\\\".' "
-            f"(use 'says' if spoken, 'sings' if sung). Keep the EXACT words and the given "
-            f"timestamps; do not translate; do not use [inaudible] for these."
-        )
+        lang = _lang_label(transcript)
+        good = [s for s in segs if s.reliable]
+        bad = [s for s in segs if not s.reliable]
+        if good:
+            lines = "\n".join(f'  ({s.start:.1f}s-{s.end:.1f}s) "{s.text}"' for s in good)
+            prompt += (
+                f"\n\nVERBATIM AUDIO TRANSCRIPT for this shot (language = {lang}); these "
+                f"are the ACTUAL spoken/sung words with real timestamps:\n{lines}\n"
+                f"You MUST add each as an Action & Audio line with those exact timestamps "
+                f"and EXACT words, no translation: '(start-end) C# sings in {lang}: "
+                f"\\\"exact words\\\".' (use 'says' if spoken). Attribution follows HARD "
+                f"RULE 6: only a character visibly performing vocals, else the off-screen "
+                f"voice C-ID — never a dancer."
+            )
+        if bad:
+            spans = "; ".join(f"({s.start:.1f}s-{s.end:.1f}s)" for s in bad)
+            prompt += (
+                f"\n\nUNRELIABLE AUDIO at {spans}: vocals are audible in these ranges but "
+                f"the words are NOT intelligible (automatic transcription failed its "
+                f"confidence check). Add an Action & Audio line per range in the form "
+                f"'(start-end) C# sings in {lang}; the words are [inaudible].' — attribute "
+                f"per HARD RULE 6 and NEVER invent or guess words for these ranges."
+            )
     content = [text_content(prompt), *_labelled(frames)]
     data = _complete_json(backend, content, max_tokens=4000)
     return Shot(
@@ -320,11 +391,13 @@ def analyze(
     except Exception:  # audio is optional; never block the visual pass
         transcript = tr.Transcript(language="", text="", segments=[])
 
-    progress("cast", 0.35)
-    g = _cast_pass(backend, grid, duration, transcript)
-    cast_text = _cast_text(g)
-    progress("shots", 0.42)
+    # Shots FIRST: the cast pass needs the shot structure to keep identities
+    # straight across cuts (different shots may show unrelated people).
+    progress("shots", 0.3)
     resolved = cuts_mod.resolve_shots(backend, video, grid, duration)
+    progress("cast", 0.4)
+    g = _cast_pass(backend, grid, duration, transcript, resolved)
+    cast_text = _cast_text(g)
     shots: list[Shot] = []
     for i, (s, e, cut) in enumerate(resolved):
         progress(f"shot {i + 1}/{len(resolved)}", 0.45 + 0.5 * i / len(resolved))
