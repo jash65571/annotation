@@ -231,8 +231,8 @@ export function FinalScreen({ onNavigate }: { onNavigate: (screen: Screen) => vo
           <div className="col" style={{ gap: 4 }}>
             <span className="muted">Remaining before ready:</span>
             <ul style={{ margin: 0, paddingLeft: 18 }}>
-              {blockers.map((blocker) => (
-                <li key={blocker}>{blocker}</li>
+              {blockers.map((blocker, index) => (
+                <li key={`blocker-${index}`}>{blocker}</li>
               ))}
             </ul>
           </div>

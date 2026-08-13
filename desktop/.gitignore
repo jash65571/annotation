@@ -7,3 +7,4 @@ app-icon.png
 src-tauri/binaries/
 src-tauri/ffmpeg/
 src-tauri/uv/
+.vite/
