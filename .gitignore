@@ -38,3 +38,6 @@ references/*
 /*.mkv
 /*.mov
 /Phase*.md
+
+# AutoScribe secrets
+.env

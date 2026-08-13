@@ -25,6 +25,21 @@ _JOBS: dict[str, dict[str, object]] = {}
 _LOCK = threading.Lock()
 
 
+def load_dotenv() -> None:
+    """Load KEY=VALUE lines from a .env (cwd, autoscribe/, or repo root) into the
+    environment without overwriting existing vars. No external dependency."""
+    here = Path(__file__).resolve().parent
+    for path in (Path.cwd() / ".env", here / ".env", here.parent / ".env"):
+        if not path.is_file():
+            continue
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
 def _set(job: str, **kw: object) -> None:
     with _LOCK:
         _JOBS.setdefault(job, {}).update(kw)
@@ -103,6 +118,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main(host: str = "127.0.0.1", port: int = 8765) -> None:
+    load_dotenv()
+    if not os.environ.get("OPENAI_API_KEY"):
+        print("WARNING: OPENAI_API_KEY is not set — create a .env (see .env.example).")
     server = ThreadingHTTPServer((host, port), Handler)
     backend = os.environ.get("AUTOSCRIBE_VISION", "cloud")
     print(f"AutoScribe UI -> http://{host}:{port}  (vision={backend})")
