@@ -73,9 +73,12 @@ impl JobManager {
             "protocol_version": UI_BRIDGE_PROTOCOL_VERSION,
         });
         {
-            let stdin = child
+            // Write the single job request, then CLOSE stdin: when the worker
+            // finishes it reads EOF and exits on its own — no idle job worker
+            // lingers after completion.
+            let mut stdin = child
                 .stdin
-                .as_mut()
+                .take()
                 .ok_or_else(|| BridgeError::engine_not_found("job stdin unavailable"))?;
             let line = serde_json::to_string(&request)
                 .map_err(|e| BridgeError::engine_crash(e.to_string()))?;
@@ -84,6 +87,7 @@ impl JobManager {
                 .and_then(|_| stdin.write_all(b"\n"))
                 .and_then(|_| stdin.flush())
                 .map_err(|e| BridgeError::engine_crash(e.to_string()))?;
+            drop(stdin);
         }
         let stdout = child
             .stdout

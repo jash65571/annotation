@@ -9,6 +9,8 @@
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
 Set-Location $repo
+# Rust toolchain (rustup default install location) for cargo/tauri build.
+if (Test-Path "$env:USERPROFILE\.cargo\bin") { $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path" }
 
 # 1. Engine sidecar
 powershell -File scripts\build_engine_sidecar.ps1
