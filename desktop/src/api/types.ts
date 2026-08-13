@@ -222,7 +222,10 @@ export interface ExactFramePayload {
 
 export interface CaptionStatePayload {
   final_status: (Json & { readiness?: CaptionReadiness; blockers?: string[] }) | null;
-  reviewed_caption: (Json & { caption_sha256?: string; markdown?: string }) | null;
+  reviewed_caption: Json | null;
+  caption_manifest: Json | null;
+  /** Signoff-binding hash of the current rendered caption. */
+  rendered_caption_sha256: string | null;
   ready_markdown: string | null;
   draft_markdown: string | null;
   m2_validator: Json | null;

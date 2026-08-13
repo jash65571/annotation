@@ -90,7 +90,7 @@ export function FinalScreen({ onNavigate }: { onNavigate: (screen: Screen) => vo
   const readiness = finalStatus?.readiness ?? "REVIEW_REQUIRED";
   const ready = readiness === "READY_TO_ENTER";
   const blockers = (finalStatus?.blockers as string[] | undefined) ?? [];
-  const captionSha = caption?.reviewed_caption?.caption_sha256 ?? "";
+  const captionSha = caption?.rendered_caption_sha256 ?? "";
   const manifest = state.runSummary?.manifest as
     | { source_video_sha256?: string; rules_version?: string }
     | undefined;

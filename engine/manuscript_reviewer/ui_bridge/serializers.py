@@ -240,13 +240,24 @@ def caption_state(run_dir: Path) -> dict[str, Any]:
     """Everything the caption panel needs: readiness, draft/ready text, gates."""
     final_status = read_artifact(run_dir, "caption/final_status.json", required=False)
     reviewed = read_artifact(run_dir, "caption/reviewed_caption.json", required=False)
+    caption_manifest = read_artifact(
+        run_dir, "caption/caption_manifest.json", required=False
+    )
     ready_md = read_text_artifact(run_dir, "caption/ready_to_enter.md", required=False)
     draft_md = read_text_artifact(
         run_dir, "caption/draft_review_only.md", required=False
     )
+    rendered_sha = (
+        caption_manifest.get("rendered_caption_sha256")
+        if isinstance(caption_manifest, dict)
+        else None
+    )
     return {
         "final_status": final_status,
         "reviewed_caption": reviewed,
+        "caption_manifest": caption_manifest,
+        #: The signoff-binding hash of the current rendered caption.
+        "rendered_caption_sha256": rendered_sha,
         "ready_markdown": ready_md,
         "draft_markdown": draft_md,
         "m2_validator": read_artifact(run_dir, "caption/m2_validator.json", required=False),

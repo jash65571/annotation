@@ -563,10 +563,12 @@ class BridgeWorker:
                 detail=str(exc),
             ) from exc
         manifest = read_artifact(run_dir, "manifest.json")
-        reviewed = read_artifact(run_dir, "caption/reviewed_caption.json", required=False)
+        caption_manifest = read_artifact(
+            run_dir, "caption/caption_manifest.json", required=False
+        )
         caption_sha = ""
-        if isinstance(reviewed, dict):
-            caption_sha = str(reviewed.get("caption_sha256", ""))
+        if isinstance(caption_manifest, dict):
+            caption_sha = str(caption_manifest.get("rendered_caption_sha256", ""))
         check = check_signoff(
             signoff,
             manifest.get("source_video_sha256"),

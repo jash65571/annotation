@@ -361,6 +361,8 @@ def test_worker_full_flow(clip_24fps: Path, tmp_path: Path) -> None:
     assert caption.status == "ok"
     assert caption.payload is not None
     assert caption.payload["final_status"] is not None
+    # Signoff binding hash must be exposed (FinalScreen binds signoffs to it).
+    assert caption.payload["rendered_caption_sha256"]
 
     finalized = worker.handle_request(request("finalize", {"run_dir": run_dir}))
     assert finalized.status == "ok", finalized.error
