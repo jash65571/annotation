@@ -18,10 +18,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import pipeline, render, structured
+from . import pipeline, render, review as review_mod, structured
 
 _STATIC = Path(__file__).parent / "static"
 _JOBS: dict[str, dict[str, object]] = {}
+_SEEDS: dict[str, dict[str, str]] = {}  # seed_id -> {"seed": ..., "feedback": ...}
 _LOCK = threading.Lock()
 
 
@@ -45,9 +46,10 @@ def _set(job: str, **kw: object) -> None:
         _JOBS.setdefault(job, {}).update(kw)
 
 
-def _run_job(job: str, video: Path, hz: float) -> None:
+def _run_job(job: str, video: Path, hz: float, seed: dict[str, str] | None = None) -> None:
     def progress(stage: str, frac: float) -> None:
-        _set(job, stage=stage, fraction=frac)
+        # Analysis fills 0-90% when a review pass follows.
+        _set(job, stage=stage, fraction=frac * 0.9 if seed else frac)
 
     try:
         out_dir = video.parent / "out"
@@ -60,8 +62,16 @@ def _run_job(job: str, video: Path, hz: float) -> None:
             md_path = pipeline.run(
                 video, out_dir, vision_backend=backend, hz=hz, progress=progress,
             )
-        _set(job, state="done", markdown=md_path.read_text(encoding="utf-8"),
-             stage="done", fraction=1.0)
+        fresh = md_path.read_text(encoding="utf-8")
+        if seed:
+            _set(job, stage="reviewing seed", fraction=0.92)
+            result = review_mod.review(fresh, seed["seed"], seed.get("feedback", ""))
+            final_path = md_path.with_suffix(".reviewed.md")
+            final_path.write_text(result["final_caption"], encoding="utf-8")
+            _set(job, state="done", markdown=result["final_caption"], review=result,
+                 stage="done", fraction=1.0)
+        else:
+            _set(job, state="done", markdown=fresh, stage="done", fraction=1.0)
     except Exception as exc:  # surfaced to the UI
         _set(job, state="error", error=f"{type(exc).__name__}: {exc}")
 
@@ -92,6 +102,25 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/api/seed":
+            # Reviewer inputs (seed caption + optional evaluator feedback) as JSON.
+            length = int(self.headers.get("Content-Length", "0"))
+            try:
+                data = json.loads(self.rfile.read(length).decode("utf-8"))
+                seed_text = str(data.get("seed", "")).strip()
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                seed_text = ""
+            if not seed_text:
+                self._send(400, b"seed caption is empty", "text/plain")
+                return
+            seed_id = uuid.uuid4().hex
+            with _LOCK:
+                _SEEDS[seed_id] = {
+                    "seed": seed_text,
+                    "feedback": str(data.get("feedback", "")).strip(),
+                }
+            self._send(200, json.dumps({"seed_id": seed_id}).encode(), "application/json")
+            return
         if parsed.path != "/api/run":
             self._send(404, b"not found", "text/plain")
             return
@@ -111,9 +140,17 @@ class Handler(BaseHTTPRequestHandler):
                     break
                 fh.write(chunk)
                 remaining -= len(chunk)
+        seed = None
+        seed_id = q.get("seed_id", [""])[0]
+        if seed_id:
+            with _LOCK:
+                seed = _SEEDS.pop(seed_id, None)
+            if seed is None:
+                self._send(400, b"unknown seed_id", "text/plain")
+                return
         job = uuid.uuid4().hex
         _set(job, state="running", stage="queued", fraction=0.0)
-        threading.Thread(target=_run_job, args=(job, tmp, hz), daemon=True).start()
+        threading.Thread(target=_run_job, args=(job, tmp, hz, seed), daemon=True).start()
         self._send(200, json.dumps({"job": job}).encode(), "application/json")
 
 

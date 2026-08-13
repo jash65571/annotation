@@ -8,6 +8,7 @@
   :root {
     --bg: #0e0f13; --panel: #16181f; --line: #262a35; --fg: #e8eaf0;
     --muted: #9aa3b2; --accent: #6ea8fe; --ok: #57d38c; --pre: #12141a;
+    --warn: #ffce6a;
   }
   * { box-sizing: border-box; }
   body {
@@ -17,7 +18,13 @@
   }
   .wrap { width: 100%; max-width: 860px; }
   h1 { font-size: 22px; margin: 0 0 2px; letter-spacing: .2px; }
-  .sub { color: var(--muted); margin: 0 0 24px; font-size: 13px; }
+  .sub { color: var(--muted); margin: 0 0 18px; font-size: 13px; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+  .tab {
+    background: transparent; color: var(--muted); border: 1px solid var(--line);
+    border-radius: 10px; padding: 8px 18px; font-weight: 600; cursor: pointer; font-size: 14px;
+  }
+  .tab.active { background: var(--accent); color: #0b0d12; border-color: var(--accent); }
   .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 20px; }
   .drop {
     border: 1.5px dashed var(--line); border-radius: 12px; padding: 40px 20px;
@@ -28,6 +35,16 @@
   .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 16px; }
   label.opt { color: var(--muted); font-size: 13px; display: flex; gap: 6px; align-items: center; }
   input[type=number] { width: 70px; background: var(--pre); color: var(--fg); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+  .field { margin-top: 16px; display: none; }
+  .field.show { display: block; }
+  .field label { display: block; color: var(--muted); font-size: 13px; margin-bottom: 6px; }
+  .field label b { color: var(--fg); }
+  textarea {
+    width: 100%; min-height: 110px; background: var(--pre); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
+    font: 13px/1.5 ui-monospace, Consolas, monospace; resize: vertical;
+  }
+  textarea:focus { outline: none; border-color: var(--accent); }
   button {
     background: var(--accent); color: #0b0d12; border: 0; border-radius: 10px;
     padding: 10px 18px; font-weight: 600; cursor: pointer; font-size: 14px;
@@ -46,18 +63,45 @@
   }
   .err { color: #ff8a8a; margin-top: 12px; white-space: pre-wrap; }
   .copied { color: var(--ok); }
+  .score { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  .badge {
+    background: var(--pre); border: 1px solid var(--line); border-radius: 10px;
+    padding: 8px 14px; font-weight: 700;
+  }
+  .badge span { color: var(--muted); font-weight: 400; font-size: 12px; display: block; }
+  .badge.verdict { color: var(--warn); }
+  .badge.num { color: var(--ok); font-size: 20px; }
+  .reason { color: var(--muted); font-size: 13px; flex: 1; min-width: 200px; }
+  .issues { margin: 0 0 14px; padding-left: 20px; color: var(--fg); font-size: 13px; }
+  .issues li { margin-bottom: 4px; }
+  h3.small { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin: 16px 0 8px; }
 </style>
 </head>
 <body>
   <div class="wrap">
     <h1>AutoScribe</h1>
-    <p class="sub">Drop a video &rarr; precise transcript of everything said and done &rarr; copy-paste.</p>
+    <p class="sub" id="sub">Drop a video &rarr; precise transcript of everything said and done &rarr; copy-paste.</p>
+
+    <div class="tabs">
+      <button class="tab active" id="tabAnn">Annotator</button>
+      <button class="tab" id="tabRev">Reviewer</button>
+    </div>
 
     <div class="panel">
       <div id="drop" class="drop">
         <b>Drop a video here</b> or click to choose &nbsp;·&nbsp; MP4 / MOV / MKV
         <input id="file" type="file" accept="video/*" hidden />
       </div>
+
+      <div class="field" id="seedField">
+        <label><b>Seed caption</b> — paste the attempter's pre-seeded caption (required)</label>
+        <textarea id="seed" placeholder="[Overview]&#10;Characters:&#10;C1: ..."></textarea>
+      </div>
+      <div class="field" id="fbField">
+        <label><b>Evaluator / Final-Review feedback</b> — paste task feedback or eval suggestions (optional; each is judged against the media)</label>
+        <textarea id="fb" style="min-height:70px" placeholder="e.g. 'Shot 2 camera labeled locked static but a slow pan is visible' ..."></textarea>
+      </div>
+
       <div class="row">
         <label class="opt">Timeline&nbsp;<input id="hz" type="number" min="1" max="30" step="1" value="10" />&nbsp;Hz (10 = every 0.1s)</label>
         <span style="flex:1"></span>
@@ -68,9 +112,22 @@
       <div class="err" id="err"></div>
     </div>
 
+    <div class="result panel" id="review">
+      <div class="head"><strong>Review of original attempt</strong></div>
+      <div class="score">
+        <div class="badge num" id="scoreNum">–<span>score</span></div>
+        <div class="badge verdict" id="verdict">–<span>seed decision</span></div>
+        <div class="reason" id="scoreReason"></div>
+      </div>
+      <h3 class="small">Issues found in the seed</h3>
+      <ul class="issues" id="issues"></ul>
+      <h3 class="small">Attempter feedback <button class="ghost" id="copyFb" style="padding:4px 10px;font-size:12px">Copy</button> <span class="copied" id="copiedFb"></span></h3>
+      <pre id="fbOut" style="max-height:30vh"></pre>
+    </div>
+
     <div class="result panel" id="result">
       <div class="head">
-        <strong>Result</strong>
+        <strong id="resultTitle">Result</strong>
         <div>
           <button class="ghost" id="copy">Copy</button>
           <span class="copied" id="copied"></span>
@@ -83,6 +140,29 @@
 <script>
 const $ = (id) => document.getElementById(id);
 let chosen = null;
+let reviewer = false;
+
+function setMode(rev) {
+  reviewer = rev;
+  $("tabAnn").classList.toggle("active", !rev);
+  $("tabRev").classList.toggle("active", rev);
+  $("seedField").classList.toggle("show", rev);
+  $("fbField").classList.toggle("show", rev);
+  $("run").textContent = rev ? "Review" : "Analyze";
+  $("sub").textContent = rev
+    ? "Drop the task video + paste the attempter's seed → full audit, score, feedback, and the final RTD caption."
+    : "Drop a video → precise transcript of everything said and done → copy-paste.";
+  updateRun();
+  $("result").classList.remove("show");
+  $("review").classList.remove("show");
+}
+$("tabAnn").onclick = () => setMode(false);
+$("tabRev").onclick = () => setMode(true);
+
+function updateRun() {
+  $("run").disabled = !chosen || (reviewer && !$("seed").value.trim());
+}
+$("seed").oninput = updateRun;
 
 const drop = $("drop"), file = $("file");
 drop.onclick = () => file.click();
@@ -94,17 +174,26 @@ file.onchange = () => file.files[0] && setFile(file.files[0]);
 function setFile(f) {
   chosen = f;
   drop.innerHTML = "<b>" + f.name + "</b> &nbsp;·&nbsp; " + (f.size/1e6).toFixed(1) + " MB &nbsp; (click to change)";
-  $("run").disabled = false;
+  updateRun();
 }
 
 $("run").onclick = async () => {
   if (!chosen) return;
-  $("run").disabled = true; $("err").textContent = ""; $("result").classList.remove("show");
+  $("run").disabled = true; $("err").textContent = "";
+  $("result").classList.remove("show"); $("review").classList.remove("show");
   setProgress("uploading", 0.02);
   try {
-    const res = await fetch("/api/run?hz=" + $("hz").value + "&name=" + encodeURIComponent(chosen.name), {
-      method: "POST", body: chosen,
-    });
+    let url = "/api/run?hz=" + $("hz").value + "&name=" + encodeURIComponent(chosen.name);
+    if (reviewer) {
+      const sr = await fetch("/api/seed", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ seed: $("seed").value, feedback: $("fb").value }),
+      });
+      if (!sr.ok) throw new Error(await sr.text());
+      url += "&seed_id=" + (await sr.json()).seed_id;
+    }
+    const res = await fetch(url, { method: "POST", body: chosen });
     if (!res.ok) throw new Error(await res.text());
     const { job } = await res.json();
     poll(job);
@@ -115,7 +204,7 @@ async function poll(job) {
   try {
     const s = await (await fetch("/api/status?job=" + job)).json();
     setProgress(s.stage, s.fraction);
-    if (s.state === "done") { show(s.markdown); return; }
+    if (s.state === "done") { show(s.markdown, s.review); return; }
     if (s.state === "error") { fail(s.error); return; }
     setTimeout(() => poll(job), 600);
   } catch (e) { fail(e.message || String(e)); }
@@ -125,18 +214,34 @@ function setProgress(stage, frac) {
   $("fill").style.width = Math.round((frac || 0) * 100) + "%";
   $("stage").textContent = stage ? (stage + " …") : "";
 }
-function show(md) {
-  setProgress("done", 1); $("run").disabled = false;
-  $("out").textContent = md; $("result").classList.add("show");
+function show(md, rev) {
+  setProgress("done", 1); updateRun();
+  $("out").textContent = md;
+  $("resultTitle").textContent = rev ? "Final RTD caption" : "Result";
+  if (rev) {
+    $("scoreNum").innerHTML = (rev.score || "–") + "<span>score</span>";
+    $("verdict").innerHTML = (rev.verdict || "–") + "<span>seed decision</span>";
+    $("scoreReason").textContent = rev.score_reason || "";
+    $("issues").innerHTML = "";
+    (rev.issues || []).forEach(i => {
+      const li = document.createElement("li"); li.textContent = i; $("issues").appendChild(li);
+    });
+    if (!(rev.issues || []).length) $("issues").innerHTML = "<li>No material issues listed.</li>";
+    $("fbOut").textContent = rev.feedback || "";
+    $("review").classList.add("show");
+  }
+  $("result").classList.add("show");
 }
 function fail(msg) {
-  $("run").disabled = false; $("err").textContent = "Error: " + msg; setProgress("", 0);
+  updateRun(); $("err").textContent = "Error: " + msg; setProgress("", 0);
 }
-$("copy").onclick = async () => {
-  await navigator.clipboard.writeText($("out").textContent);
-  $("copied").textContent = "copied ✓";
-  setTimeout(() => $("copied").textContent = "", 1500);
-};
+async function copyTo(srcId, flagId) {
+  await navigator.clipboard.writeText($(srcId).textContent);
+  $(flagId).textContent = "copied ✓";
+  setTimeout(() => $(flagId).textContent = "", 1500);
+}
+$("copy").onclick = () => copyTo("out", "copied");
+$("copyFb").onclick = () => copyTo("fbOut", "copiedFb");
 </script>
 </body>
 </html>

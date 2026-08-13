@@ -12,8 +12,15 @@ import json
 import os
 import urllib.request
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+
+
+@dataclass(frozen=True)
+class Word:
+    start: float
+    end: float
+    text: str
 
 
 @dataclass(frozen=True)
@@ -48,6 +55,10 @@ class Transcript:
     language: str
     text: str
     segments: list[Segment]
+    #: Word-level timestamps (whisper word granularity). Far more accurate than
+    #: segment bounds — segment timing drifts badly over music intros, which is
+    #: how narration got stamped at 0.0s on a clip whose speech starts at 5.5s.
+    words: list[Word] = field(default_factory=list)
 
     @property
     def has_speech(self) -> bool:
@@ -66,9 +77,9 @@ class Transcript:
         return len(self.reliable_segments) * 2 >= len(self.segments)
 
 
-def _multipart(fields: dict[str, str], file_bytes: bytes, boundary: str) -> bytes:
+def _multipart(fields: list[tuple[str, str]], file_bytes: bytes, boundary: str) -> bytes:
     parts: list[bytes] = []
-    for name, value in fields.items():
+    for name, value in fields:
         parts.append(
             f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n'
             f"{value}\r\n".encode()
@@ -89,11 +100,12 @@ def transcribe(wav: Path, model: str = "whisper-1") -> Transcript:
         raise RuntimeError("OPENAI_API_KEY is not set for audio transcription.")
     boundary = "----autoscribe" + uuid.uuid4().hex
     body = _multipart(
-        {
-            "model": model,
-            "response_format": "verbose_json",
-            "timestamp_granularities[]": "segment",
-        },
+        [
+            ("model", model),
+            ("response_format", "verbose_json"),
+            ("timestamp_granularities[]", "segment"),
+            ("timestamp_granularities[]", "word"),
+        ],
         wav.read_bytes(),
         boundary,
     )
@@ -116,8 +128,14 @@ def transcribe(wav: Path, model: str = "whisper-1") -> Transcript:
         for s in data.get("segments", [])
         if str(s.get("text", "")).strip()
     ]
+    words = [
+        Word(float(w["start"]), float(w["end"]), str(w["word"]).strip())
+        for w in data.get("words", [])
+        if str(w.get("word", "")).strip()
+    ]
     return Transcript(
         language=str(data.get("language", "")),
         text=str(data.get("text", "")).strip(),
         segments=segments,
+        words=words,
     )

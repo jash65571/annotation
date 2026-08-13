@@ -28,8 +28,12 @@ def _shot(shot: Shot) -> list[str]:
     camera = shot.camera or shot.shot_type
     if shot.camera and shot.shot_type and shot.shot_type.lower() not in shot.camera.lower():
         camera = f"{shot.shot_type}. {shot.camera}"
-    moves = " ".join(f"({_rng(m.start, m.end)}) {m.text}" for m in shot.camera_movements)
-    out.append(f"Camera: {camera}" + (f" {moves}" if moves else ""))
+    out.append(f"Camera: {camera}")
+    # Timed phases live in their own block — merging them into the Camera line
+    # was flagged as a field-placement violation (Camera = setup only).
+    if shot.camera_movements:
+        out.append("Camera movements:")
+        out += [f"({_rng(m.start, m.end)}) {m.text}" for m in shot.camera_movements]
     out.append(f"Scene: {shot.scene}")
     out.append("Action & Audio:")
     out += _inline(shot.actions)
