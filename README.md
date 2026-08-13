@@ -133,6 +133,25 @@ uv run mypy              # strict type checking
 
 Tests that need media are skipped with a clear message if ffmpeg is missing.
 
+### Desktop app (Reviewer Cockpit)
+
+```powershell
+cd desktop
+npm ci                   # pinned frontend deps (Node 24 LTS, lockfile committed)
+npm run typecheck        # strict TypeScript
+npm test                 # Vitest + Testing Library
+npm run tauri dev        # run the app against the local uv engine (dev mode)
+npm run tauri build      # release build (add --no-bundle to skip installer)
+```
+
+Rust backend gates (from `desktop/src-tauri`): `cargo fmt --check`,
+`cargo clippy -- -D warnings`, `cargo test`. Requires stable Rust (MSVC) and
+VS Build Tools C++ on Windows.
+
+Packaging (Windows): `powershell -File scripts/package_windows.ps1` builds the
+PyInstaller engine sidecar, stages the tested FFmpeg + uv runtimes, and
+produces the NSIS installer. See `docs/10-reviewer-cockpit.md`.
+
 GitHub Actions CI (`.github/workflows/ci.yml`) runs the same three gates on
 Ubuntu / Python 3.12 / uv with FFmpeg (libx264) on every push and pull
 request. Tested dependency versions: opencv-python-headless 5.0.0.93, numpy
@@ -153,3 +172,4 @@ Note: the raw Manuscript II reference documents are local-only and gitignored
 - `docs/07-audio-truth-engine.md` — Phase 3: audio timeline, ASR workers, language safety, review queue
 - `docs/08-visual-review-intelligence.md` — Phase 4: seed parsing/claims, structural comparison, KEEP/FIX/REDO proposals, review queue, frame observations
 - `docs/09-caption-brain.md` — Phase 5: caption eligibility, fact graph, deterministic renderer, M2/platform/Golden gates, signoff and ready states
+- `docs/10-reviewer-cockpit.md` — Phase 6: Tauri desktop app, UI bridge protocol, security model, packaging

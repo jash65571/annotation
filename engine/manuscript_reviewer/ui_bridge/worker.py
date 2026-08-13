@@ -180,7 +180,8 @@ class BridgeWorker:
 
     def serve_forever(self) -> None:
         for line in self._stdin:
-            line = line.strip()
+            # Tolerate a UTF-8 BOM from Windows shells/redirects.
+            line = line.lstrip("﻿").strip()
             if not line:
                 continue
             self._handle_line(line)

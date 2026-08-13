@@ -79,9 +79,13 @@ caption prose.
   Phase 1-4 evidence — no media re-analysis; sub-second to a few seconds.
 - No cloud upload, no platform submission, no result-code generation.
 
-## Phase 6 — Reviewer cockpit
+## Phase 6 — Reviewer cockpit (IN REVIEW — see docs/10)
 - Tauri 2 + React + TypeScript desktop UI over the Python engine: timeline, frame
   stepping, evidence panels, per-section KEEP/FIX/REBUILD workflow, human-decision
   and human-fact capture, final-review signoff, final checklist.
 - Export of the finished caption for manual paste into the live tool. The app never
   claims tasks, never submits, never touches credentials.
+- Implemented on branch `phase-6-reviewer-cockpit`: JSONL UI bridge (protocol v1)
+  with additive progress hooks, Rust process/job control with least-privilege
+  capabilities, full review workstation, packaged sidecar + FFmpeg + uv bundling
+  scripts. Marked complete only at final lock after independent review.

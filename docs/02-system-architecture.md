@@ -155,3 +155,18 @@ the same way. Descript is excluded. MoviePy is never a timing authority.
   materializing images.
 - `manifest.json` records per-stage wall-clock timings as benchmarks; later phases add
   triage so only informative frames reach AI adapters.
+
+## Phase 6 layer — Reviewer Cockpit (desktop)
+
+The desktop app (`desktop/`, Tauri 2 + React + strict TypeScript) sits ABOVE the
+locked engine and adds no factual logic:
+
+    React screens -> typed Tauri commands -> Rust process control
+      -> JSONL UI bridge worker (engine/manuscript_reviewer/ui_bridge)
+      -> run_audit() / finalize_run() + run-directory artifacts
+
+Rust owns worker spawn/handshake (UI_BRIDGE_PROTOCOL_VERSION = 1), the single
+cancellable analysis job (process-tree kill), run-scoped path validation and
+the recent-runs index. The Python worker serializes existing artifacts and
+validates human-input files; the run directory remains the single source of
+truth. Details: docs/10-reviewer-cockpit.md.
