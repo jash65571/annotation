@@ -635,7 +635,7 @@ def test_evidence_bundle_sibling_prefix_escape_rejected(tmp_path: Path) -> None:
     (run_dir / "manifest.json").write_text("{}", encoding="utf-8")
     (sibling / "secret.png").write_bytes(b"png")
     with pytest.raises(BridgeCommandError) as excinfo:
-        evidence_bundle(run_dir, "..\\task10")
+        evidence_bundle(run_dir, "../task10")
     assert excinfo.value.code == BridgeErrorCode.INVALID_INPUT
 
 

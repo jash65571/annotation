@@ -118,7 +118,15 @@ mod tests {
     use std::fs;
 
     fn state_with_temp() -> (BackendState, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("mr-state-test-{}", std::process::id()));
+        // Unique per call: parallel tests must never share (and race on
+        // deleting) one temp directory.
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static SEQ: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "mr-state-test-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("run").join("caption")).unwrap();
         fs::write(dir.join("run").join("manifest.json"), "{}").unwrap();
