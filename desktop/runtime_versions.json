@@ -1,0 +1,14 @@
+{
+  "comment": "Expected packaged-runtime pins (§Phase 6.1-14). Packaging FAILS on any mismatch — a different local FFmpeg/uv is never silently bundled. CI and local packaging use these same definitions; fetch URLs let CI stage identical bytes.",
+  "ffmpeg": {
+    "version_line_prefix": "ffmpeg version 9.0-essentials_build-www.gyan.dev",
+    "download_url": "https://github.com/GyanD/codexffmpeg/releases/download/9.0/ffmpeg-9.0-essentials_build.zip",
+    "ffmpeg_exe_sha256": "227AF0691433B703FFC5725E47F7D06EEFC34B4A72E7870E73D30E2CDA483ECF",
+    "ffprobe_exe_sha256": "901F0EFE4793CBB0F017101E3427F816E8FBF9A407BD585F49DF30F4325CFD88"
+  },
+  "uv": {
+    "version": "0.12.1",
+    "download_url": "https://github.com/astral-sh/uv/releases/download/0.12.1/uv-x86_64-pc-windows-msvc.zip",
+    "uv_exe_sha256": "F537CC65C1791D9D1A022132302B21ECD48CDF0A605A7B345809FBE8AF4E807D"
+  }
+}

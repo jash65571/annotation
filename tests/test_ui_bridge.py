@@ -851,6 +851,43 @@ def test_media_dimensions_from_media_truth(tmp_path: Path) -> None:
     assert response.payload == {"width": 1080, "height": 1920}
 
 
+def test_finalize_respects_live_run_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§Phase 6.1-19: a run locked by a LIVE holder refuses finalize with the
+    typed RUN_LOCKED code; a stale (dead-pid) lock is recovered instead."""
+    worker, _ = make_worker()
+    run_dir = _fake_run_dir(tmp_path)
+    (run_dir / "ui").mkdir()
+    (run_dir / "ui" / "run.lock").write_text("999999", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "manuscript_reviewer.ui_bridge.worker._pid_alive", lambda pid: True
+    )
+    locked = worker.handle_request(
+        request(
+            "save_review_inputs",
+            {"run_dir": str(run_dir), "decisions": [], "facts": []},
+        )
+    )
+    assert locked.status == "error"
+    assert locked.error is not None
+    assert locked.error.code == BridgeErrorCode.RUN_LOCKED
+
+    # Same request after the holder dies: stale lock recovered, save proceeds.
+    monkeypatch.setattr(
+        "manuscript_reviewer.ui_bridge.worker._pid_alive", lambda pid: False
+    )
+    recovered = worker.handle_request(
+        request(
+            "save_review_inputs",
+            {"run_dir": str(run_dir), "decisions": [], "facts": []},
+        )
+    )
+    assert recovered.status == "ok"
+    assert not (run_dir / "ui" / "run.lock").exists()
+
+
 def test_resolve_rerun_request_requires_saved_anchors(tmp_path: Path) -> None:
     worker, _ = make_worker()
     run_dir = _fake_run_dir(tmp_path)

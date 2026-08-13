@@ -113,3 +113,45 @@ jobs:
       - name: Tauri Windows build (no bundle)
         working-directory: desktop
         run: npm run tauri build -- --no-bundle
+
+  packaged-smoke:
+    # The actual deliverable: pinned runtimes + PyInstaller sidecar + NSIS
+    # bundle, exercised over the real JSONL protocol (health, synthetic audit,
+    # decision, re-finalize, resolution, readiness gating).
+    runs-on: windows-latest
+    needs: [test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      - name: Sync engine dependencies
+        run: uv sync --dev
+      - name: Fetch pinned runtimes (hash-verified)
+        run: powershell -File scripts/fetch_runtimes.ps1
+      - name: Build engine sidecar
+        run: powershell -File scripts/build_engine_sidecar.ps1
+      - name: Packaged engine smoke (IPC workflow)
+        run: uv run python scripts/packaged_smoke_test.py
+      - name: Install frontend
+        working-directory: desktop
+        run: npm ci
+      - name: Build NSIS installer (pinned runtimes bundled)
+        working-directory: desktop
+        run: npm run tauri build -- --config src-tauri/tauri.packaged.conf.json
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: reviewer-cockpit-windows-installer
+          path: desktop/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error

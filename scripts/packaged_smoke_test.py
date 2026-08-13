@@ -152,6 +152,69 @@ def main() -> None:
     assert Path(frame["payload"]["path"]).exists()
     print(f"exact frame OK {frame['payload']['path']}")
 
+    # --- IPC workflow smoke (§Phase 6.1-16): queue → typed decision →
+    #     re-finalize → resolution reflects it → readiness gating holds. ---
+    queue = request("s6", "get_review_queue", {"run_dir": str(run_dir)})
+    assert queue["status"] == "ok"
+    print(
+        "queue OK "
+        f"visual={len(queue['payload']['visual_items'])} "
+        f"audio={len(queue['payload']['audio_items'])}"
+    )
+
+    manifest = summary["payload"]["manifest"]
+    resolution = request("s7", "get_review_resolution", {"run_dir": str(run_dir)})
+    assert resolution["status"] == "ok", resolution.get("error")
+    open_speed = [
+        t
+        for t in resolution["payload"]["speed_targets"]
+        if t["resolution_status"] == "OPEN"
+    ]
+    assert open_speed, "synthetic run must have an unresolved speed target"
+    subject = open_speed[0]["subject_id"]
+
+    saved = request(
+        "s8",
+        "save_review_inputs",
+        {
+            "run_dir": str(run_dir),
+            "decisions": [
+                {
+                    "decision_id": "SMOKE-SPEED",
+                    "subject_id": subject,
+                    "decision_type": "PLAYBACK_SPEED",
+                    "value": "regular",
+                    "decided_by": "packaged-smoke-test",
+                    "bound_video_sha256": manifest["source_video_sha256"],
+                    "bound_rules_version": manifest["rules_version"],
+                }
+            ],
+            "facts": [],
+        },
+    )
+    assert saved["status"] == "ok", saved.get("error")
+
+    refinal = request("s9", "finalize", {"run_dir": str(run_dir)})
+    assert refinal["status"] == "ok", refinal.get("error")
+    readiness = refinal["payload"]["result"]["readiness"]
+    print(f"re-finalize OK readiness={readiness}")
+
+    after = request("s10", "get_review_resolution", {"run_dir": str(run_dir)})
+    resolved_target = next(
+        t for t in after["payload"]["speed_targets"] if t["subject_id"] == subject
+    )
+    assert resolved_target["resolution_status"] == "RESOLVED", resolved_target
+    print(f"resolution OK {subject} RESOLVED by engine truth")
+
+    # Readiness gating: export must be refused below READY_TO_ENTER.
+    export = request("s11", "export_caption", {"run_dir": str(run_dir)})
+    if readiness == "READY_TO_ENTER":
+        assert export["status"] == "ok"
+    else:
+        assert export["status"] == "error"
+        assert export["error"]["code"] == "NOT_READY"
+        print("export gating OK (NOT_READY below READY_TO_ENTER)")
+
     proc.stdin.close()
     proc.wait(timeout=10)
     print("PACKAGED SMOKE TEST PASSED")
