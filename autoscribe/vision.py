@@ -129,11 +129,21 @@ class OpenAIVisionBackend:
         if not self.api_key:
             raise RuntimeError("OPENAI_API_KEY is not set for the OpenAI vision backend.")
 
+    def _completion_cap(self, visible_tokens: int) -> int:
+        """GPT-5.x reasoning models spend completion budget on hidden
+        reasoning before any visible output; without headroom a small cap
+        returns finish_reason=length with EMPTY content (observed: the 60-token
+        cut-verify calls). The cap is a ceiling, not a spend."""
+        if self.model.startswith("gpt-5"):
+            return visible_tokens + 8000
+        return visible_tokens
+
     def describe(self, image_path: Path) -> str:
         data_uri = f"data:image/png;base64,{_b64(image_path)}"
         body = json.dumps({
             "model": self.model,
-            "max_tokens": 300,
+            # GPT-5.x models reject legacy max_tokens.
+            "max_completion_tokens": self._completion_cap(300),
             "messages": [{
                 "role": "user",
                 "content": [
@@ -159,7 +169,8 @@ class OpenAIVisionBackend:
         """Low-level multimodal completion (interleaved text + images)."""
         payload: dict[str, object] = {
             "model": self.model,
-            "max_tokens": max_tokens,
+            # GPT-5.x models reject legacy max_tokens.
+            "max_completion_tokens": self._completion_cap(max_tokens),
             "messages": [{"role": "user", "content": content}],
         }
         if json_mode:
