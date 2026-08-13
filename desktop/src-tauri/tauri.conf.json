@@ -30,6 +30,11 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "resources": {
+      "binaries/manuscript-engine-worker": "binaries/manuscript-engine-worker",
+      "ffmpeg": "ffmpeg",
+      "uv": "uv"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

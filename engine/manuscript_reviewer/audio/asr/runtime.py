@@ -14,6 +14,7 @@ from __future__ import annotations
 import itertools
 import json
 import logging
+import os
 import re
 import shutil
 import time
@@ -44,6 +45,35 @@ logger = logging.getLogger(__name__)
 WORKERS_DIR = Path(__file__).parent / "workers"
 FW_ENV = WORKERS_DIR / "fw_env"
 WX_ENV = WORKERS_DIR / "wx_env"
+
+#: Packaged installs point this at writable app-local data; the read-only
+#: install dir keeps only the worker templates. Same worker code either way.
+WORKERS_DIR_ENV = "MANUSCRIPT_ASR_WORKERS_DIR"
+
+#: Files defining a worker environment (uv materializes .venv beside them).
+_WORKER_TEMPLATE_FILES = ("pyproject.toml", "worker.py", "uv.lock")
+
+
+def _resolve_env_dir(name: str, default: Path | None = None) -> Path:
+    """The effective worker-env dir for ``name`` (fw_env / wx_env).
+
+    Without the override this is ``default`` (the in-package directory —
+    development mode, unchanged behavior). With MANUSCRIPT_ASR_WORKERS_DIR
+    set, the env lives under that writable root; missing template files are
+    copied from the package so the exact same pinned worker definition runs.
+    """
+    override = os.environ.get(WORKERS_DIR_ENV, "").strip()
+    if not override:
+        return default if default is not None else WORKERS_DIR / name
+    target = Path(override) / name
+    target.mkdir(parents=True, exist_ok=True)
+    source = WORKERS_DIR / name
+    for filename in _WORKER_TEMPLATE_FILES:
+        src = source / filename
+        dst = target / filename
+        if src.exists() and not dst.exists():
+            shutil.copy2(src, dst)
+    return target
 
 #: Language probability below this stays REVIEW_REQUIRED.
 LANGUAGE_CONFIDENCE_THRESHOLD = 0.8
@@ -165,7 +195,7 @@ class FasterWhisperAdapter:
             "language": config.language,
             "vad": True,
         }
-        return _run_worker(FW_ENV, request, config, scratch)
+        return _run_worker(_resolve_env_dir("fw_env", FW_ENV), request, config, scratch)
 
 
 class WhisperXAdapter:
@@ -185,7 +215,7 @@ class WhisperXAdapter:
             "device": "cpu",
             "segments": segments,
         }
-        return _run_worker(WX_ENV, request, config, scratch)
+        return _run_worker(_resolve_env_dir("wx_env", WX_ENV), request, config, scratch)
 
 
 def _words_from_raw(

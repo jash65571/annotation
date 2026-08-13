@@ -28,6 +28,8 @@ const ALLOWED_ENGINE_COMMANDS: &[&str] = &[
     "get_waveform_metadata",
     "save_review_decisions",
     "save_human_facts",
+    "get_review_inputs",
+    "save_visual_anchors",
     "finalize",
     "get_caption_state",
     "create_final_signoff",

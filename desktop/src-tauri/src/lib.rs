@@ -20,8 +20,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let resource_dir = app.path().resource_dir().ok();
-            let launch =
-                EngineLaunch::resolve(resource_dir.as_deref()).unwrap_or(EngineLaunch::DevUv {
+            let app_data_dir = app.path().app_data_dir().ok();
+            let launch = EngineLaunch::resolve(resource_dir.as_deref(), app_data_dir.as_deref())
+                .unwrap_or(EngineLaunch::DevUv {
                     repo_root: std::env::current_dir().unwrap_or_default(),
                 });
             app.manage(BackendState::new(launch));

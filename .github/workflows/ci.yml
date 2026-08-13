@@ -47,3 +47,69 @@ jobs:
 
       - name: Type check
         run: uv run mypy
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: TypeScript strict check
+        run: npm run typecheck
+      - name: Frontend unit tests
+        run: npm test
+      - name: Build
+        run: npx vite build
+
+  rust:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop/src-tauri
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      # tauri-build needs the frontendDist directory to exist at compile time.
+      - name: Stub frontend dist
+        shell: bash
+        run: mkdir -p ../dist && touch ../dist/index.html
+      - name: Format check
+        run: cargo fmt --check
+      - name: Clippy (warnings denied)
+        run: cargo clippy -- -D warnings
+      - name: Rust tests
+        run: cargo test
+
+  tauri-build:
+    runs-on: windows-latest
+    needs: [frontend, rust]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      - name: Install
+        working-directory: desktop
+        run: npm ci
+      - name: Tauri Windows build (no bundle)
+        working-directory: desktop
+        run: npm run tauri build -- --no-bundle

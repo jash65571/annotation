@@ -426,6 +426,42 @@ def save_human_facts(run_dir: Path, facts: list[dict[str, Any]]) -> dict[str, An
     return {"path": str(path), "count": len(validated)}
 
 
+def read_review_inputs(run_dir: Path) -> dict[str, Any]:
+    """The app-owned human-input files, for restoring UI state on reopen."""
+    decisions_file = review_decisions_path(run_dir)
+    facts_file = human_facts_path(run_dir)
+    decisions_raw: Any = None
+    facts_raw: Any = None
+    if decisions_file is not None:
+        decisions_raw = json.loads(decisions_file.read_text(encoding="utf-8"))
+    if facts_file is not None:
+        facts_raw = json.loads(facts_file.read_text(encoding="utf-8"))
+    return {
+        "decisions": (decisions_raw or {}).get("decisions", [])
+        if isinstance(decisions_raw, dict)
+        else [],
+        "facts": (facts_raw or {}).get("facts", []) if isinstance(facts_raw, dict) else [],
+    }
+
+
+VISUAL_ANCHORS_FILE = "visual_anchors.json"
+
+
+def save_visual_anchors(run_dir: Path, anchors: list[dict[str, Any]]) -> dict[str, Any]:
+    """Persist reviewer-drawn anchors (source-pixel boxes). Structural check
+    only — the engine validates content when the anchors are consumed."""
+    required = {"frame_index", "x", "y", "width", "height", "entity_type", "label"}
+    for anchor in anchors:
+        if not isinstance(anchor, dict) or not required.issubset(anchor):
+            raise BridgeCommandError(
+                BridgeErrorCode.INVALID_INPUT,
+                f"Anchor entries need fields {sorted(required)}",
+            )
+    path = ui_dir(run_dir) / VISUAL_ANCHORS_FILE
+    atomic_write_json(path, {"anchors": anchors})
+    return {"path": str(path), "count": len(anchors)}
+
+
 def save_final_signoff(run_dir: Path, signoff_raw: dict[str, Any]) -> dict[str, Any]:
     """Validate + persist the human final-review signoff. The bridge never
     fabricates or pre-checks anything: every field comes from the UI form the

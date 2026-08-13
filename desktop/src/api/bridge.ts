@@ -121,6 +121,29 @@ export const saveHumanFacts = (runDir: string, facts: HumanCaptionFact[]) =>
     facts: facts as unknown as Json[],
   });
 
+export const getReviewInputs = (runDir: string) =>
+  engineRequest<{ decisions: HumanReviewDecision[]; facts: HumanCaptionFact[] }>(
+    "get_review_inputs",
+    { run_dir: runDir },
+  );
+
+export const saveVisualAnchors = (
+  runDir: string,
+  anchors: Array<{
+    frame_index: number;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    entity_type: string;
+    label: string;
+  }>,
+) =>
+  engineRequest<{ path: string; count: number }>("save_visual_anchors", {
+    run_dir: runDir,
+    anchors: anchors as unknown as Json[],
+  });
+
 export const finalize = (runDir: string) =>
   engineRequest<{ result: Json; caption_state: CaptionStatePayload }>("finalize", {
     run_dir: runDir,

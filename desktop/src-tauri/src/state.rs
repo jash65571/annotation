@@ -63,3 +63,57 @@ impl BackendState {
         Ok(file_canonical)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn state_with_temp() -> (BackendState, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("mr-state-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("run").join("caption")).unwrap();
+        fs::write(dir.join("run").join("manifest.json"), "{}").unwrap();
+        fs::write(dir.join("run").join("caption").join("x.md"), "hello").unwrap();
+        fs::write(dir.join("secret.txt"), "secret").unwrap();
+        let state = BackendState::new(EngineLaunch::DevUv {
+            repo_root: dir.clone(),
+        });
+        (state, dir)
+    }
+
+    #[test]
+    fn unregistered_run_dir_is_rejected() {
+        let (state, dir) = state_with_temp();
+        let run = dir.join("run");
+        let err = state
+            .check_path_allowed(&run, &run.join("caption").join("x.md"))
+            .unwrap_err();
+        assert_eq!(err.code, "INVALID_INPUT");
+    }
+
+    #[test]
+    fn registered_run_dir_serves_inside_paths_only() {
+        let (state, dir) = state_with_temp();
+        let run = dir.join("run");
+        state.allow_run_dir(&run);
+        assert!(state
+            .check_path_allowed(&run, &run.join("caption").join("x.md"))
+            .is_ok());
+        // Traversal out of the run dir is refused even when the run is allowed.
+        let escape = run.join("..").join("secret.txt");
+        let err = state.check_path_allowed(&run, &escape).unwrap_err();
+        assert_eq!(err.code, "INVALID_INPUT");
+    }
+
+    #[test]
+    fn missing_paths_are_typed_errors() {
+        let (state, dir) = state_with_temp();
+        let run = dir.join("run");
+        state.allow_run_dir(&run);
+        let err = state
+            .check_path_allowed(&run, &run.join("nope.png"))
+            .unwrap_err();
+        assert_eq!(err.code, "ARTIFACT_NOT_FOUND");
+    }
+}

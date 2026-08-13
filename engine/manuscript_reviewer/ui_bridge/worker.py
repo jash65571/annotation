@@ -54,6 +54,7 @@ from .serializers import (
     frame_record,
     human_facts_path,
     read_artifact,
+    read_review_inputs,
     read_text_artifact,
     require_run_dir,
     review_decisions_path,
@@ -62,6 +63,7 @@ from .serializers import (
     save_final_signoff,
     save_human_facts,
     save_review_decisions,
+    save_visual_anchors,
     shots,
     ui_dir,
     waveform_metadata,
@@ -165,6 +167,8 @@ class BridgeWorker:
             "get_waveform_metadata": self._cmd_waveform_metadata,
             "save_review_decisions": self._cmd_save_review_decisions,
             "save_human_facts": self._cmd_save_human_facts,
+            "get_review_inputs": self._cmd_get_review_inputs,
+            "save_visual_anchors": self._cmd_save_visual_anchors,
             "finalize": self._cmd_finalize,
             "get_caption_state": self._cmd_caption_state,
             "create_final_signoff": self._cmd_create_final_signoff,
@@ -478,6 +482,24 @@ class BridgeWorker:
             )
         with run_lock(run_dir):
             return save_human_facts(run_dir, facts)
+
+    def _cmd_get_review_inputs(
+        self, request_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        run_dir = require_run_dir(str(payload.get("run_dir", "")))
+        return read_review_inputs(run_dir)
+
+    def _cmd_save_visual_anchors(
+        self, request_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        run_dir = require_run_dir(str(payload.get("run_dir", "")))
+        anchors = payload.get("anchors")
+        if not isinstance(anchors, list):
+            raise BridgeCommandError(
+                BridgeErrorCode.INVALID_INPUT, "save_visual_anchors requires anchors[]"
+            )
+        with run_lock(run_dir):
+            return save_visual_anchors(run_dir, anchors)
 
     def _cmd_finalize(self, request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         run_dir = require_run_dir(str(payload.get("run_dir", "")))

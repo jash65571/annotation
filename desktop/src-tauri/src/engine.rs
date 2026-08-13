@@ -19,8 +19,15 @@ pub const SIDECAR_BASENAME: &str = "manuscript-engine-worker";
 /// How to launch the engine worker. Resolved once at startup.
 #[derive(Debug, Clone)]
 pub enum EngineLaunch {
-    /// Packaged sidecar executable bundled with the app.
-    Sidecar(PathBuf),
+    /// Packaged sidecar executable bundled with the app. Carries the
+    /// packaged-runtime environment: bundled FFmpeg dir, bundled uv dir,
+    /// and the writable app-local ASR worker root.
+    Sidecar {
+        exe: PathBuf,
+        ffmpeg_dir: Option<PathBuf>,
+        uv_dir: Option<PathBuf>,
+        asr_workers_dir: Option<PathBuf>,
+    },
     /// Development mode: `uv run --project <repo> python -m manuscript_reviewer.ui_bridge.worker`.
     DevUv { repo_root: PathBuf },
 }
@@ -28,15 +35,24 @@ pub enum EngineLaunch {
 impl EngineLaunch {
     /// Packaged sidecar wins when present; otherwise development mode
     /// requires the repository checkout (never an arbitrary path).
-    pub fn resolve(resource_dir: Option<&Path>) -> BridgeResult<Self> {
+    pub fn resolve(resource_dir: Option<&Path>, app_data_dir: Option<&Path>) -> BridgeResult<Self> {
         if let Some(dir) = resource_dir {
-            let exe = dir.join("binaries").join(format!("{SIDECAR_BASENAME}.exe"));
-            if exe.exists() {
-                return Ok(Self::Sidecar(exe));
-            }
-            let exe_unix = dir.join("binaries").join(SIDECAR_BASENAME);
-            if exe_unix.exists() {
-                return Ok(Self::Sidecar(exe_unix));
+            let candidates = [
+                dir.join("binaries").join(format!("{SIDECAR_BASENAME}.exe")),
+                dir.join("binaries")
+                    .join(SIDECAR_BASENAME)
+                    .join(format!("{SIDECAR_BASENAME}.exe")),
+                dir.join("binaries").join(SIDECAR_BASENAME),
+            ];
+            if let Some(exe) = candidates.iter().find(|p| p.is_file()) {
+                let ffmpeg_dir = dir.join("ffmpeg").join("bin");
+                let uv_dir = dir.join("uv");
+                return Ok(Self::Sidecar {
+                    exe: exe.clone(),
+                    ffmpeg_dir: ffmpeg_dir.is_dir().then_some(ffmpeg_dir),
+                    uv_dir: uv_dir.is_dir().then_some(uv_dir),
+                    asr_workers_dir: app_data_dir.map(|d| d.join("asr_workers")),
+                });
             }
         }
         if let Some(repo) = find_repo_root() {
@@ -49,10 +65,34 @@ impl EngineLaunch {
 
     pub fn command(&self) -> Command {
         match self {
-            Self::Sidecar(path) => {
-                let mut cmd = Command::new(path);
-                if let Some(parent) = path.parent() {
+            Self::Sidecar {
+                exe,
+                ffmpeg_dir,
+                uv_dir,
+                asr_workers_dir,
+            } => {
+                let mut cmd = Command::new(exe);
+                if let Some(parent) = exe.parent() {
                     cmd.current_dir(parent);
+                }
+                // The packaged FFmpeg always wins over an arbitrary system
+                // one (spec §14); the env var is the engine's documented hook.
+                if let Some(dir) = ffmpeg_dir {
+                    cmd.env("MANUSCRIPT_FFMPEG_DIR", dir);
+                }
+                // ASR worker envs live in writable app data (spec §15); the
+                // bundled uv is found via a PATH prepend, not a shell.
+                if let Some(dir) = asr_workers_dir {
+                    let _ = std::fs::create_dir_all(dir);
+                    cmd.env("MANUSCRIPT_ASR_WORKERS_DIR", dir);
+                }
+                if let Some(dir) = uv_dir {
+                    let path_var = std::env::var_os("PATH").unwrap_or_default();
+                    let mut paths: Vec<PathBuf> = vec![dir.clone()];
+                    paths.extend(std::env::split_paths(&path_var));
+                    if let Ok(joined) = std::env::join_paths(paths) {
+                        cmd.env("PATH", joined);
+                    }
                 }
                 cmd
             }
@@ -216,5 +256,64 @@ impl EngineWorker {
 impl Drop for EngineWorker {
     fn drop(&mut self) {
         self.kill();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn sidecar_wins_when_present() {
+        let dir = std::env::temp_dir().join(format!("mr-engine-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let bin = dir.join("binaries");
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(bin.join(format!("{SIDECAR_BASENAME}.exe")), b"stub").unwrap();
+        let launch = EngineLaunch::resolve(Some(&dir), Some(&dir)).unwrap();
+        match launch {
+            EngineLaunch::Sidecar { exe, .. } => {
+                assert!(exe.ends_with(format!("{SIDECAR_BASENAME}.exe")))
+            }
+            EngineLaunch::DevUv { .. } => panic!("expected sidecar launch"),
+        }
+    }
+
+    #[test]
+    fn sidecar_env_carries_packaged_runtime_dirs() {
+        let dir = std::env::temp_dir().join(format!("mr-engine-env-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("binaries")).unwrap();
+        fs::write(
+            dir.join("binaries").join(format!("{SIDECAR_BASENAME}.exe")),
+            b"stub",
+        )
+        .unwrap();
+        fs::create_dir_all(dir.join("ffmpeg").join("bin")).unwrap();
+        fs::create_dir_all(dir.join("uv")).unwrap();
+        let launch = EngineLaunch::resolve(Some(&dir), Some(&dir.join("appdata"))).unwrap();
+        match &launch {
+            EngineLaunch::Sidecar {
+                ffmpeg_dir,
+                uv_dir,
+                asr_workers_dir,
+                ..
+            } => {
+                assert!(ffmpeg_dir.is_some(), "bundled ffmpeg dir must be detected");
+                assert!(uv_dir.is_some(), "bundled uv dir must be detected");
+                assert!(
+                    asr_workers_dir.is_some(),
+                    "asr workers dir must be app-local"
+                );
+            }
+            EngineLaunch::DevUv { .. } => panic!("expected sidecar launch"),
+        }
+        // Building the command must not panic and must target the sidecar exe.
+        let cmd = launch.command();
+        assert!(cmd
+            .get_program()
+            .to_string_lossy()
+            .contains(SIDECAR_BASENAME));
     }
 }
