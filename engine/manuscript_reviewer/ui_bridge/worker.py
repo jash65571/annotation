@@ -613,6 +613,13 @@ class BridgeWorker:
 
 
 def main() -> None:
+    # The protocol is UTF-8 JSONL regardless of console codepage — without
+    # this, a packaged worker on Windows emits cp1252 bytes (e.g. em dashes
+    # in blocker messages) that break the UTF-8 reader on the Rust side.
+    if hasattr(sys.stdin, "reconfigure"):
+        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", newline="\n")
     worker = BridgeWorker(sys.stdin, sys.stdout)
     worker.serve_forever()
 
