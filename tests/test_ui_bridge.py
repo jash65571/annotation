@@ -380,6 +380,57 @@ def test_worker_full_flow(clip_24fps: Path, tmp_path: Path) -> None:
     assert signoff_state.payload is not None
     assert signoff_state.payload["present"] is False
 
+    # Anchor flow (§Phase 6.1-2): save an anchor, resolve a rerun request from
+    # run provenance, run it, and verify the new run consumed the anchors
+    # (hashed + snapshotted by the pipeline). The locked engine's tracking
+    # slice is reserved, so consumption/provenance is the honest assertion.
+    dims = worker.handle_request(request("get_media_dimensions", {"run_dir": run_dir}))
+    assert dims.status == "ok"
+    assert dims.payload is not None
+    assert dims.payload["width"] > 0 and dims.payload["height"] > 0
+
+    anchors_saved = worker.handle_request(
+        request(
+            "save_visual_anchors",
+            {
+                "run_dir": run_dir,
+                "anchors": [
+                    {
+                        "frame_index": 3,
+                        "x": 10,
+                        "y": 12,
+                        "width": 40,
+                        "height": 30,
+                        "entity_type": "object",
+                        "label": "test-box",
+                    }
+                ],
+            },
+        )
+    )
+    assert anchors_saved.status == "ok"
+
+    rerun = worker.handle_request(request("resolve_rerun_request", {"run_dir": run_dir}))
+    assert rerun.status == "ok", rerun.error
+    assert rerun.payload is not None
+    rerun_request = rerun.payload["request"]
+    assert rerun_request["visual_anchors_path"].endswith("visual_anchors.json")
+
+    rerun_request["options"] = {"asr": False, "ocr": False}
+    second_run = worker.handle_request(
+        request("start_audit", rerun_request, request_id="audit-2")
+    )
+    assert second_run.status == "ok", second_run.error
+    assert second_run.payload is not None
+    new_run_dir = Path(second_run.payload["run_dir"])
+    assert str(new_run_dir) != run_dir
+    new_manifest = json.loads((new_run_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert new_manifest["source_visual_anchors_sha256"], (
+        "rerun must record the consumed anchors hash in provenance"
+    )
+    snapshots = list(new_run_dir.glob("visual_anchors*"))
+    assert snapshots, "anchors snapshot must be copied into the new run"
+
 
 # ---------------------------------------------------------------------------
 # Full E2E through the worker to READY_TO_ENTER (spec §98): fixture run with
@@ -566,3 +617,246 @@ def test_worker_reaches_ready_to_enter_and_exports_exact_bytes(tmp_path: Path) -
     assert validated.payload is not None
     assert validated.payload["valid"] is True
     assert validated.payload["stale"] is False
+
+
+# ---------------------------------------------------------------------------
+# Phase 6.1 hardening regressions
+# ---------------------------------------------------------------------------
+
+
+def test_evidence_bundle_sibling_prefix_escape_rejected(tmp_path: Path) -> None:
+    """C:\\runs\\task1 must never admit C:\\runs\\task10 (string-prefix bug)."""
+    from manuscript_reviewer.ui_bridge.serializers import evidence_bundle
+
+    run_dir = tmp_path / "task1"
+    sibling = tmp_path / "task10"
+    run_dir.mkdir()
+    sibling.mkdir()
+    (run_dir / "manifest.json").write_text("{}", encoding="utf-8")
+    (sibling / "secret.png").write_bytes(b"png")
+    with pytest.raises(BridgeCommandError) as excinfo:
+        evidence_bundle(run_dir, "..\\task10")
+    assert excinfo.value.code == BridgeErrorCode.INVALID_INPUT
+
+
+def test_save_review_inputs_is_transactional(tmp_path: Path) -> None:
+    """An invalid fact must leave BOTH previous files untouched."""
+    worker, _ = make_worker()
+    run_dir = _fake_run_dir(tmp_path)
+    first = worker.handle_request(
+        request(
+            "save_review_inputs",
+            {"run_dir": str(run_dir), "decisions": [_decision()], "facts": []},
+        )
+    )
+    assert first.status == "ok"
+    assert first.payload is not None
+    assert first.payload["decision_count"] == 1
+    revision = first.payload["review_input_revision_id"]
+    assert revision
+
+    bad_fact = {"fact_id": "HF-BAD", "fact_type": "SCENE", "decided_by": "machine"}
+    second = worker.handle_request(
+        request(
+            "save_review_inputs",
+            {
+                "run_dir": str(run_dir),
+                "decisions": [_decision(decision_id="D-2")],
+                "facts": [bad_fact],
+            },
+        )
+    )
+    assert second.status == "error"
+    # The previous pair is intact: decision D-1 from revision 1, no facts file
+    # half-written with the bad fact.
+    saved = json.loads(
+        (run_dir / "ui" / "review_decisions.json").read_text(encoding="utf-8")
+    )
+    assert [d["decision_id"] for d in saved["decisions"]] == ["D-1"]
+    assert saved["revision"] == revision
+    leftovers = list((run_dir / "ui").glob("*.tmp"))
+    assert leftovers == []
+
+
+def test_audit_history_persists_and_survives(tmp_path: Path) -> None:
+    worker, _ = make_worker()
+    run_dir = _fake_run_dir(tmp_path)
+    appended = worker.handle_request(
+        request(
+            "append_audit_history",
+            {
+                "run_dir": str(run_dir),
+                "entries": [
+                    {
+                        "at_utc": "2026-08-13T00:00:00Z",
+                        "reviewer": "reviewer@test",
+                        "operation": "decision_saved",
+                        "subject": "SPEED-1",
+                    }
+                ],
+            },
+        )
+    )
+    assert appended.status == "ok"
+    # A fresh worker (app restart) still reads the history from disk.
+    fresh_worker, _ = make_worker()
+    history = fresh_worker.handle_request(
+        request("get_audit_history", {"run_dir": str(run_dir)})
+    )
+    assert history.status == "ok"
+    assert history.payload is not None
+    assert history.payload["entries"][0]["operation"] == "decision_saved"
+
+
+def test_ui_state_persists_skipped_items(tmp_path: Path) -> None:
+    worker, _ = make_worker()
+    run_dir = _fake_run_dir(tmp_path)
+    saved = worker.handle_request(
+        request(
+            "save_ui_state",
+            {"run_dir": str(run_dir), "state": {"skipped_item_ids": ["areview_0002"]}},
+        )
+    )
+    assert saved.status == "ok"
+    fresh_worker, _ = make_worker()
+    loaded = fresh_worker.handle_request(request("get_ui_state", {"run_dir": str(run_dir)}))
+    assert loaded.status == "ok"
+    assert loaded.payload is not None
+    assert loaded.payload["skipped_item_ids"] == ["areview_0002"]
+
+
+def test_asr_health_reports_env_truth(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A packaged worker template alone is never reported as bootstrapped."""
+    from manuscript_reviewer.audio.asr import runtime as asr_runtime
+
+    monkeypatch.setenv(asr_runtime.WORKERS_DIR_ENV, str(tmp_path))
+    worker, _ = make_worker()
+    response = worker.handle_request(request("health"))
+    assert response.status == "ok"
+    assert response.payload is not None
+    fw = response.payload["asr_worker_envs"]["fw_env"]
+    assert fw["worker_template_available"] is True  # repo templates exist
+    assert fw["worker_env_bootstrapped"] is False  # no .venv in override dir
+    assert str(tmp_path) in fw["effective_env_dir"]
+    # A materialized .venv flips the bootstrapped flag.
+    (tmp_path / "fw_env" / ".venv").mkdir(parents=True)
+    again = worker.handle_request(request("health"))
+    assert again.payload is not None
+    assert again.payload["asr_worker_envs"]["fw_env"]["worker_env_bootstrapped"] is True
+
+
+def test_review_resolution_typed_targets_and_subject_mismatch(tmp_path: Path) -> None:
+    """Engine-owned resolution: a PLAYBACK_SPEED decision on SPEED-1 resolves
+    the speed target even though no queue item id matches the subject; an
+    unbound/stale decision leaves it OPEN."""
+    from .phase5_helpers import RULES_VERSION, VIDEO_SHA
+
+    worker, _ = make_worker()
+    run_dir = str(_manifested_ready_run(tmp_path))
+
+    before = worker.handle_request(request("get_review_resolution", {"run_dir": run_dir}))
+    assert before.status == "ok", before.error
+    assert before.payload is not None
+    speed = next(
+        t for t in before.payload["speed_targets"] if t["subject_id"] == "SPEED-1"
+    )
+    assert speed["target_kind"] == "PLAYBACK_SPEED"
+    assert speed["allowed_decision_types"] == ["PLAYBACK_SPEED"]
+    assert speed["resolution_status"] == "OPEN"
+    transition = next(
+        t
+        for t in before.payload["transition_targets"]
+        if t["subject_id"] == "TRANSITION-1"
+    )
+    assert transition["target_kind"] == "SHOT_TRANSITION"
+
+    # A decision bound to ANOTHER video is STALE and must not resolve.
+    stale = worker.handle_request(
+        request(
+            "save_review_decisions",
+            {
+                "run_dir": run_dir,
+                "decisions": [
+                    {
+                        "decision_id": "D-STALE",
+                        "subject_id": "SPEED-1",
+                        "decision_type": "PLAYBACK_SPEED",
+                        "value": "regular",
+                        "decided_by": "reviewer@test",
+                        "bound_video_sha256": "b" * 64,
+                        "bound_rules_version": RULES_VERSION,
+                    }
+                ],
+            },
+        )
+    )
+    assert stale.status == "ok"
+    still_open = worker.handle_request(
+        request("get_review_resolution", {"run_dir": run_dir})
+    )
+    assert still_open.payload is not None
+    speed_after_stale = next(
+        t for t in still_open.payload["speed_targets"] if t["subject_id"] == "SPEED-1"
+    )
+    assert speed_after_stale["resolution_status"] == "OPEN"
+    stale_app = next(
+        a for a in still_open.payload["applications"] if a["decision_id"] == "D-STALE"
+    )
+    assert stale_app["outcome"] == "STALE"
+
+    # A properly bound decision resolves it.
+    applied = worker.handle_request(
+        request(
+            "save_review_decisions",
+            {
+                "run_dir": run_dir,
+                "decisions": [
+                    {
+                        "decision_id": "D-OK",
+                        "subject_id": "SPEED-1",
+                        "decision_type": "PLAYBACK_SPEED",
+                        "value": "regular",
+                        "decided_by": "reviewer@test",
+                        "bound_video_sha256": VIDEO_SHA,
+                        "bound_rules_version": RULES_VERSION,
+                    }
+                ],
+            },
+        )
+    )
+    assert applied.status == "ok"
+    resolved = worker.handle_request(
+        request("get_review_resolution", {"run_dir": run_dir})
+    )
+    assert resolved.payload is not None
+    speed_resolved = next(
+        t for t in resolved.payload["speed_targets"] if t["subject_id"] == "SPEED-1"
+    )
+    assert speed_resolved["resolution_status"] == "RESOLVED"
+    assert speed_resolved["resolved_by_decision_ids"] == ["D-OK"]
+
+
+def test_media_dimensions_from_media_truth(tmp_path: Path) -> None:
+    """Anchor source dimensions come from Phase 1 media.json — portrait too."""
+    worker, _ = make_worker()
+    run_dir = _fake_run_dir(tmp_path)
+    (run_dir / "media.json").write_text(
+        json.dumps({"video_streams": [{"width": 1080, "height": 1920}]}),
+        encoding="utf-8",
+    )
+    response = worker.handle_request(
+        request("get_media_dimensions", {"run_dir": str(run_dir)})
+    )
+    assert response.status == "ok"
+    assert response.payload == {"width": 1080, "height": 1920}
+
+
+def test_resolve_rerun_request_requires_saved_anchors(tmp_path: Path) -> None:
+    worker, _ = make_worker()
+    run_dir = _fake_run_dir(tmp_path)
+    response = worker.handle_request(
+        request("resolve_rerun_request", {"run_dir": str(run_dir)})
+    )
+    assert response.status == "error"
+    assert response.error is not None
+    assert response.error.code == BridgeErrorCode.ARTIFACT_NOT_FOUND

@@ -46,6 +46,7 @@ from .protocol import (
     BridgeResponse,
 )
 from .serializers import (
+    append_audit_history,
     audio_review_clip,
     caption_state,
     evidence_bundle,
@@ -54,8 +55,10 @@ from .serializers import (
     frame_record,
     human_facts_path,
     read_artifact,
+    read_audit_history,
     read_review_inputs,
     read_text_artifact,
+    read_ui_state,
     require_run_dir,
     review_decisions_path,
     review_queue,
@@ -63,6 +66,8 @@ from .serializers import (
     save_final_signoff,
     save_human_facts,
     save_review_decisions,
+    save_review_inputs,
+    save_ui_state,
     save_visual_anchors,
     shots,
     ui_dir,
@@ -169,6 +174,15 @@ class BridgeWorker:
             "save_human_facts": self._cmd_save_human_facts,
             "get_review_inputs": self._cmd_get_review_inputs,
             "save_visual_anchors": self._cmd_save_visual_anchors,
+            "get_review_resolution": self._cmd_get_review_resolution,
+            "get_media_dimensions": self._cmd_get_media_dimensions,
+            "save_review_inputs": self._cmd_save_review_inputs,
+            "append_audit_history": self._cmd_append_audit_history,
+            "get_audit_history": self._cmd_get_audit_history,
+            "save_ui_state": self._cmd_save_ui_state,
+            "get_ui_state": self._cmd_get_ui_state,
+            "resolve_rerun_request": self._cmd_resolve_rerun_request,
+            "export_draft": self._cmd_export_draft,
             "finalize": self._cmd_finalize,
             "get_caption_state": self._cmd_caption_state,
             "create_final_signoff": self._cmd_create_final_signoff,
@@ -292,9 +306,26 @@ class BridgeWorker:
             }
         except FFmpegNotFoundError:
             pass
-        asr_workers = Path(__file__).resolve().parent.parent / "audio" / "asr" / "workers"
+        from ..audio.asr import runtime as asr_runtime
+
         tesseract = shutil.which("tesseract")
         tesseract_dir = os.environ.get("MANUSCRIPT_TESSERACT_DIR")
+
+        def _env_health(name: str) -> dict[str, Any]:
+            """Honest ASR env state: a packaged template alone is never
+            reported as bootstrapped/cached (§Phase 6.1-17). The effective
+            env dir honors MANUSCRIPT_ASR_WORKERS_DIR."""
+            template = asr_runtime.WORKERS_DIR / name / "pyproject.toml"
+            override = os.environ.get(asr_runtime.WORKERS_DIR_ENV, "").strip()
+            effective = (
+                Path(override) / name if override else asr_runtime.WORKERS_DIR / name
+            )
+            return {
+                "worker_template_available": template.exists(),
+                "effective_env_dir": str(effective),
+                "worker_env_bootstrapped": (effective / ".venv").exists(),
+            }
+
         return {
             "protocol_version": UI_BRIDGE_PROTOCOL_VERSION,
             "engine_version": __version__,
@@ -302,8 +333,8 @@ class BridgeWorker:
             "ffmpeg": ffmpeg_info,
             "ffprobe": ffprobe_info,
             "asr_worker_envs": {
-                "fw_env": (asr_workers / "fw_env" / "pyproject.toml").exists(),
-                "wx_env": (asr_workers / "wx_env" / "pyproject.toml").exists(),
+                "fw_env": _env_health("fw_env"),
+                "wx_env": _env_health("wx_env"),
             },
             "ocr": {
                 "tesseract_on_path": tesseract is not None,
@@ -345,6 +376,15 @@ class BridgeWorker:
         feedback_path = self._optional_input_file(
             payload, "feedback_path", "feedback_text", "feedback"
         )
+        anchors_raw = payload.get("visual_anchors_path")
+        visual_anchors_path: Path | None = None
+        if isinstance(anchors_raw, str) and anchors_raw:
+            visual_anchors_path = Path(anchors_raw)
+            if not visual_anchors_path.is_file():
+                raise BridgeCommandError(
+                    BridgeErrorCode.INVALID_INPUT,
+                    f"Visual anchors file not found: {anchors_raw}",
+                )
         asr_config = ASRConfig(
             model=str(options.get("asr_model", "large-v3-turbo")),
             device=str(options.get("asr_device", "auto")),
@@ -369,6 +409,7 @@ class BridgeWorker:
             asr_config=asr_config,
             visual_intelligence=bool(options.get("visual_intelligence", True)),
             feedback_path=feedback_path,
+            visual_anchors_path=visual_anchors_path,
             ocr_enabled=bool(options.get("ocr", True)),
             caption_brain=bool(options.get("caption_brain", True)),
             progress=reporter,
@@ -501,6 +542,120 @@ class BridgeWorker:
             )
         with run_lock(run_dir):
             return save_visual_anchors(run_dir, anchors)
+
+    def _cmd_get_review_resolution(
+        self, request_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        from .resolution import review_resolution
+
+        run_dir = require_run_dir(str(payload.get("run_dir", "")))
+        return review_resolution(run_dir)
+
+    def _cmd_get_media_dimensions(
+        self, request_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        from .resolution import media_dimensions
+
+        run_dir = require_run_dir(str(payload.get("run_dir", "")))
+        return media_dimensions(run_dir)
+
+    def _cmd_save_review_inputs(
+        self, request_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        run_dir = require_run_dir(str(payload.get("run_dir", "")))
+        decisions = payload.get("decisions")
+        facts = payload.get("facts")
+        if not isinstance(decisions, list) or not isinstance(facts, list):
+            raise BridgeCommandError(
+                BridgeErrorCode.INVALID_INPUT,
+                "save_review_inputs requires decisions[] and facts[]",
+            )
+        with run_lock(run_dir):
+            return save_review_inputs(run_dir, decisions, facts)
+
+    def _cmd_append_audit_history(
+        self, request_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        run_dir = require_run_dir(str(payload.get("run_dir", "")))
+        entries = payload.get("entries")
+        if not isinstance(entries, list):
+            raise BridgeCommandError(
+                BridgeErrorCode.INVALID_INPUT, "append_audit_history requires entries[]"
+            )
+        return append_audit_history(run_dir, entries)
+
+    def _cmd_get_audit_history(
+        self, request_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        run_dir = require_run_dir(str(payload.get("run_dir", "")))
+        return read_audit_history(run_dir)
+
+    def _cmd_save_ui_state(self, request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        run_dir = require_run_dir(str(payload.get("run_dir", "")))
+        state = payload.get("state")
+        if not isinstance(state, dict):
+            raise BridgeCommandError(
+                BridgeErrorCode.INVALID_INPUT, "save_ui_state requires state{}"
+            )
+        return save_ui_state(run_dir, state)
+
+    def _cmd_get_ui_state(self, request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        run_dir = require_run_dir(str(payload.get("run_dir", "")))
+        return read_ui_state(run_dir)
+
+    def _cmd_resolve_rerun_request(
+        self, request_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Build a start_audit payload for RE-RUN WITH ANCHORS from the
+        verified run's own provenance (manifest + snapshots + saved anchors).
+        The frontend supplies only the run_dir; every input path comes from
+        the engine's records — never from the renderer."""
+        run_dir = require_run_dir(str(payload.get("run_dir", "")))
+        manifest = read_artifact(run_dir, "manifest.json")
+        source_video = Path(str(manifest.get("source_video_path", "")))
+        if not source_video.is_file():
+            raise BridgeCommandError(
+                BridgeErrorCode.ARTIFACT_NOT_FOUND,
+                "Source video is no longer at its recorded path; cannot re-run",
+                detail=str(source_video),
+            )
+        anchors_file = ui_dir(run_dir) / "visual_anchors.json"
+        if not anchors_file.is_file():
+            raise BridgeCommandError(
+                BridgeErrorCode.ARTIFACT_NOT_FOUND,
+                "This run has no saved visual anchors to re-run with",
+            )
+        request: dict[str, Any] = {
+            "video_path": str(source_video),
+            # New sibling run under the same artifacts root, provenance intact.
+            "artifacts_root": str(run_dir.parent.parent),
+            "visual_anchors_path": str(anchors_file),
+        }
+        # Reuse the run's immutable seed/feedback snapshots when present.
+        seed_snapshot = next(
+            (p for p in run_dir.glob("seed.*") if p.is_file()), None
+        )
+        if seed_snapshot is not None:
+            request["seed_path"] = str(seed_snapshot)
+        feedback_snapshot = run_dir / "feedback" / "feedback_original.txt"
+        if feedback_snapshot.is_file():
+            request["feedback_path"] = str(feedback_snapshot)
+        return {"request": request}
+
+    def _cmd_export_draft(self, request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """The current draft artifact for 'Save review draft as…'. Clearly a
+        draft: served only from draft_review_only.md, never the ready file."""
+        run_dir = require_run_dir(str(payload.get("run_dir", "")))
+        text = read_text_artifact(run_dir, "caption/draft_review_only.md", required=False)
+        if text is None:
+            raise BridgeCommandError(
+                BridgeErrorCode.ARTIFACT_NOT_FOUND, "Run has no draft caption artifact"
+            )
+        return {
+            "markdown": text,
+            "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            "path": str(run_dir / "caption" / "draft_review_only.md"),
+        }
 
     def _cmd_finalize(self, request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         run_dir = require_run_dir(str(payload.get("run_dir", "")))

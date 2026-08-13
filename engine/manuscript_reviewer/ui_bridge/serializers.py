@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -330,7 +331,9 @@ def audio_review_clip(run_dir: Path, item_id: str) -> dict[str, Any]:
 def evidence_bundle(run_dir: Path, bundle_dir: str) -> dict[str, Any]:
     """Contents of one shot-evidence bundle directory (paths + evidence.json)."""
     bundle = (run_dir / bundle_dir).resolve()
-    if not str(bundle).startswith(str(run_dir.resolve())):
+    # Path-component containment (never string-prefix: C:/runs/task1 must not
+    # admit C:/runs/task10).
+    if not bundle.is_relative_to(run_dir.resolve()):
         raise BridgeCommandError(
             BridgeErrorCode.INVALID_INPUT, "Evidence bundle path escapes the run directory"
         )
@@ -380,27 +383,7 @@ _NON_HUMAN_AUTHORS = {"", "machine", "ai", "system"}
 
 def save_review_decisions(run_dir: Path, decisions: list[dict[str, Any]]) -> dict[str, Any]:
     """Validate + persist the run's human review decisions (typed, bound)."""
-    validated: list[HumanReviewDecision] = []
-    for entry in decisions:
-        try:
-            decision = HumanReviewDecision.model_validate(entry)
-        except ValidationError as exc:
-            raise BridgeCommandError(
-                BridgeErrorCode.INVALID_DECISION,
-                "Review decision failed validation",
-                detail=str(exc),
-            ) from exc
-        if (decision.decided_by or "").strip().lower() in _NON_HUMAN_AUTHORS:
-            raise BridgeCommandError(
-                BridgeErrorCode.INVALID_DECISION,
-                f"Decision {decision.decision_id} has non-human decided_by",
-            )
-        if not decision.bound_video_sha256 or not decision.bound_rules_version:
-            raise BridgeCommandError(
-                BridgeErrorCode.INVALID_DECISION,
-                f"Decision {decision.decision_id} is missing binding keys",
-            )
-        validated.append(decision)
+    validated = _validate_decisions(decisions)
     path = ui_dir(run_dir) / REVIEW_DECISIONS_FILE
     atomic_write_json(
         path, {"decisions": [d.model_dump(mode="json") for d in validated]}
@@ -410,28 +393,7 @@ def save_review_decisions(run_dir: Path, decisions: list[dict[str, Any]]) -> dic
 
 def save_human_facts(run_dir: Path, facts: list[dict[str, Any]]) -> dict[str, Any]:
     """Validate + persist reviewer-added caption facts (must carry evidence)."""
-    validated: list[HumanCaptionFact] = []
-    for entry in facts:
-        try:
-            fact = HumanCaptionFact.model_validate(entry)
-        except ValidationError as exc:
-            raise BridgeCommandError(
-                BridgeErrorCode.INVALID_DECISION,
-                "Human fact failed validation",
-                detail=str(exc),
-            ) from exc
-        if (fact.decided_by or "").strip().lower() in _NON_HUMAN_AUTHORS:
-            raise BridgeCommandError(
-                BridgeErrorCode.INVALID_DECISION,
-                f"Human fact {fact.fact_id} has non-human decided_by",
-            )
-        if not fact.evidence_refs:
-            raise BridgeCommandError(
-                BridgeErrorCode.INVALID_DECISION,
-                f"Human fact {fact.fact_id} carries no evidence reference; "
-                "facts without evidence cannot be saved as verified",
-            )
-        validated.append(fact)
+    validated = _validate_facts(facts)
     path = ui_dir(run_dir) / HUMAN_FACTS_FILE
     atomic_write_json(path, {"facts": [f.model_dump(mode="json") for f in validated]})
     return {"path": str(path), "count": len(validated)}
@@ -471,6 +433,170 @@ def save_visual_anchors(run_dir: Path, anchors: list[dict[str, Any]]) -> dict[st
     path = ui_dir(run_dir) / VISUAL_ANCHORS_FILE
     atomic_write_json(path, {"anchors": anchors})
     return {"path": str(path), "count": len(anchors)}
+
+
+def save_review_inputs(
+    run_dir: Path,
+    decisions: list[dict[str, Any]],
+    facts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Transactional save of BOTH human-input files (§Phase 6.1-11).
+
+    Every decision and fact is validated BEFORE either live file is replaced;
+    both temp files are fully written, then committed by two atomic renames.
+    A failure before commit leaves the previous pair untouched; the tiny
+    window between the two renames is recorded in the returned revision id so
+    the audit history can reconcile it.
+    """
+    validated_decisions = _validate_decisions(decisions)
+    validated_facts = _validate_facts(facts)
+    directory = ui_dir(run_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    revision = f"rev-{int(time.time() * 1000)}"
+    decisions_payload = {
+        "decisions": [d.model_dump(mode="json") for d in validated_decisions],
+        "revision": revision,
+    }
+    facts_payload = {
+        "facts": [f.model_dump(mode="json") for f in validated_facts],
+        "revision": revision,
+    }
+    decisions_tmp = directory / f"{REVIEW_DECISIONS_FILE}.{revision}.tmp"
+    facts_tmp = directory / f"{HUMAN_FACTS_FILE}.{revision}.tmp"
+    try:
+        _write_json_file(decisions_tmp, decisions_payload)
+        _write_json_file(facts_tmp, facts_payload)
+        decisions_tmp.replace(directory / REVIEW_DECISIONS_FILE)
+        facts_tmp.replace(directory / HUMAN_FACTS_FILE)
+    finally:
+        decisions_tmp.unlink(missing_ok=True)
+        facts_tmp.unlink(missing_ok=True)
+    return {
+        "review_input_revision_id": revision,
+        "decision_count": len(validated_decisions),
+        "fact_count": len(validated_facts),
+    }
+
+
+def _write_json_file(path: Path, data: Any) -> None:
+    fd = os.open(str(path), os.O_CREAT | os.O_TRUNC | os.O_WRONLY)
+    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+        json.dump(data, handle, indent=2, sort_keys=True, ensure_ascii=False)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _validate_decisions(decisions: list[dict[str, Any]]) -> list[HumanReviewDecision]:
+    validated: list[HumanReviewDecision] = []
+    for entry in decisions:
+        try:
+            decision = HumanReviewDecision.model_validate(entry)
+        except ValidationError as exc:
+            raise BridgeCommandError(
+                BridgeErrorCode.INVALID_DECISION,
+                "Review decision failed validation",
+                detail=str(exc),
+            ) from exc
+        if (decision.decided_by or "").strip().lower() in _NON_HUMAN_AUTHORS:
+            raise BridgeCommandError(
+                BridgeErrorCode.INVALID_DECISION,
+                f"Decision {decision.decision_id} has non-human decided_by",
+            )
+        if not decision.bound_video_sha256 or not decision.bound_rules_version:
+            raise BridgeCommandError(
+                BridgeErrorCode.INVALID_DECISION,
+                f"Decision {decision.decision_id} is missing binding keys",
+            )
+        validated.append(decision)
+    return validated
+
+
+def _validate_facts(facts: list[dict[str, Any]]) -> list[HumanCaptionFact]:
+    validated: list[HumanCaptionFact] = []
+    for entry in facts:
+        try:
+            fact = HumanCaptionFact.model_validate(entry)
+        except ValidationError as exc:
+            raise BridgeCommandError(
+                BridgeErrorCode.INVALID_DECISION,
+                "Human fact failed validation",
+                detail=str(exc),
+            ) from exc
+        if (fact.decided_by or "").strip().lower() in _NON_HUMAN_AUTHORS:
+            raise BridgeCommandError(
+                BridgeErrorCode.INVALID_DECISION,
+                f"Human fact {fact.fact_id} has non-human decided_by",
+            )
+        if not fact.evidence_refs:
+            raise BridgeCommandError(
+                BridgeErrorCode.INVALID_DECISION,
+                f"Human fact {fact.fact_id} carries no evidence reference; "
+                "facts without evidence cannot be saved as verified",
+            )
+        validated.append(fact)
+    return validated
+
+
+AUDIT_HISTORY_FILE = "audit_history.jsonl"
+
+
+def append_audit_history(run_dir: Path, entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """Append structured local review-history entries (no cryptographic
+    integrity claimed; machine evidence untouched)."""
+    for entry in entries:
+        if not isinstance(entry, dict) or not entry.get("operation"):
+            raise BridgeCommandError(
+                BridgeErrorCode.INVALID_INPUT,
+                "Audit entries need at least an operation field",
+            )
+    path = ui_dir(run_dir) / AUDIT_HISTORY_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as handle:
+        for entry in entries:
+            handle.write(json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n")
+    return {"path": str(path), "appended": len(entries)}
+
+
+def read_audit_history(run_dir: Path) -> dict[str, Any]:
+    path = ui_dir(run_dir) / AUDIT_HISTORY_FILE
+    if not path.exists():
+        return {"entries": []}
+    entries: list[dict[str, Any]] = []
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                parsed = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                entries.append(parsed)
+    return {"entries": entries}
+
+
+UI_STATE_FILE = "ui_state.json"
+
+
+def save_ui_state(run_dir: Path, state: dict[str, Any]) -> dict[str, Any]:
+    """Persist per-run UI workflow state (skipped/deferred item ids…). Display
+    state only — it never counts as engine resolution."""
+    path = ui_dir(run_dir) / UI_STATE_FILE
+    atomic_write_json(path, state)
+    return {"path": str(path)}
+
+
+def read_ui_state(run_dir: Path) -> dict[str, Any]:
+    path = ui_dir(run_dir) / UI_STATE_FILE
+    if not path.exists():
+        return {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
 
 
 def save_final_signoff(run_dir: Path, signoff_raw: dict[str, Any]) -> dict[str, Any]:
