@@ -1,0 +1,9 @@
+{
+  "bundle": {
+    "resources": {
+      "binaries/manuscript-engine-worker": "binaries/manuscript-engine-worker",
+      "ffmpeg": "ffmpeg",
+      "uv": "uv"
+    }
+  }
+}

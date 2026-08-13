@@ -32,9 +32,10 @@ New-Item -ItemType Directory -Force $uvDst | Out-Null
 Copy-Item $uvExe "$uvDst\uv.exe"
 & "$uvDst\uv.exe" --version | Tee-Object "$uvDst\VERSION.txt"
 
-# 4. Tauri NSIS bundle
+# 4. Tauri NSIS bundle (resources overlay only exists for packaged builds so
+#    development cargo check/clippy never requires the staged runtimes)
 Set-Location desktop
-npm run tauri build
+npm run tauri build -- --config src-tauri/tauri.packaged.conf.json
 if ($LASTEXITCODE -ne 0) { throw "tauri build failed" }
 Get-ChildItem src-tauri\target\release\bundle\nsis\*.exe | ForEach-Object {
     Write-Host "Installer: $($_.FullName) ($([math]::Round($_.Length / 1MB, 1)) MB)"
