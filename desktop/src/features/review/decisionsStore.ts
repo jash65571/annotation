@@ -11,10 +11,11 @@
  */
 
 import {
+  appendAuditHistory,
   finalize,
+  getAuditHistory,
   getRunSummary,
-  saveHumanFacts,
-  saveReviewDecisions,
+  saveReviewInputs,
 } from "../../api/bridge";
 import type {
   CaptionStatePayload,
@@ -34,6 +35,7 @@ export interface AuditTrailEntry {
     | "fact_removed"
     | "undo";
   subject: string;
+  reviewer: string;
   detail?: string;
 }
 
@@ -59,7 +61,12 @@ export class DecisionsStore {
   private decisions: HumanReviewDecision[] = [];
   private facts: HumanCaptionFact[] = [];
   private undoStack: Snapshot[] = [];
+  /** In-memory cache of the persisted audit history (spec §96). */
   private auditTrail: AuditTrailEntry[] = [];
+  /** Entries recorded since the last successful persisted append. */
+  private pendingAudit: AuditTrailEntry[] = [];
+  /** Last human name seen on a decision/fact — used for remove/undo entries. */
+  private lastReviewer = "";
   private listeners = new Set<() => void>();
   saveState: SaveState = "idle";
   lastError: string | null = null;
@@ -142,9 +149,11 @@ export class DecisionsStore {
       ),
       decision,
     ];
+    this.lastReviewer = decision.decided_by;
     this.recordAudit(
       replaced ? "decision_replaced" : "decision_saved",
       `${decision.decision_type}:${decision.subject_id}`,
+      decision.decided_by,
       decision.value,
     );
     return this.persistAndFinalize();
@@ -155,21 +164,22 @@ export class DecisionsStore {
     this.decisions = this.decisions.filter(
       (d) => !(d.subject_id === subjectId && d.decision_type === decisionType),
     );
-    this.recordAudit("decision_removed", `${decisionType}:${subjectId}`);
+    this.recordAudit("decision_removed", `${decisionType}:${subjectId}`, this.lastReviewer);
     return this.persistAndFinalize();
   }
 
   async applyFact(fact: HumanCaptionFact): Promise<FinalizeOutcome> {
     this.pushUndo(`fact ${fact.fact_id}`);
     this.facts = [...this.facts.filter((f) => f.fact_id !== fact.fact_id), fact];
-    this.recordAudit("fact_saved", fact.fact_id, fact.fact_type);
+    this.lastReviewer = fact.decided_by;
+    this.recordAudit("fact_saved", fact.fact_id, fact.decided_by, fact.fact_type);
     return this.persistAndFinalize();
   }
 
   async removeFact(factId: string): Promise<FinalizeOutcome> {
     this.pushUndo(`remove fact ${factId}`);
     this.facts = this.facts.filter((f) => f.fact_id !== factId);
-    this.recordAudit("fact_removed", factId);
+    this.recordAudit("fact_removed", factId, this.lastReviewer);
     return this.persistAndFinalize();
   }
 
@@ -180,8 +190,22 @@ export class DecisionsStore {
     if (!snapshot) return null;
     this.decisions = snapshot.decisions;
     this.facts = snapshot.facts;
-    this.recordAudit("undo", snapshot.action);
+    this.recordAudit("undo", snapshot.action, this.lastReviewer);
     return this.persistAndFinalize();
+  }
+
+  /** Replace the in-memory audit cache with the engine's persisted history. */
+  async loadPersistedAuditTrail(): Promise<readonly AuditTrailEntry[]> {
+    const history = await getAuditHistory(this.runDir);
+    this.auditTrail = history.entries.map((entry) => ({
+      at_utc: entry.at_utc,
+      action: entry.operation as AuditTrailEntry["action"],
+      subject: entry.subject,
+      reviewer: entry.reviewer,
+      ...(entry.detail != null ? { detail: entry.detail } : {}),
+    }));
+    this.notify();
+    return this.auditTrail;
   }
 
   private pushUndo(action: string): void {
@@ -196,14 +220,18 @@ export class DecisionsStore {
   private recordAudit(
     action: AuditTrailEntry["action"],
     subject: string,
+    reviewer: string,
     detail?: string,
   ): void {
-    this.auditTrail.push({
+    const entry: AuditTrailEntry = {
       at_utc: new Date().toISOString(),
       action,
       subject,
+      reviewer,
       ...(detail !== undefined ? { detail } : {}),
-    });
+    };
+    this.auditTrail.push(entry);
+    this.pendingAudit.push(entry);
   }
 
   private async persistAndFinalize(): Promise<FinalizeOutcome> {
@@ -211,8 +239,8 @@ export class DecisionsStore {
     this.lastError = null;
     this.notify();
     try {
-      await saveReviewDecisions(this.runDir, this.decisions);
-      await saveHumanFacts(this.runDir, this.facts);
+      const saved = await saveReviewInputs(this.runDir, this.decisions, this.facts);
+      await this.flushAuditHistory(saved.review_input_revision_id);
       const finalized = await finalize(this.runDir);
       const summary = await getRunSummary(this.runDir);
       this.saveState = "saved";
@@ -230,6 +258,27 @@ export class DecisionsStore {
       this.lastError = String(error);
       this.notify();
       throw error;
+    }
+  }
+
+  /** Append the pending audit entries to the engine's persisted history.
+   * A failure never fails the mutation itself: entries stay queued and are
+   * re-sent with the next successful save. */
+  private async flushAuditHistory(newRevision: string): Promise<void> {
+    if (this.pendingAudit.length === 0) return;
+    const entries = this.pendingAudit.map((entry) => ({
+      at_utc: entry.at_utc,
+      reviewer: entry.reviewer,
+      operation: entry.action,
+      subject: entry.subject,
+      ...(entry.detail !== undefined ? { detail: entry.detail } : {}),
+      new_revision: newRevision,
+    }));
+    try {
+      await appendAuditHistory(this.runDir, entries);
+      this.pendingAudit = [];
+    } catch {
+      /* keep entries queued for the next save */
     }
   }
 }

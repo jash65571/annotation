@@ -16,6 +16,8 @@ import {
   finalize,
   getCaptionState,
   getRunSummary,
+  saveReadyCaption,
+  saveReviewDraft,
   openArtifactFolder,
   validateFinalSignoff,
 } from "../api/bridge";
@@ -151,14 +153,30 @@ export function FinalScreen({ onNavigate }: { onNavigate: (screen: Screen) => vo
     if (!runDir) return;
     setError(null);
     try {
-      const exported = await exportCaption(runDir);
       const target = await save({
         defaultPath: "ready_to_enter.md",
         filters: [{ name: "Markdown", extensions: ["md"] }],
       });
       if (target) {
-        const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("save_text_file", { path: target, contents: exported.markdown });
+        // Rust copies the engine's READY artifact bytes itself — the
+        // renderer never supplies caption content to a privileged save.
+        await saveReadyCaption(runDir, target);
+      }
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function saveDraftAs() {
+    if (!runDir) return;
+    setError(null);
+    try {
+      const target = await save({
+        defaultPath: "draft_review_only.md",
+        filters: [{ name: "Markdown", extensions: ["md"] }],
+      });
+      if (target) {
+        await saveReviewDraft(runDir, target);
       }
     } catch (e) {
       setError(String(e));
@@ -256,6 +274,9 @@ export function FinalScreen({ onNavigate }: { onNavigate: (screen: Screen) => vo
           <button disabled={!ready} onClick={() => void saveCaptionAs()}>
             Save caption as…
           </button>
+          {!ready && (
+            <button onClick={() => void saveDraftAs()}>Save review draft as…</button>
+          )}
           <button onClick={() => void openArtifactFolder(runDir)}>Open artifact folder</button>
         </div>
         {!ready && (

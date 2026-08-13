@@ -10,6 +10,7 @@
 import { useMemo, useState, type KeyboardEvent, type ReactElement } from "react";
 import type {
   AudioReviewItem,
+  ResolutionStatus,
   ReviewPriority,
   ReviewQueuePayload,
   VisualReviewItem,
@@ -26,9 +27,14 @@ export type QueueEntry = {
 
 export interface QueuePanelProps {
   queue: ReviewQueuePayload;
-  resolvedSubjects: Set<string>;
+  /** Engine truth: item_id → resolution status from get_review_resolution.
+   * The UI never derives resolution from local decision subjects. */
+  resolutionById: ReadonlyMap<string, ResolutionStatus>;
   selectedId: string | null;
   onSelect: (item: QueueEntry) => void;
+  /** Skipped item ids — persisted run-local UI state owned by the parent. */
+  skippedIds?: ReadonlySet<string>;
+  onToggleSkip?: (itemId: string) => void;
 }
 
 const PRIORITY_RANK: Record<ReviewPriority, number> = {
@@ -100,15 +106,19 @@ function statusBadgeClass(status: "OPEN" | "RESOLVED" | "SKIPPED"): string {
 
 export function QueuePanel({
   queue,
-  resolvedSubjects,
+  resolutionById,
   selectedId,
   onSelect,
+  skippedIds,
+  onToggleSkip,
 }: QueuePanelProps): ReactElement {
   const [priorityFilter, setPriorityFilter] = useState<ReviewPriority | "ALL">("ALL");
   const [categoryFilter, setCategoryFilter] = useState("");
-  const [skipped, setSkipped] = useState<ReadonlySet<string>>(new Set());
+  const [localSkipped, setLocalSkipped] = useState<ReadonlySet<string>>(new Set());
+  const skipped = skippedIds ?? localSkipped;
 
   const entries = useMemo(() => buildQueueEntries(queue), [queue]);
+  const isResolvedById = (id: string): boolean => resolutionById.get(id) === "RESOLVED";
 
   const visible = useMemo(() => {
     const needle = categoryFilter.trim().toLowerCase();
@@ -122,14 +132,18 @@ export function QueuePanel({
     });
   }, [entries, priorityFilter, categoryFilter]);
 
-  const completed = entries.filter((entry) => resolvedSubjects.has(entry.id)).length;
+  const completed = entries.filter((entry) => isResolvedById(entry.id)).length;
   const remaining = entries.length - completed;
   const anySkipped = entries.some(
-    (entry) => skipped.has(entry.id) && !resolvedSubjects.has(entry.id),
+    (entry) => skipped.has(entry.id) && !isResolvedById(entry.id),
   );
 
   function toggleSkip(id: string): void {
-    setSkipped((prev) => {
+    if (onToggleSkip) {
+      onToggleSkip(id);
+      return;
+    }
+    setLocalSkipped((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
@@ -191,7 +205,7 @@ export function QueuePanel({
       </div>
       <ul className="col" style={{ listStyle: "none", margin: 0, padding: 0 }}>
         {visible.map((entry) => {
-          const isResolved = resolvedSubjects.has(entry.id);
+          const isResolved = isResolvedById(entry.id);
           const isSkipped = !isResolved && skipped.has(entry.id);
           const status: "OPEN" | "RESOLVED" | "SKIPPED" = isResolved
             ? "RESOLVED"

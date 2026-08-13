@@ -8,7 +8,12 @@ import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useApp } from "../state/context";
 import type { Screen } from "../App";
-import { getRunSummary, listRecentRuns, forgetRecentRun } from "../api/bridge";
+import {
+  forgetRecentRun,
+  getRunSummary,
+  listRecentRuns,
+  registerIntakeVideo,
+} from "../api/bridge";
 import type { RecentRun } from "../api/types";
 
 export function HomeScreen({ onNavigate }: { onNavigate: (screen: Screen) => void }) {
@@ -26,7 +31,10 @@ export function HomeScreen({ onNavigate }: { onNavigate: (screen: Screen) => voi
       filters: [{ name: "Video", extensions: ["mp4", "mov", "mkv", "webm", "avi"] }],
     });
     if (typeof path === "string") {
-      dispatch({ type: "TASK_INPUT_CHANGED", task: { videoPath: path } });
+      // Register the dialog choice with Rust: only this intake video (or a
+      // validated run's source) is ever playable in the webview.
+      const canonical = await registerIntakeVideo(path);
+      dispatch({ type: "TASK_INPUT_CHANGED", task: { videoPath: canonical } });
     }
   }
 

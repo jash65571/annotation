@@ -1,8 +1,10 @@
+import { useState } from "react";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type {
   AudioReviewItem,
+  ResolutionStatus,
   ReviewQueuePayload,
   VisualReviewItem,
 } from "../api/types";
@@ -67,10 +69,38 @@ const queue: ReviewQueuePayload = {
   ],
 };
 
+const noResolution = new Map<string, ResolutionStatus>();
+
 function entryButtons(): HTMLElement[] {
   return screen
     .getAllByRole("listitem")
     .map((li) => within(li).getAllByRole("button")[0] as HTMLElement);
+}
+
+/** Parent-owned skipped state, as the ReviewScreen persists it via ui_state. */
+function SkippablePanel({
+  resolutionById,
+}: {
+  resolutionById: ReadonlyMap<string, ResolutionStatus>;
+}) {
+  const [skipped, setSkipped] = useState<ReadonlySet<string>>(new Set());
+  return (
+    <QueuePanel
+      queue={queue}
+      resolutionById={resolutionById}
+      selectedId={null}
+      onSelect={vi.fn()}
+      skippedIds={skipped}
+      onToggleSkip={(id) =>
+        setSkipped((prev) => {
+          const next = new Set(prev);
+          if (next.has(id)) next.delete(id);
+          else next.add(id);
+          return next;
+        })
+      }
+    />
+  );
 }
 
 describe("QueuePanel", () => {
@@ -78,7 +108,7 @@ describe("QueuePanel", () => {
     render(
       <QueuePanel
         queue={queue}
-        resolvedSubjects={new Set()}
+        resolutionById={noResolution}
         selectedId={null}
         onSelect={vi.fn()}
       />,
@@ -95,7 +125,7 @@ describe("QueuePanel", () => {
     render(
       <QueuePanel
         queue={queue}
-        resolvedSubjects={new Set()}
+        resolutionById={noResolution}
         selectedId={null}
         onSelect={vi.fn()}
       />,
@@ -109,7 +139,7 @@ describe("QueuePanel", () => {
     render(
       <QueuePanel
         queue={queue}
-        resolvedSubjects={new Set()}
+        resolutionById={noResolution}
         selectedId={null}
         onSelect={vi.fn()}
       />,
@@ -121,11 +151,14 @@ describe("QueuePanel", () => {
     expect(screen.queryByText("Normal visual")).not.toBeInTheDocument();
   });
 
-  it("shows RESOLVED from resolvedSubjects and counts completion", () => {
+  it("shows RESOLVED from ENGINE resolution even when the decision subject id differs from the item id", () => {
+    // The engine resolved item V-CRIT via a decision on subject SPEED-2 —
+    // the map carries item-id → status, never local decision subjects.
+    const resolution = new Map<string, ResolutionStatus>([["V-CRIT", "RESOLVED"]]);
     render(
       <QueuePanel
         queue={queue}
-        resolvedSubjects={new Set(["V-CRIT"])}
+        resolutionById={resolution}
         selectedId={null}
         onSelect={vi.fn()}
       />,
@@ -134,16 +167,25 @@ describe("QueuePanel", () => {
     expect(screen.getByText("1 completed · 3 remaining")).toBeInTheDocument();
   });
 
-  it("marks skipped items distinctly and keeps them not-resolved", async () => {
-    const user = userEvent.setup();
+  it("keeps items OPEN when the engine reports no resolution", () => {
+    // A local decision that did NOT apply (stale/invalid) never flips status:
+    // the map from engine truth simply has no RESOLVED entry.
     render(
       <QueuePanel
         queue={queue}
-        resolvedSubjects={new Set(["V-CRIT"])}
+        resolutionById={noResolution}
         selectedId={null}
         onSelect={vi.fn()}
       />,
     );
+    expect(screen.queryByText("RESOLVED")).not.toBeInTheDocument();
+    expect(screen.getByText("0 completed · 4 remaining")).toBeInTheDocument();
+  });
+
+  it("marks skipped items distinctly and keeps them not-resolved", async () => {
+    const user = userEvent.setup();
+    const resolution = new Map<string, ResolutionStatus>([["V-CRIT", "RESOLVED"]]);
+    render(<SkippablePanel resolutionById={resolution} />);
     await user.click(screen.getByRole("button", { name: "Skip High visual" }));
     expect(screen.getByText("SKIPPED")).toBeInTheDocument();
     // Skipping never resolves: completed count unchanged, note shown.
@@ -151,7 +193,6 @@ describe("QueuePanel", () => {
     expect(
       screen.getByText("Skipped items keep the caption in REVIEW REQUIRED."),
     ).toBeInTheDocument();
-    // Resolved and skipped are distinct states rendered with distinct badges.
     const resolvedBadge = screen.getByText("RESOLVED");
     const skippedBadge = screen.getByText("SKIPPED");
     expect(resolvedBadge.className).not.toEqual(skippedBadge.className);
@@ -163,7 +204,7 @@ describe("QueuePanel", () => {
     render(
       <QueuePanel
         queue={queue}
-        resolvedSubjects={new Set()}
+        resolutionById={noResolution}
         selectedId={"V-CRIT"}
         onSelect={onSelect}
       />,

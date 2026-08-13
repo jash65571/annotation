@@ -6,6 +6,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AuditHistoryEntry,
   BridgeError,
   CaptionStatePayload,
   ExactFramePayload,
@@ -15,10 +16,14 @@ import type {
   HumanCaptionFact,
   HumanReviewDecision,
   Json,
+  MediaDimensionsPayload,
   ReviewQueuePayload,
+  ReviewResolutionPayload,
   RunSummaryPayload,
+  SaveReviewInputsPayload,
   SignoffValidationPayload,
   StartAuditRequest,
+  UiStatePayload,
   WaveformMetadataPayload,
 } from "./types";
 
@@ -107,6 +112,15 @@ export const getWaveformMetadata = (runDir: string) =>
 export const getCaptionState = (runDir: string) =>
   engineRequest<CaptionStatePayload>("get_caption_state", { run_dir: runDir });
 
+/** Engine truth for decision targets and per-item resolution status — the UI
+ * never infers targets from titles or tracks resolution locally. */
+export const getReviewResolution = (runDir: string) =>
+  engineRequest<ReviewResolutionPayload>("get_review_resolution", { run_dir: runDir });
+
+/** Phase 1 media truth: source pixel dimensions (never hardcoded in the UI). */
+export const getMediaDimensions = (runDir: string) =>
+  engineRequest<MediaDimensionsPayload>("get_media_dimensions", { run_dir: runDir });
+
 // -- human inputs -----------------------------------------------------------
 
 export const saveReviewDecisions = (runDir: string, decisions: HumanReviewDecision[]) =>
@@ -120,6 +134,39 @@ export const saveHumanFacts = (runDir: string, facts: HumanCaptionFact[]) =>
     run_dir: runDir,
     facts: facts as unknown as Json[],
   });
+
+/** Transactional save of both decisions and facts in one engine command. */
+export const saveReviewInputs = (
+  runDir: string,
+  decisions: HumanReviewDecision[],
+  facts: HumanCaptionFact[],
+) =>
+  engineRequest<SaveReviewInputsPayload>("save_review_inputs", {
+    run_dir: runDir,
+    decisions: decisions as unknown as Json[],
+    facts: facts as unknown as Json[],
+  });
+
+export const appendAuditHistory = (runDir: string, entries: AuditHistoryEntry[]) =>
+  engineRequest<{ appended: number }>("append_audit_history", {
+    run_dir: runDir,
+    entries: entries as unknown as Json[],
+  });
+
+export const getAuditHistory = (runDir: string) =>
+  engineRequest<{ entries: AuditHistoryEntry[] }>("get_audit_history", { run_dir: runDir });
+
+export const saveUiState = (runDir: string, uiState: UiStatePayload) =>
+  engineRequest<{ path: string }>("save_ui_state", {
+    run_dir: runDir,
+    state: uiState as unknown as Json,
+  });
+
+export const getUiState = (runDir: string) =>
+  engineRequest<UiStatePayload>("get_ui_state", { run_dir: runDir });
+
+export const exportDraft = (runDir: string) =>
+  engineRequest<ExportCaptionPayload>("export_draft", { run_dir: runDir });
 
 export const getReviewInputs = (runDir: string) =>
   engineRequest<{ decisions: HumanReviewDecision[]; facts: HumanCaptionFact[] }>(
@@ -178,3 +225,22 @@ export const forgetRecentRun = (runDir: string) =>
 
 export const openArtifactFolder = (runDir: string) =>
   invoke<void>("open_artifact_folder", { runDir });
+
+/** Register a just-picked intake video with Rust so playback trust exists.
+ * Returns the canonical path the app must use from then on. */
+export const registerIntakeVideo = (path: string) =>
+  invoke<string>("register_intake_video", { path });
+
+/** Start a visual-analysis rerun that consumes the saved anchors. Progress and
+ * completion arrive on the same analysis:// events as start_analysis. */
+export const startRerunWithAnchors = (runDir: string) =>
+  invoke<string>("start_rerun_with_anchors", { runDir });
+
+/** Rust fetches the engine's READY caption bytes itself and writes them to
+ * destination — the UI never passes caption text. */
+export const saveReadyCaption = (runDir: string, destination: string) =>
+  invoke<void>("save_ready_caption", { runDir, destination });
+
+/** Write the engine's draft_review_only.md bytes to destination. */
+export const saveReviewDraft = (runDir: string, destination: string) =>
+  invoke<void>("save_review_draft", { runDir, destination });

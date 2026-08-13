@@ -296,6 +296,103 @@ export interface WaveformMetadataPayload {
   audio_qc: Json | null;
 }
 
+// ---------------------------------------------------------------------------
+// Review resolution (engine truth for decision targets + resolution status)
+// ---------------------------------------------------------------------------
+
+/** Engine vocabulary for what a decision may attach to. */
+export type DecisionTargetKind =
+  | "SPEECH_REGION"
+  | "TEXT_TRACK"
+  | "ENTITY_TRACK"
+  | "ACTION_CANDIDATE"
+  | "CAMERA_EVENT"
+  | "SHOT_TRANSITION"
+  | "PLAYBACK_SPEED"
+  | "REVIEW_PROPOSAL"
+  | "SEED_CLAIM";
+
+export type ResolutionStatus = "RESOLVED" | "OPEN";
+
+export interface DecisionTargetRef {
+  target_kind: DecisionTargetKind;
+  subject_id: string;
+  allowed_decision_types: string[];
+}
+
+export interface ReviewItemResolution {
+  item_id: string | null;
+  decision_target: DecisionTargetRef | null;
+  candidate_targets: DecisionTargetRef[];
+  resolution_status: ResolutionStatus;
+  resolved_by_decision_ids: string[];
+}
+
+export interface SpeedTargetResolution {
+  target_kind: "PLAYBACK_SPEED";
+  subject_id: string;
+  allowed_decision_types: string[];
+  shot_number: number;
+  machine_conclusion: string;
+  review_required: boolean;
+  resolution_status: ResolutionStatus;
+  resolved_by_decision_ids: string[];
+}
+
+export interface TransitionTargetResolution {
+  target_kind: "SHOT_TRANSITION";
+  subject_id: string;
+  allowed_decision_types: string[];
+  shot_index: number;
+  transition_status: string;
+  transition_into_shot: string | null;
+  resolution_status: ResolutionStatus;
+  resolved_by_decision_ids: string[];
+}
+
+export interface DecisionApplication {
+  decision_id: string;
+  outcome: string;
+  applied: boolean;
+  stale: boolean;
+  reason: string | null;
+}
+
+export interface ReviewResolutionPayload {
+  items: ReviewItemResolution[];
+  speed_targets: SpeedTargetResolution[];
+  transition_targets: TransitionTargetResolution[];
+  applications: DecisionApplication[];
+}
+
+/** Phase 1 media truth — the source video's pixel dimensions. */
+export interface MediaDimensionsPayload {
+  width: number;
+  height: number;
+}
+
+export interface SaveReviewInputsPayload {
+  review_input_revision_id: string;
+  decision_count: number;
+  fact_count: number;
+}
+
+/** One persisted audit-history entry (engine-owned append-only log). */
+export interface AuditHistoryEntry {
+  at_utc: string;
+  reviewer: string;
+  operation: string;
+  subject: string;
+  detail?: string | null;
+  previous_revision?: string | null;
+  new_revision?: string | null;
+}
+
+/** Run-local persisted UI state (never factual — display state only). */
+export interface UiStatePayload {
+  skipped_item_ids?: string[];
+}
+
 /** An entry in the app-local recent-runs index (display cache only — the run
  * directory stays the source of truth). */
 export interface RecentRun {

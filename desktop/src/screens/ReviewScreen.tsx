@@ -10,17 +10,26 @@ import { useApp } from "../state/context";
 import type { Screen } from "../App";
 import {
   getCaptionState,
+  getMediaDimensions,
   getReviewInputs,
   getReviewQueue,
+  getReviewResolution,
   getShots,
+  getUiState,
+  saveUiState,
   saveVisualAnchors,
+  startRerunWithAnchors,
 } from "../api/bridge";
 import type {
   AudioReviewItem,
   CaptionStatePayload,
+  DecisionTargetRef,
   HumanReviewDecision,
   Json,
+  MediaDimensionsPayload,
+  ResolutionStatus,
   ReviewQueuePayload,
+  ReviewResolutionPayload,
   VisualReviewItem,
 } from "../api/types";
 import { DecisionsStore, type FinalizeOutcome } from "../features/review/decisionsStore";
@@ -44,16 +53,6 @@ import { ReviewerNameField } from "../features/review/reviewerName";
 import { GateBadge } from "../components/GateBadge";
 
 type MediaMode = "playback" | "frame" | "audio";
-type EditorKind =
-  | "speech"
-  | "transition"
-  | "speed"
-  | "ocr"
-  | "identity"
-  | "action"
-  | "camera"
-  | "proposal"
-  | "none";
 
 interface ShotInfo {
   shot_number: number;
@@ -102,26 +101,12 @@ function extractShots(shotsPayload: Json | null): ShotInfo[] {
   return shots;
 }
 
-/** Pick the default editor for a queue entry from engine signals only. */
-function editorKindFor(entry: QueueEntry): EditorKind {
-  if (entry.source === "audio") return "speech";
-  const item = entry.item as VisualReviewItem;
-  const title = item.title.toLowerCase();
-  if (title.includes("transition")) return "transition";
-  if (title.includes("speed")) return "speed";
-  if (title.includes("text") || title.includes("ocr")) return "ocr";
-  if (title.includes("identity") || item.recommended_action === "CHOOSE_IDENTITY")
-    return "identity";
-  if (title.includes("camera")) return "camera";
-  if (title.includes("action") || item.recommended_action === "CORRECT_BOUNDARY")
-    return "action";
-  if (
-    item.recommended_action === "REBUILD_SECTION" ||
-    item.recommended_action === "CONFIRM_CLAIM" ||
-    item.recommended_action === "REJECT_CLAIM"
-  )
-    return "proposal";
-  return "none";
+/** Parse the engine-defined shot index from a SHOT_TRANSITION subject id
+ * ("TRANSITION-<n>" — the number after the dash). */
+export function transitionShotIndex(subjectId: string): number | null {
+  const match = /-(\d+)$/.exec(subjectId);
+  const value = match?.[1];
+  return value !== undefined ? Number(value) : null;
 }
 
 /** A tiny line diff for the caption-change popover (spec §62). */
@@ -148,12 +133,17 @@ export function ReviewScreen({ onNavigate }: { onNavigate: (screen: Screen) => v
   const [queue, setQueue] = useState<ReviewQueuePayload | null>(null);
   const [caption, setCaption] = useState<CaptionStatePayload | null>(null);
   const [shots, setShots] = useState<ShotInfo[]>([]);
+  const [resolution, setResolution] = useState<ReviewResolutionPayload | null>(null);
+  const [mediaDims, setMediaDims] = useState<MediaDimensionsPayload | null>(null);
   const [selected, setSelected] = useState<QueueEntry | null>(null);
-  const [editorKind, setEditorKind] = useState<EditorKind>("none");
+  /** The engine-provided target the open editor operates on. */
+  const [activeTarget, setActiveTarget] = useState<DecisionTargetRef | null>(null);
+  /** Candidate targets awaiting a human choice (chooser panel). */
+  const [candidateTargets, setCandidateTargets] = useState<DecisionTargetRef[]>([]);
+  const [skippedIds, setSkippedIds] = useState<ReadonlySet<string>>(new Set());
   const [mediaMode, setMediaMode] = useState<MediaMode>("playback");
   const [currentFrame, setCurrentFrame] = useState(0);
   const [seekSeconds, setSeekSeconds] = useState<number | undefined>(undefined);
-  const [resolvedSubjects, setResolvedSubjects] = useState<Set<string>>(new Set());
   const [showFactEditor, setShowFactEditor] = useState(false);
   const [showAnchorEditor, setShowAnchorEditor] = useState(false);
   const [anchors, setAnchors] = useState<AnchorDraft[]>([]);
@@ -179,27 +169,54 @@ export function ReviewScreen({ onNavigate }: { onNavigate: (screen: Screen) => v
               ? `Save failed: ${store.lastError ?? ""}`
               : "",
       );
-      setResolvedSubjects(new Set(store.getDecisions().map((d) => d.subject_id)));
     });
   }, [store]);
 
+  /** Resolution status is engine truth — re-fetched after every mutation. */
+  const refreshResolution = useCallback(async () => {
+    if (!runDir) return;
+    try {
+      setResolution(await getReviewResolution(runDir));
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [runDir]);
+
   const reload = useCallback(async () => {
     if (!runDir) return;
-    const [q, c, s] = await Promise.all([
+    const [q, c, s, r] = await Promise.all([
       getReviewQueue(runDir),
       getCaptionState(runDir),
       getShots(runDir),
+      getReviewResolution(runDir),
     ]);
     setQueue(q);
     setCaption(c);
     setShots(extractShots(s as Json));
+    setResolution(r);
     lastDraftRef.current = c.draft_markdown ?? c.ready_markdown ?? "";
+    try {
+      setMediaDims(await getMediaDimensions(runDir));
+    } catch {
+      /* anchors stay disabled without media truth */
+    }
+    try {
+      const uiState = await getUiState(runDir);
+      setSkippedIds(new Set(uiState.skipped_item_ids ?? []));
+    } catch {
+      /* no saved UI state yet */
+    }
     if (store) {
       try {
         const inputs = await getReviewInputs(runDir);
         store.seed(inputs.decisions, inputs.facts);
       } catch {
         /* fresh run without saved inputs */
+      }
+      try {
+        await store.loadPersistedAuditTrail();
+      } catch {
+        /* no persisted audit history yet */
       }
     }
   }, [runDir, store]);
@@ -231,23 +248,72 @@ export function ReviewScreen({ onNavigate }: { onNavigate: (screen: Screen) => v
         readiness: outcome.readiness as never,
         summary: outcome.summary,
       });
+      void refreshResolution();
     },
-    [dispatch],
+    [dispatch, refreshResolution],
   );
 
-  const selectEntry = useCallback((entry: QueueEntry) => {
-    setSelected(entry);
-    setEditorKind(editorKindFor(entry));
-    if (entry.source === "audio") {
-      setMediaMode("audio");
-    } else {
-      const item = entry.item as VisualReviewItem;
-      if (item.start_frame != null) {
-        setCurrentFrame(item.start_frame);
-        setMediaMode("frame");
-      }
+  /** Engine truth: item_id → resolution status for badges and counts. */
+  const resolutionById = useMemo(() => {
+    const map = new Map<string, ResolutionStatus>();
+    for (const item of resolution?.items ?? []) {
+      if (item.item_id != null) map.set(item.item_id, item.resolution_status);
     }
+    return map;
+  }, [resolution]);
+
+  /** Editor routing comes from the resolution payload only — never titles. */
+  const selectEntry = useCallback(
+    (entry: QueueEntry) => {
+      setSelected(entry);
+      const resItem = resolution?.items.find((item) => item.item_id === entry.id) ?? null;
+      if (resItem?.decision_target) {
+        setActiveTarget(resItem.decision_target);
+        setCandidateTargets([]);
+      } else if (resItem && resItem.candidate_targets.length > 0) {
+        setActiveTarget(null);
+        setCandidateTargets(resItem.candidate_targets);
+      } else {
+        setActiveTarget(null);
+        setCandidateTargets([]);
+      }
+      if (entry.source === "audio") {
+        setMediaMode("audio");
+      } else {
+        const item = entry.item as VisualReviewItem;
+        if (item.start_frame != null) {
+          setCurrentFrame(item.start_frame);
+          setMediaMode("frame");
+        }
+      }
+    },
+    [resolution],
+  );
+
+  /** Open an editor directly on an engine-provided required target. */
+  const selectRequiredTarget = useCallback((target: DecisionTargetRef) => {
+    setSelected(null);
+    setCandidateTargets([]);
+    setActiveTarget(target);
   }, []);
+
+  /** Skipped is persisted run-local UI state; it never counts as resolved. */
+  const toggleSkip = useCallback(
+    (itemId: string) => {
+      setSkippedIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(itemId)) next.delete(itemId);
+        else next.add(itemId);
+        if (runDir) {
+          saveUiState(runDir, { skipped_item_ids: [...next] }).catch((e) =>
+            setError(String(e)),
+          );
+        }
+        return next;
+      });
+    },
+    [runDir],
+  );
 
   if (!runDir) {
     return (
@@ -281,7 +347,7 @@ export function ReviewScreen({ onNavigate }: { onNavigate: (screen: Screen) => v
       id: "flags",
       label: "Review",
       blocks: (queue ? buildQueueEntries(queue) : [])
-        .filter((entry) => !resolvedSubjects.has(entry.id))
+        .filter((entry) => resolutionById.get(entry.id) !== "RESOLVED")
         .map((entry) => {
           const item = entry.item as { start_exact?: string | null; end_exact?: string | null };
           const start = parseExact(item.start_exact ?? null);
@@ -309,10 +375,11 @@ export function ReviewScreen({ onNavigate }: { onNavigate: (screen: Screen) => v
   ];
 
   const selectedDecision =
-    store && selected
-      ? (store
+    store && activeTarget
+      ? ((store
           .getDecisions()
-          .find((d) => d.subject_id === subjectIdFor(selected)) as HumanReviewDecision | null)
+          .find((d) => d.subject_id === activeTarget.subject_id) ??
+          null) as HumanReviewDecision | null)
       : null;
 
   return (
@@ -398,24 +465,41 @@ export function ReviewScreen({ onNavigate }: { onNavigate: (screen: Screen) => v
           {mediaMode === "audio" && <WaveformPanel runDir={runDir} />}
           {showAnchorEditor && (
             <div className="panel col">
-              <AnchorEditor
-                runDir={runDir}
-                frameIndex={currentFrame}
-                sourceWidth={1920}
-                sourceHeight={1080}
-                onSaveAnchor={(anchor) => {
-                  const next = [...anchors, anchor];
-                  setAnchors(next);
-                  saveVisualAnchors(runDir, next)
-                    .then(() => setSaveIndicator("Anchors saved"))
-                    .catch((e) => setError(String(e)));
-                }}
-              />
-              <span className="faint">
-                {anchors.length} anchor(s) saved to this run. Re-running visual intelligence
-                with anchors requires a new analysis pass (the locked engine has no partial
-                rerun yet).
-              </span>
+              {mediaDims ? (
+                <AnchorEditor
+                  runDir={runDir}
+                  frameIndex={currentFrame}
+                  sourceWidth={mediaDims.width}
+                  sourceHeight={mediaDims.height}
+                  onSaveAnchor={(anchor) => {
+                    const next = [...anchors, anchor];
+                    setAnchors(next);
+                    saveVisualAnchors(runDir, next)
+                      .then(() => setSaveIndicator("Anchors saved"))
+                      .catch((e) => setError(String(e)));
+                  }}
+                />
+              ) : (
+                <span className="faint">
+                  Source media dimensions unavailable — anchoring is disabled.
+                </span>
+              )}
+              <div className="row">
+                <button
+                  disabled={anchors.length === 0}
+                  onClick={() => {
+                    startRerunWithAnchors(runDir)
+                      .then(() => {
+                        dispatch({ type: "ANALYSIS_STARTED" });
+                        onNavigate("analyze");
+                      })
+                      .catch((e) => setError(String(e)));
+                  }}
+                >
+                  Re-run visual analysis with anchors
+                </button>
+                <span className="faint">{anchors.length} anchor(s) saved to this run.</span>
+              </div>
             </div>
           )}
         </section>
@@ -446,10 +530,48 @@ export function ReviewScreen({ onNavigate }: { onNavigate: (screen: Screen) => v
           {queue && (
             <QueuePanel
               queue={queue}
-              resolvedSubjects={resolvedSubjects}
+              resolutionById={resolutionById}
               selectedId={selected?.id ?? null}
               onSelect={selectEntry}
+              skippedIds={skippedIds}
+              onToggleSkip={toggleSkip}
             />
+          )}
+          {resolution && (
+            <div className="panel col" aria-label="Required decisions">
+              <h2 style={{ fontSize: 13, margin: 0 }}>Required decisions</h2>
+              {[...resolution.speed_targets, ...resolution.transition_targets].map(
+                (target) => (
+                  <div
+                    key={target.subject_id}
+                    className="row"
+                    style={{ justifyContent: "space-between" }}
+                  >
+                    <span>
+                      {target.target_kind === "PLAYBACK_SPEED"
+                        ? `Playback speed — Shot ${
+                            (target as { shot_number?: number }).shot_number ?? "?"
+                          }`
+                        : `Transition — Shot ${
+                            (target as { shot_index?: number }).shot_index ?? "?"
+                          }`}
+                    </span>
+                    <span className="row">
+                      <span
+                        className={`badge ${
+                          target.resolution_status === "RESOLVED" ? "pass" : "unresolved"
+                        }`}
+                      >
+                        {target.resolution_status}
+                      </span>
+                      {target.resolution_status === "OPEN" && (
+                        <button onClick={() => selectRequiredTarget(target)}>Decide</button>
+                      )}
+                    </span>
+                  </div>
+                ),
+              )}
+            </div>
           )}
         </section>
 
@@ -466,36 +588,34 @@ export function ReviewScreen({ onNavigate }: { onNavigate: (screen: Screen) => v
             onPlayClip={() => setMediaMode("audio")}
             currentDecision={selectedDecision}
           />
-          {store && selected && (
+          {store && candidateTargets.length > 0 && !activeTarget && (
+            <div className="panel col" aria-label="Choose decision target">
+              <h2 style={{ fontSize: 13, margin: 0 }}>
+                This item touches several engine records — choose one:
+              </h2>
+              {candidateTargets.map((target) => (
+                <button
+                  key={`${target.target_kind}:${target.subject_id}`}
+                  onClick={() => setActiveTarget(target)}
+                >
+                  {target.target_kind} — <span className="mono">{target.subject_id}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {store && (selected || activeTarget) && (
             <div className="panel col">
               <div className="row" style={{ justifyContent: "space-between" }}>
                 <h2 style={{ fontSize: 13, margin: 0 }}>Decision</h2>
-                <select
-                  aria-label="Editor type"
-                  value={editorKind}
-                  onChange={(e) => setEditorKind(e.target.value as EditorKind)}
-                >
-                  {(
-                    [
-                      "none",
-                      "speech",
-                      "transition",
-                      "speed",
-                      "ocr",
-                      "identity",
-                      "action",
-                      "camera",
-                      "proposal",
-                    ] as EditorKind[]
-                  ).map((kind) => (
-                    <option key={kind} value={kind}>
-                      {kind}
-                    </option>
-                  ))}
-                </select>
+                {activeTarget && (
+                  <span className="badge machine">
+                    {activeTarget.target_kind}{" "}
+                    <span className="mono">{activeTarget.subject_id}</span>
+                  </span>
+                )}
               </div>
-              <EditorSwitch
-                kind={editorKind}
+              <TargetEditor
+                target={activeTarget}
                 entry={selected}
                 store={store}
                 currentFrame={currentFrame}
@@ -584,34 +704,43 @@ function shotForFrame(shots: ShotInfo[], frame: number): number | undefined {
     ?.shot_number;
 }
 
-function subjectIdFor(entry: QueueEntry): string {
-  if (entry.source === "audio") {
-    const item = entry.item as AudioReviewItem;
-    return (item.evidence_refs ?? []).find((ref) => ref.startsWith("speech_")) ?? entry.id;
-  }
-  return entry.id;
-}
-
-function EditorSwitch({
-  kind,
+/** Editor routing from the ENGINE-provided decision target only — the UI
+ * never infers targets from titles, recommended actions, or evidence ids. */
+export function TargetEditor({
+  target,
   entry,
   store,
   currentFrame,
   onOutcome,
 }: {
-  kind: EditorKind;
-  entry: QueueEntry;
+  target: DecisionTargetRef | null;
+  entry: QueueEntry | null;
   store: DecisionsStore;
   currentFrame: number;
   onOutcome: (outcome: FinalizeOutcome) => void;
 }) {
   const onResolved = (outcome: unknown) => onOutcome(outcome as FinalizeOutcome);
-  const visual = entry.source === "visual" ? (entry.item as VisualReviewItem) : null;
-  const shotNumber = visual?.shot_number ?? shotFromTitle(visual?.title) ?? 1;
-
-  switch (kind) {
-    case "speech":
-      if (entry.source !== "audio") return <NoEditor />;
+  if (!target) {
+    return (
+      <p className="faint" style={{ margin: 0 }}>
+        The engine reports no directly decidable target for this item. If a
+        material fact is missing, add it with ADD VERIFIED FACT (evidence
+        required).
+      </p>
+    );
+  }
+  const visual =
+    entry && entry.source === "visual" ? (entry.item as VisualReviewItem) : null;
+  switch (target.target_kind) {
+    case "SPEECH_REGION": {
+      if (!entry || entry.source !== "audio") {
+        return (
+          <p className="faint" style={{ margin: 0 }}>
+            Select the speech review item for region{" "}
+            <span className="mono">{target.subject_id}</span> to review it.
+          </p>
+        );
+      }
       return (
         <SpeechEditor
           item={entry.item as AudioReviewItem}
@@ -619,39 +748,29 @@ function EditorSwitch({
           onResolved={onResolved}
         />
       );
-    case "transition":
-      return <TransitionEditor shotIndex={shotNumber} store={store} onResolved={onResolved} />;
-    case "speed":
-      return (
-        <SpeedEditor
-          shotNumber={shotNumber}
-          subjectId={`SPEED-${shotNumber}`}
-          store={store}
-          onResolved={onResolved}
-        />
-      );
-    case "ocr":
+    }
+    case "TEXT_TRACK":
       return (
         <OcrEditor
-          trackId={firstRelatedId(visual) ?? ""}
+          trackId={target.subject_id}
           currentFrame={currentFrame}
           store={store}
           onResolved={onResolved}
         />
       );
-    case "identity":
+    case "ENTITY_TRACK":
       return (
         <IdentityEditor
-          subjectTrackId={firstRelatedId(visual) ?? ""}
+          subjectTrackId={target.subject_id}
           candidates={[]}
           store={store}
           onResolved={onResolved}
         />
       );
-    case "action":
+    case "ACTION_CANDIDATE":
       return (
         <ActionEditor
-          candidateId={firstRelatedId(visual) ?? ""}
+          candidateId={target.subject_id}
           startFrame={visual?.start_frame ?? currentFrame}
           endFrame={visual?.end_frame ?? currentFrame}
           currentFrame={currentFrame}
@@ -659,48 +778,55 @@ function EditorSwitch({
           onResolved={onResolved}
         />
       );
-    case "camera":
+    case "CAMERA_EVENT":
       return (
         <CameraEditor
-          candidateId={firstRelatedId(visual) ?? ""}
+          candidateId={target.subject_id}
           store={store}
           onResolved={onResolved}
         />
       );
-    case "proposal":
+    case "SHOT_TRANSITION": {
+      const shotIndex = transitionShotIndex(target.subject_id);
+      if (shotIndex === null) {
+        return (
+          <p className="faint" style={{ margin: 0 }}>
+            Unrecognized transition subject <span className="mono">{target.subject_id}</span>.
+          </p>
+        );
+      }
+      return <TransitionEditor shotIndex={shotIndex} store={store} onResolved={onResolved} />;
+    }
+    case "PLAYBACK_SPEED": {
+      const shotNumber =
+        (target as { shot_number?: number }).shot_number ??
+        transitionShotIndex(target.subject_id) ??
+        1;
+      return (
+        <SpeedEditor
+          shotNumber={shotNumber}
+          subjectId={target.subject_id}
+          store={store}
+          onResolved={onResolved}
+        />
+      );
+    }
+    case "REVIEW_PROPOSAL":
+    case "SEED_CLAIM":
       return (
         <ProposalEditor
-          proposalId={firstRelatedId(visual) ?? entry.id}
-          proposalKind={visual?.recommended_action ?? ""}
+          proposalId={target.subject_id}
+          proposalKind={visual?.recommended_action ?? target.target_kind}
           reasonCodes={[]}
           store={store}
           onResolved={onResolved}
         />
       );
-    case "none":
-      return <NoEditor />;
+    default:
+      return (
+        <p className="faint" style={{ margin: 0 }}>
+          No editor is available for target kind {target.target_kind}.
+        </p>
+      );
   }
-}
-
-function NoEditor() {
-  return (
-    <p className="faint" style={{ margin: 0 }}>
-      Select an editor type for this item, or resolve it via a verified fact.
-    </p>
-  );
-}
-
-function shotFromTitle(title: string | undefined): number | null {
-  if (!title) return null;
-  const match = /shot\s+(\d+)/i.exec(title);
-  const value = match?.[1];
-  return value !== undefined ? Number(value) : null;
-}
-
-function firstRelatedId(item: VisualReviewItem | null): string | null {
-  if (!item) return null;
-  const related = item.related_claim_ids?.[0];
-  if (related) return related;
-  const ref = item.supporting_evidence_refs?.[0]?.evidence_id;
-  return ref ?? null;
 }
