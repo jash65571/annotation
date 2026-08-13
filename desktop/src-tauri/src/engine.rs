@@ -127,6 +127,44 @@ fn find_repo_root() -> Option<PathBuf> {
     None
 }
 
+/// Open (and size-rotate) the worker diagnostic log for stderr capture.
+/// Local-only; surfaced behind "Details" on engine errors, never as UI noise.
+pub fn diagnostics_stderr(log_path: Option<&Path>) -> Stdio {
+    let Some(path) = log_path else {
+        return Stdio::null();
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(meta) = std::fs::metadata(path) {
+        if meta.len() > 1_000_000 {
+            let _ = std::fs::rename(path, path.with_extension("log.old"));
+        }
+    }
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        Ok(file) => Stdio::from(file),
+        Err(_) => Stdio::null(),
+    }
+}
+
+/// The last ~2KB of the diagnostic log, for typed-error detail.
+pub fn diagnostics_tail(log_path: Option<&Path>) -> Option<String> {
+    let path = log_path?;
+    let raw = std::fs::read(path).ok()?;
+    let start = raw.len().saturating_sub(2048);
+    let tail = String::from_utf8_lossy(&raw[start..]).to_string();
+    let trimmed = tail.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 /// A running worker process speaking the JSONL protocol.
 pub struct EngineWorker {
     child: Child,
@@ -136,11 +174,14 @@ pub struct EngineWorker {
 }
 
 impl EngineWorker {
-    pub fn spawn(launch: &EngineLaunch) -> BridgeResult<Self> {
+    pub fn spawn_with_diagnostics(
+        launch: &EngineLaunch,
+        stderr_log: Option<&Path>,
+    ) -> BridgeResult<Self> {
         let mut cmd = launch.command();
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(diagnostics_stderr(stderr_log));
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;

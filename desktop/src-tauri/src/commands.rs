@@ -30,6 +30,14 @@ const ALLOWED_ENGINE_COMMANDS: &[&str] = &[
     "save_human_facts",
     "get_review_inputs",
     "save_visual_anchors",
+    "get_review_resolution",
+    "get_media_dimensions",
+    "save_review_inputs",
+    "append_audit_history",
+    "get_audit_history",
+    "save_ui_state",
+    "get_ui_state",
+    "export_draft",
     "finalize",
     "get_caption_state",
     "create_final_signoff",
@@ -45,18 +53,23 @@ fn with_worker<T>(
         .worker
         .lock()
         .map_err(|_| BridgeError::engine_crash("worker state poisoned"))?;
+    let log_path = state.diagnostics_log_path();
     if guard.is_none() {
-        let mut worker = EngineWorker::spawn(&state.launch)?;
+        let mut worker = EngineWorker::spawn_with_diagnostics(&state.launch, log_path.as_deref())?;
         worker.handshake()?;
         *guard = Some(worker);
     }
     let worker = guard.as_mut().expect("worker present");
-    let result = f(worker);
-    if let Err(error) = &result {
-        // A crashed worker is discarded so the next request restarts cleanly.
+    let mut result = f(worker);
+    if let Err(error) = &mut result {
+        // A crashed worker is discarded so the next request restarts cleanly;
+        // the last diagnostic lines ride along behind "Details".
         if error.code == "ENGINE_CRASH" {
             if let Some(mut dead) = guard.take() {
                 dead.kill();
+            }
+            if error.detail.is_none() {
+                error.detail = crate::engine::diagnostics_tail(log_path.as_deref());
             }
         }
     }
@@ -79,14 +92,33 @@ pub fn engine_request(
         worker.request(&command, Value::Object(payload.clone()))
     })?;
     // Any run dir the engine successfully served becomes session-allowed for
-    // run-scoped file reads.
+    // run-scoped file reads; its recorded source video becomes playable.
     if let Some(run_dir) = payload.get("run_dir").and_then(Value::as_str) {
         state.allow_run_dir(Path::new(run_dir));
     }
     if let Some(run_dir) = result.get("run_dir").and_then(Value::as_str) {
         state.allow_run_dir(Path::new(run_dir));
     }
+    if let Some(source) = result
+        .get("manifest")
+        .and_then(|m| m.get("source_video_path"))
+        .and_then(Value::as_str)
+    {
+        state.allow_video(Path::new(source));
+    }
     Ok(result)
+}
+
+fn is_supported_video(path: &Path) -> bool {
+    path.is_file()
+        && matches!(
+            path.extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase()
+                .as_str(),
+            "mp4" | "mov" | "mkv" | "webm" | "avi" | "m4v"
+        )
 }
 
 #[tauri::command]
@@ -98,33 +130,73 @@ pub fn start_analysis(
     let video = request
         .get("video_path")
         .and_then(Value::as_str)
+        .map(str::to_owned)
         .ok_or_else(|| BridgeError::invalid_input("video_path is required"))?;
-    let video_path = Path::new(video);
-    let ext_ok = matches!(
-        video_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase()
-            .as_str(),
-        "mp4" | "mov" | "mkv" | "webm" | "avi" | "m4v"
-    );
-    if !video_path.is_file() || !ext_ok {
+    let video_path = PathBuf::from(&video);
+    if !is_supported_video(&video_path) {
         return Err(BridgeError::invalid_input(
             "The selected video path is not a supported video file",
         ));
     }
+    // The renderer never chooses where artifacts go or which anchors file to
+    // read (spec §Phase 6.1-9/10): the artifacts root is app-managed and
+    // anchor reruns go through start_rerun_with_anchors.
     let mut payload = request;
-    if !payload.contains_key("artifacts_root") {
-        let artifacts = default_artifacts_root(&app)?;
-        payload.insert(
-            "artifacts_root".into(),
-            Value::String(artifacts.to_string_lossy().to_string()),
-        );
+    if payload.contains_key("visual_anchors_path") {
+        return Err(BridgeError::invalid_input(
+            "Anchor re-runs must use the dedicated re-run command",
+        ));
     }
-    state
-        .jobs
-        .start_analysis(app, &state.launch, Value::Object(payload))
+    let artifacts = default_artifacts_root(&app)?;
+    payload.insert(
+        "artifacts_root".into(),
+        Value::String(artifacts.to_string_lossy().to_string()),
+    );
+    // The analyzed video becomes the current playable intake video.
+    if let Ok(canonical) = video_path.canonicalize() {
+        if let Ok(mut guard) = state.intake_video.lock() {
+            *guard = Some(canonical);
+        }
+    }
+    state.jobs.start_analysis_with_diagnostics(
+        app,
+        &state.launch,
+        Value::Object(payload),
+        state.diagnostics_log_path().as_deref(),
+    )
+}
+
+/// RE-RUN VISUAL ANALYSIS WITH ANCHORS: every input path is resolved by the
+/// ENGINE from the verified run's provenance — the renderer supplies only the
+/// run directory (spec §Phase 6.1-2).
+#[tauri::command]
+pub fn start_rerun_with_anchors(
+    app: AppHandle,
+    state: State<'_, BackendState>,
+    run_dir: String,
+) -> BridgeResult<String> {
+    if !state.is_run_dir_allowed(Path::new(&run_dir)) {
+        return Err(BridgeError::invalid_input(
+            "Run directory has not been opened in this session",
+        ));
+    }
+    let resolved = with_worker(&state, |worker| {
+        worker.request(
+            "resolve_rerun_request",
+            serde_json::json!({ "run_dir": run_dir }),
+        )
+    })?;
+    let request = resolved
+        .get("request")
+        .and_then(Value::as_object)
+        .cloned()
+        .ok_or_else(|| BridgeError::engine_crash("rerun resolution returned no request"))?;
+    state.jobs.start_analysis_with_diagnostics(
+        app,
+        &state.launch,
+        Value::Object(request),
+        state.diagnostics_log_path().as_deref(),
+    )
 }
 
 #[tauri::command]
@@ -152,21 +224,30 @@ pub fn read_run_file(
     files::read_as_data_url(&validated)
 }
 
+/// The recent-runs index is DISPLAY DATA only: listing it never grants
+/// filesystem trust. A run becomes readable only after the engine validates
+/// it again (get_run_summary) in this session (spec §Phase 6.1-6).
 #[tauri::command]
-pub fn list_recent_runs(app: AppHandle, state: State<'_, BackendState>) -> Vec<RecentRun> {
+pub fn list_recent_runs(app: AppHandle) -> Vec<RecentRun> {
     let Ok(dir) = app_data_dir(&app) else {
         return Vec::new();
     };
-    let runs = files::load_recent_runs(&dir);
-    for run in &runs {
-        // Recent runs the user recorded earlier are session-allowed again.
-        state.allow_run_dir(Path::new(&run.run_dir));
-    }
-    runs
+    files::load_recent_runs(&dir)
 }
 
 #[tauri::command]
-pub fn remember_recent_run(app: AppHandle, entry: RecentRun) -> BridgeResult<()> {
+pub fn remember_recent_run(
+    app: AppHandle,
+    state: State<'_, BackendState>,
+    entry: RecentRun,
+) -> BridgeResult<()> {
+    // Only engine-validated (session-allowed) run directories may enter the
+    // index — an arbitrary renderer-supplied path is refused.
+    if !state.is_run_dir_allowed(Path::new(&entry.run_dir)) {
+        return Err(BridgeError::invalid_input(
+            "Only runs validated by the engine this session can be remembered",
+        ));
+    }
     let dir = app_data_dir(&app)?;
     files::remember_recent_run(&dir, entry)
 }
@@ -185,22 +266,42 @@ pub fn open_artifact_folder(state: State<'_, BackendState>, run_dir: String) -> 
     )
 }
 
-/// Allow the webview to stream the ONE selected source video via the asset
-/// protocol (context playback only — never timing authority).
+/// Register the video the reviewer just picked in the native dialog as the
+/// current intake video (the ONLY new-task video eligible for playback).
 #[tauri::command]
-pub fn allow_video_playback(app: AppHandle, path: String) -> BridgeResult<String> {
+pub fn register_intake_video(state: State<'_, BackendState>, path: String) -> BridgeResult<String> {
     let video = Path::new(&path);
-    let ext_ok = matches!(
-        video
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase()
-            .as_str(),
-        "mp4" | "mov" | "mkv" | "webm" | "avi" | "m4v"
-    );
-    if !video.is_file() || !ext_ok {
+    if !is_supported_video(video) {
         return Err(BridgeError::invalid_input("Not a supported video file"));
+    }
+    let canonical = video
+        .canonicalize()
+        .map_err(|_| BridgeError::invalid_input("Video not found"))?;
+    let mut guard = state
+        .intake_video
+        .lock()
+        .map_err(|_| BridgeError::engine_crash("state poisoned"))?;
+    *guard = Some(canonical.clone());
+    Ok(canonical.to_string_lossy().to_string())
+}
+
+/// Allow the webview to stream ONE trusted video via the asset protocol:
+/// either the current intake video or the recorded source video of an
+/// engine-validated run. The webview gets no general local-video oracle.
+#[tauri::command]
+pub fn allow_video_playback(
+    app: AppHandle,
+    state: State<'_, BackendState>,
+    path: String,
+) -> BridgeResult<String> {
+    let video = Path::new(&path);
+    if !is_supported_video(video) {
+        return Err(BridgeError::invalid_input("Not a supported video file"));
+    }
+    if !state.is_video_allowed(video) {
+        return Err(BridgeError::invalid_input(
+            "This video is not the current task video or a validated run's source",
+        ));
     }
     let canonical = video
         .canonicalize()
@@ -211,12 +312,8 @@ pub fn allow_video_playback(app: AppHandle, path: String) -> BridgeResult<String
     Ok(canonical.to_string_lossy().to_string())
 }
 
-/// Save exact text to a user-chosen destination (from the native save
-/// dialog). Used only for "Save caption as…" — the contents are the exact
-/// ready artifact bytes, never re-rendered.
-#[tauri::command]
-pub fn save_text_file(path: String, contents: String) -> BridgeResult<()> {
-    let target = Path::new(&path);
+fn checked_caption_destination(path: &str) -> BridgeResult<PathBuf> {
+    let target = PathBuf::from(path);
     match target
         .extension()
         .and_then(|e| e.to_str())
@@ -224,14 +321,51 @@ pub fn save_text_file(path: String, contents: String) -> BridgeResult<()> {
         .to_ascii_lowercase()
         .as_str()
     {
-        "md" | "txt" => {}
-        other => {
-            return Err(BridgeError::invalid_input(format!(
-                "Refusing to write .{other} — captions save as .md or .txt"
-            )))
-        }
+        "md" | "txt" => Ok(target),
+        other => Err(BridgeError::invalid_input(format!(
+            "Refusing to write .{other} — captions save as .md or .txt"
+        ))),
     }
-    std::fs::write(target, contents).map_err(|e| {
+}
+
+/// Save the READY caption: Rust obtains the engine's export (which itself is
+/// gated on READY_TO_ENTER) and writes those exact bytes. The renderer never
+/// supplies caption content to a privileged save (spec §Phase 6.1-8).
+#[tauri::command]
+pub fn save_ready_caption(
+    state: State<'_, BackendState>,
+    run_dir: String,
+    destination: String,
+) -> BridgeResult<()> {
+    let target = checked_caption_destination(&destination)?;
+    let exported = with_worker(&state, |worker| {
+        worker.request("export_caption", serde_json::json!({ "run_dir": run_dir }))
+    })?;
+    let markdown = exported
+        .get("markdown")
+        .and_then(Value::as_str)
+        .ok_or_else(|| BridgeError::engine_crash("export returned no caption text"))?;
+    std::fs::write(&target, markdown.as_bytes()).map_err(|e| {
+        BridgeError::with_detail("INVALID_INPUT", "File could not be saved", e.to_string())
+    })
+}
+
+/// Save the current DRAFT (clearly a draft) from draft_review_only.md.
+#[tauri::command]
+pub fn save_review_draft(
+    state: State<'_, BackendState>,
+    run_dir: String,
+    destination: String,
+) -> BridgeResult<()> {
+    let target = checked_caption_destination(&destination)?;
+    let exported = with_worker(&state, |worker| {
+        worker.request("export_draft", serde_json::json!({ "run_dir": run_dir }))
+    })?;
+    let markdown = exported
+        .get("markdown")
+        .and_then(Value::as_str)
+        .ok_or_else(|| BridgeError::engine_crash("draft export returned no text"))?;
+    std::fs::write(&target, markdown.as_bytes()).map_err(|e| {
         BridgeError::with_detail("INVALID_INPUT", "File could not be saved", e.to_string())
     })
 }

@@ -28,11 +28,12 @@ pub struct AnalysisJob {
 impl JobManager {
     /// Spawn the audit in its own worker process; stream progress as Tauri
     /// events; refuse a second concurrent analysis (spec §80).
-    pub fn start_analysis(
+    pub fn start_analysis_with_diagnostics(
         &self,
         app: AppHandle,
         launch: &EngineLaunch,
         request_payload: Value,
+        stderr_log: Option<&std::path::Path>,
     ) -> BridgeResult<String> {
         let mut guard = self
             .current
@@ -54,7 +55,7 @@ impl JobManager {
         let mut cmd = launch.command();
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(crate::engine::diagnostics_stderr(stderr_log));
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;

@@ -25,12 +25,19 @@ pub fn run() {
                 .unwrap_or(EngineLaunch::DevUv {
                     repo_root: std::env::current_dir().unwrap_or_default(),
                 });
-            app.manage(BackendState::new(launch));
+            let state = BackendState::new(launch);
+            if let Some(data_dir) = app_data_dir {
+                if let Ok(mut guard) = state.diagnostics_log.lock() {
+                    *guard = Some(data_dir.join("logs").join("engine-worker.log"));
+                }
+            }
+            app.manage(state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::engine_request,
             commands::start_analysis,
+            commands::start_rerun_with_anchors,
             commands::cancel_analysis,
             commands::analysis_running,
             commands::read_run_file,
@@ -38,8 +45,10 @@ pub fn run() {
             commands::remember_recent_run,
             commands::forget_recent_run,
             commands::open_artifact_folder,
+            commands::register_intake_video,
             commands::allow_video_playback,
-            commands::save_text_file,
+            commands::save_ready_caption,
+            commands::save_review_draft,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
