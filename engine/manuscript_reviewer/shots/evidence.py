@@ -32,6 +32,13 @@ CONTEXT_SECONDS = Fraction(1, 2)
 CONTEXT_MAX_FRAMES_PER_SIDE = 10
 SHORT_STRIP_RADIUS = 3
 
+#: Max frame indexes per ffmpeg ``select`` expression. FFmpeg's expression
+#: parser refuses a ``select='eq(n\,X)+...'`` chain once it passes ~100 terms,
+#: failing with "Cannot allocate memory" (ENOMEM); the ceiling is identical on
+#: n8.1.2 and the pinned 9.0 build. 48 keeps a wide margin. Output is unaffected
+#: — a larger index set is simply split across more invocations.
+SELECT_CHUNK_SIZE = 48
+
 BGRImage = npt.NDArray[np.uint8]
 
 
@@ -44,9 +51,10 @@ def extract_frames_by_index(
     unique = sorted(set(indexes))
     ffmpeg = find_tool("ffmpeg")
     images: dict[int, BGRImage] = {}
-    # Chunk the select expression to keep command lines manageable.
-    for start in range(0, len(unique), 120):
-        chunk = unique[start : start + 120]
+    # Chunk the select expression: FFmpeg's parser caps additive eq() chains
+    # (see SELECT_CHUNK_SIZE). A large index set is split across invocations.
+    for start in range(0, len(unique), SELECT_CHUNK_SIZE):
+        chunk = unique[start : start + SELECT_CHUNK_SIZE]
         expr = "+".join(f"eq(n\\,{i})" for i in chunk)
         with tempfile.TemporaryDirectory(prefix="mr_evidence_") as tmp:
             out_pattern = Path(tmp) / "f%06d.png"

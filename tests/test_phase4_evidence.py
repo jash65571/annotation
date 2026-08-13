@@ -6,6 +6,8 @@ import json
 from fractions import Fraction
 from pathlib import Path
 
+import numpy as np
+
 from manuscript_reviewer.media import frames as frames_mod
 from manuscript_reviewer.media import probe as probe_mod
 from manuscript_reviewer.media.clock import AnnotationClock
@@ -15,6 +17,7 @@ from manuscript_reviewer.models.review_intelligence import (
     ReviewQueueItem,
 )
 from manuscript_reviewer.review.evidence_bundles import extract_evidence_bundles
+from manuscript_reviewer.shots.evidence import SELECT_CHUNK_SIZE, extract_frames_by_index
 from manuscript_reviewer.visual.decode import FrameCache
 from manuscript_reviewer.visual.reasoner import (
     VisualReasonerAdapter,
@@ -22,7 +25,7 @@ from manuscript_reviewer.visual.reasoner import (
     VisualReasonerResponse,
 )
 
-from .conftest import requires_ffmpeg
+from .conftest import requires_ffmpeg, synth_clip
 
 # --------------------------------------------------------------------------
 # AD: visual-reasoner contract (design only)
@@ -92,3 +95,28 @@ def test_evidence_bundle_has_role_frames_with_identity(clip_24fps: Path, tmp_pat
     assert all(img["annotation_time"] is not None for img in ev["images"])
     assert item.evidence_bundle_dir == "visual_evidence/review_0001"
     assert written
+
+
+@requires_ffmpeg
+def test_extract_frames_by_index_survives_large_index_set(tmp_path: Path) -> None:
+    """Regression: one candidate's context window can request >100 frames.
+
+    FFmpeg's expression parser refuses an ``eq(n\\,X)+...`` select chain past
+    ~100 terms (ENOMEM). ``extract_frames_by_index`` must chunk below that
+    ceiling, so a large single request splits across invocations instead of
+    crashing. Before the fix the chunk size (120) exceeded the ceiling and this
+    request died with exit -12 on a real clip.
+    """
+    # Guardrail: the chunk size must stay under the empirically-confirmed
+    # ffmpeg ceiling (n8.1.2 and pinned 9.0 both fail at ~105, pass at 96).
+    assert SELECT_CHUNK_SIZE <= 96
+
+    n = 130  # > 100, so a single 120-term chunk (old behaviour) would crash
+    frames = [np.full((64, 64, 3), i % 251, dtype=np.uint8) for i in range(n)]
+    clip = synth_clip(tmp_path / "long.mp4", frames, fps=25)
+
+    images = extract_frames_by_index(clip, list(range(n)), width=32)
+
+    assert set(images) == set(range(n))
+    assert len(images) == n
+    assert all(img.shape[2] == 3 for img in images.values())
