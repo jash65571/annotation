@@ -184,12 +184,53 @@ no auto-resolve, and no confidence-percentage acceptance UI.
 - CI: `python-engine`, `frontend`, `rust`, `tauri-build` (Windows) stages.
   Nothing downloads Whisper models in CI.
 
+## Phase 6.1 hardening
+
+- **Engine-owned review targeting.** `get_review_resolution` rebuilds the
+  exact decision registries the appliers use (`load_run_evidence` +
+  `apply_decisions` replay) and reports, per review item, a typed
+  `decision_target` (kind + subject id + admissible decision types, exact
+  registry-key matches only) plus OPEN/RESOLVED from real
+  DecisionApplication outcomes. The UI routes editors and counts completion
+  from this payload only — title heuristics and first-evidence-id guessing
+  were removed. OPEN speed/transition subjects surface as
+  "Required decisions" straight from registry state.
+- **Anchors end-to-end.** The anchor editor receives the run's verified
+  media dimensions (`get_media_dimensions`, portrait/4K covered by tests);
+  "Re-run visual analysis with anchors" works: Rust asks the engine to
+  resolve the rerun request purely from run provenance (manifest + seed/
+  feedback snapshots + saved anchors) and starts a new job; the new run
+  records the consumed anchors hash. (Anchor-assisted *tracking* remains
+  reserved in the locked engine, so a rerun is a full pass.)
+- **Trust hardening.** Recent runs are display data — listing grants no
+  filesystem access, and only engine-validated session runs can be
+  remembered. Video playback is granted only to the registered intake video
+  or a validated run's recorded source. The artifacts root is app-managed;
+  the renderer can never supply anchor paths or artifact roots. Evidence
+  bundle containment uses path-component checks (`is_relative_to`).
+  Caption saves are engine-sourced byte copies (`save_ready_caption` /
+  `save_review_draft`); the free-text save command was removed.
+- **Durability.** `save_review_inputs` writes decisions+facts as one
+  validated revision (both temp files before either rename); audit history
+  persists to `run/ui/audit_history.jsonl`; skipped-item state persists to
+  `run/ui/ui_state.json` and survives restart. Worker stderr goes to a
+  rolling app-local log surfaced behind Details on ENGINE_CRASH.
+- **Packaged product gating.** `desktop/runtime_versions.json` pins FFmpeg
+  9.0 and uv 0.12.1 by exe SHA-256; packaging fails on mismatch; CI's
+  `packaged-smoke` job stages the identical pinned bytes, builds the
+  PyInstaller sidecar and NSIS installer, and drives the real JSONL
+  workflow (audit → typed decision → re-finalize → engine resolution →
+  readiness gating), uploading the installer artifact. Health reports
+  `worker_template_available` / `worker_env_bootstrapped` per the effective
+  `MANUSCRIPT_ASR_WORKERS_DIR` — a packaged template is never called
+  "cached".
+
 ## Known limitations (v1)
 
-- Anchor-assisted tracking rerun requires a full new analysis (engine's
-  tracking slice is reserved in the locked baseline).
-- Visual queue items reference machine records heuristically (counter ids);
-  the editor panel lets the reviewer pick the editor type when a mapping is
-  ambiguous.
-- Desktop E2E (tauri-driver) is not yet wired into CI; the packaged smoke
-  test covers launch + engine + synthetic run.
+- Anchor-assisted tracking rerun is a full new analysis pass (the locked
+  engine's tracking slice is reserved); anchors are consumed and recorded
+  in provenance.
+- Desktop E2E uses the packaged IPC smoke harness (the sidecar driven over
+  its real protocol) plus a scripted CDP acceptance against the installed
+  app, not tauri-driver — chosen because tauri-driver on Windows adds a
+  msedgedriver version-matching burden with limited extra coverage.
