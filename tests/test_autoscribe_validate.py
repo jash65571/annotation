@@ -315,6 +315,14 @@ def test_field_holding_only_a_full_stop_is_empty() -> None:
         ("C1 speaks a foreign language, not English.", True),
         ("A voice speaks a foreign language.", True),
         ("Music is not diegetic. A voice speaks a foreign language.", True),
+        # Negation AFTER the mention, bound to its own predicate: a denial that
+        # a preceding-text-only scan could never see.
+        ("A foreign language is not spoken.", False),
+        ("A foreign language was never spoken.", False),
+        ("A foreign language isn't spoken here.", False),
+        # Negation BEFORE the mention but governing a different clause.
+        ("C1 is not visible while a voice speaks a foreign language.", True),
+        ("The speech is not Spanish but a foreign language.", True),
     ],
 )
 def test_negation_is_judged_from_what_precedes_the_mention(
@@ -323,6 +331,51 @@ def test_negation_is_judged_from_what_precedes_the_mention(
     from autoscribe.validate import _affirmatively_mentions
 
     assert _affirmatively_mentions(audio, "a foreign language") is affirmative
+
+
+@pytest.mark.parametrize(
+    ("audio", "expected"),
+    [
+        # Hedge + proper noun is the forbidden construction, whatever the noun.
+        # Pashto is in no word list here — that is the point.
+        ("A voice speaks a foreign language, possibly Pashto.", ["pashto"]),
+        ("What sounds like Pashto is audible.", ["pashto"]),
+        ("The speech might be Turkish.", ["turkish"]),
+        # A known name in explicit speech context.
+        ("A voice speaks in Tagalog.", ["tagalog"]),
+        ("Tagalog speech is audible.", ["tagalog"]),
+        # A language word used for something that is not speech.
+        ("A French horn plays under the dialogue.", []),
+        ("French toast sizzles on the pan.", []),
+        ("A voice speaks a foreign language.", []),
+    ],
+)
+def test_language_guess_detection_needs_hedge_or_speech_context(
+    audio: str, expected: list[str]
+) -> None:
+    """A fixed word list alone cannot carry §17: it was incomplete (Pashto) and
+    context-blind (French horn)."""
+    from autoscribe.validate import find_language_guesses
+
+    assert find_language_guesses(audio) == expected
+
+
+def test_instrument_named_after_a_language_is_not_a_guess() -> None:
+    text = GOOD.replace(
+        "Audio: Music plays throughout.",
+        "Audio: A French horn plays while a voice speaks a foreign language.",
+    )
+    log = validate_caption(text, speech_present=True, language_confident=False)
+    assert not any(b.code == "LANGUAGE_GUESSED" for b in log.entries)
+
+
+def test_unlisted_language_guess_is_still_caught() -> None:
+    text = GOOD.replace(
+        "Audio: Music plays throughout.",
+        "Audio: A voice speaks a foreign language, possibly Pashto.",
+    )
+    log = validate_caption(text, speech_present=True, language_confident=False)
+    assert any(b.code == "LANGUAGE_GUESSED" for b in log.blocking)
 
 
 def test_fallback_plus_a_guess_is_still_a_guess() -> None:

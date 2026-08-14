@@ -248,10 +248,12 @@ def test_upload_and_rate_limits_are_bounded() -> None:
     assert webapp.MAX_CONCURRENT_JOBS >= 1
 
 
-def test_cleanup_removes_every_media_artefact(tmp_path: Any) -> None:
-    """Cleanup listed directories by name, so `dense/` (added later) and the
-    uploaded video itself both survived — the video being the largest file and
-    the one with the real privacy cost."""
+def test_cleanup_removes_every_artefact_except_declared_results(
+    tmp_path: Any,
+) -> None:
+    """Deny-listing failed twice: by directory name (`dense/` escaped) and by
+    suffix (the upload name is user-controlled, so `upload.txt` or a bare
+    `upload` survived while FFmpeg happily processed their MP4 content)."""
     workspace = tmp_path / "job"
     clip_dir = workspace / "out" / "clip"
     frames_dir = clip_dir / "frames"
@@ -260,20 +262,42 @@ def test_cleanup_removes_every_media_artefact(tmp_path: Any) -> None:
         d.mkdir(parents=True)
     (frames_dir / "g000000.png").write_bytes(b"x")
     (dense_dir / "d000000.png").write_bytes(b"x")
-    wav = clip_dir / "audio.wav"
-    wav.write_bytes(b"x")
-    upload = workspace / "upload.mp4"
-    upload.write_bytes(b"x")
+    (clip_dir / "audio.wav").write_bytes(b"x")
+    # Names an attacker or a careless user controls.
+    disguised = [
+        workspace / "upload.mp4",
+        workspace / "upload.txt",
+        workspace / "upload.ts",
+        workspace / "upload",
+    ]
+    for p in disguised:
+        p.write_bytes(b"x")
     caption = workspace / "out" / "clip.manuscript.md"
     caption.write_text("keep me")
 
-    webapp._cleanup_workspace(workspace)
+    webapp._cleanup_workspace(workspace, keep={caption})
 
     assert not frames_dir.exists(), "extracted frames must not be left behind"
     assert not dense_dir.exists(), "boundary-adjacent frames must not survive"
-    assert not wav.exists(), "extracted audio must not be left behind"
-    assert not upload.exists(), "the uploaded video must not be left behind"
-    assert caption.read_text() == "keep me", "results must survive cleanup"
+    assert not (clip_dir / "audio.wav").exists(), "extracted audio must not survive"
+    for p in disguised:
+        assert not p.exists(), f"{p.name} survived cleanup"
+    assert caption.read_text() == "keep me", "declared results must survive"
+
+
+def test_cleanup_keeps_only_what_was_declared(tmp_path: Any) -> None:
+    """An undeclared .md is an intermediate, not a result, and goes too."""
+    workspace = tmp_path / "job"
+    workspace.mkdir()
+    declared = workspace / "final.md"
+    declared.write_text("keep")
+    stray = workspace / "scratch.md"
+    stray.write_text("drop")
+
+    webapp._cleanup_workspace(workspace, keep={declared})
+
+    assert declared.exists()
+    assert not stray.exists()
 
 
 def test_cleanup_is_safe_on_a_missing_workspace(tmp_path: Any) -> None:

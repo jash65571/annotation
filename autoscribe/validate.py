@@ -261,6 +261,12 @@ FOREIGN_LANGUAGE_PHRASE = "a foreign language"
 
 #: §17 also forbids hedging by listing possible languages, so an unestablished
 #: language must not be NAMED even alongside the fallback phrase.
+#:
+#: A fixed list cannot carry this rule on its own — it was both incomplete
+#: (Pashto absent, so "possibly Pashto" passed) and context-blind ("A French
+#: horn plays" read as a language guess). The PRIMARY test is therefore the
+#: hedge pattern below, which is list-independent; this list only catches an
+#: unhedged name sitting in explicit speech context.
 LANGUAGE_NAMES = frozenset({
     "english", "spanish", "french", "german", "italian", "portuguese", "dutch",
     "swedish", "norwegian", "danish", "finnish", "icelandic", "polish", "czech",
@@ -278,6 +284,47 @@ LANGUAGE_NAMES = frozenset({
 _LANGUAGE_NAME_RX = re.compile(
     r"\b(" + "|".join(sorted(LANGUAGE_NAMES)) + r")\b", re.IGNORECASE
 )
+#: A hedge followed by a proper noun IS the forbidden construction, whatever the
+#: noun turns out to be. This catches languages no list contains.
+_HEDGED_GUESS = re.compile(
+    r"\b(possibly|probably|perhaps|maybe|likely|apparently|presumably|seemingly|"
+    r"may be|might be|could be|sounds? like|seems? to be|appears? to be|"
+    r"resembl\w+|reminiscent of|something like|what sounds like)\b"
+    r"[\s,]+(?:an?\s+|the\s+)?([A-Z][a-zA-Z]+)",
+)
+#: Words immediately around a language name that make it a claim about SPEECH
+#: rather than, say, an instrument or a cuisine.
+_SPEECH_BEFORE = re.compile(
+    r"\b(in|speaks?|speaking|spoke|spoken|sings?|singing|sang|says?|said|"
+    r"language|dialect|accent|translat\w+|subtitled)\s+$",
+    re.IGNORECASE,
+)
+_SPEECH_AFTER = re.compile(
+    r"^\s*(speech|words?|lyrics?|dialogue|narration|language|phrases?|"
+    r"is spoken|are spoken|accent|subtitles?)\b",
+    re.IGNORECASE,
+)
+
+
+def find_language_guesses(audio: str) -> list[str]:
+    """Named languages asserted where the language is not established.
+
+    Two independent signals, because neither alone is sufficient:
+
+    * a HEDGE followed by a proper noun — list-independent, so "possibly Pashto"
+      is caught even though no word list here contains Pashto;
+    * a KNOWN language name in explicit speech context — so "in Tagalog" counts
+      while "A French horn plays" does not.
+    """
+    guesses: set[str] = set()
+    for match in _HEDGED_GUESS.finditer(audio):
+        guesses.add(match.group(2))
+    for match in _LANGUAGE_NAME_RX.finditer(audio):
+        before = audio[max(0, match.start() - 24):match.start()]
+        after = audio[match.end():match.end() + 24]
+        if _SPEECH_BEFORE.search(before) or _SPEECH_AFTER.match(after):
+            guesses.add(match.group(1))
+    return sorted({g.lower() for g in guesses})
 
 #: Negations that turn a mention into a denial. A declaration must ASSERT the
 #: language, so a plain substring search is not enough — the same weakness the
@@ -286,39 +333,69 @@ _LANGUAGE_NAME_RX = re.compile(
 #: Deliberately excludes a bare "non": it never negates a language claim on its
 #: own and its only real effect was to reject "Non-diegetic music plays under
 #: Tagalog speech."
+#: "anything/everything but" is listed as a unit because bare "but" is a clause
+#: boundary, not a negator. A bare "non" is excluded: it never negates a
+#: language claim alone and only served to reject "Non-diegetic music".
 _NEGATION = re.compile(
-    r"\b(not|no|never|without|lack|lacks|lacking|but|except|excluding|besides|"
-    r"rather than|instead of|other than|unlike|neither|nor|cannot|can'?t|"
-    r"isn'?t|aren'?t|wasn'?t|weren'?t|doesn'?t|don'?t|didn'?t|devoid|absent|"
-    r"hardly|barely|fails? to|free of|none of)\b",
+    r"\b(anything but|everything but|not|no|never|without|lacks?|lacking|"
+    r"except|excluding|devoid of|free of|none of|neither|nor|cannot|can'?t|"
+    r"isn'?t|aren'?t|wasn'?t|weren'?t|doesn'?t|don'?t|didn'?t|hardly|barely|"
+    r"fails? to|absent)\b",
+    re.IGNORECASE,
+)
+#: A negator stops governing across one of these; what follows is a new claim.
+#: "C1 is not visible WHILE a voice speaks Tagalog" does not deny Tagalog.
+_CLAUSE_BREAK = re.compile(
+    r"[,;:]|\b(while|whilst|although|though|because|whereas|unless|since|"
+    r"when|after|before|but|and|as|so|yet|however)\b",
+    re.IGNORECASE,
+)
+#: Negation attached to the mention's OWN predicate — the only way text
+#: FOLLOWING a mention can deny it: "A foreign language IS NOT spoken."
+_DENIAL_AFTER = re.compile(
+    r"^\s*(?:is|are|was|were|be|been|being|does|do|did|has|have|had|can|could|"
+    r"will|would)?\s*(?:not|never)\b"
+    r"|^\s*(?:is|are|was|were|does|do|did|has|have|had|ca|wo)n'?t\b",
     re.IGNORECASE,
 )
 _SENTENCE_SPLIT = re.compile(r"[.;!?]")
 
 
 def _affirmatively_mentions(text: str, phrase: str) -> bool:
-    """Is ``phrase`` stated as a fact somewhere in ``text``?
+    """Is ``phrase`` ASSERTED as a fact somewhere in ``text``?
 
-    Negation is judged from what comes BEFORE the mention within its own
-    sentence, not by scanning the whole clause. Scanning the clause was wrong in
-    both directions: it accepted "speaks without using a foreign language" and
-    "the audio lacks Tagalog" (negators it did not list), while rejecting
-    "C1 speaks Tagalog, not Spanish." and "Non-diegetic music plays under
-    Tagalog speech." — where the negation governs something else entirely.
+    Negation scope cannot be decided from sentence position alone — trying that
+    was wrong in both directions. A negator can sit BEFORE the mention while
+    governing a different clause ("C1 is not visible while a voice speaks
+    Tagalog"), or AFTER it while denying it ("A foreign language is not
+    spoken"). So two narrow, high-confidence tests run per occurrence:
 
-    English negates a claim ahead of it, so the text between the start of the
-    sentence and the mention is what decides.
+    * BEFORE — a negator with no clause break between it and the mention, so it
+      is still governing when the mention arrives.
+    * AFTER — negation bound to the mention's own predicate. "Tagalog, not
+      Spanish" fails this test, because the negation attaches to Spanish.
+
+    Anything else leaves the mention standing as an assertion.
     """
     lowered = text.lower()
     needle = phrase.lower()
     if needle not in lowered:
         return False
+
     for match in re.finditer(re.escape(needle), lowered):
         sentence_start = 0
         for boundary in _SENTENCE_SPLIT.finditer(lowered, 0, match.start()):
             sentence_start = boundary.end()
+        tail = _SENTENCE_SPLIT.search(lowered, match.end())
+        sentence_end = tail.start() if tail else len(lowered)
+
         preceding = lowered[sentence_start:match.start()]
-        if not _NEGATION.search(preceding):
+        governed = any(
+            not _CLAUSE_BREAK.search(preceding[n.end():])
+            for n in _NEGATION.finditer(preceding)
+        )
+        denied_after = bool(_DENIAL_AFTER.match(lowered[match.end():sentence_end]))
+        if not governed and not denied_after:
             return True
     return False
 
@@ -361,7 +438,7 @@ def check_language_declared(
         # hedging by listing possible languages, so "a foreign language,
         # possibly Tagalog" is still an unsupported claim — the fallback
         # existing is not a reason to stop checking.
-        guessed = sorted({m.group(1).lower() for m in _LANGUAGE_NAME_RX.finditer(audio)})
+        guessed = find_language_guesses(audio_field)
         if guessed:
             log.add(
                 "LANGUAGE_GUESSED",

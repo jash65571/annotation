@@ -87,6 +87,9 @@ def _run_job(job: str, video: Path, hz: float, seed: dict[str, str] | None = Non
         _set(job, stage=stage, fraction=frac * 0.9 if seed else frac)
 
     workspace = video.parent
+    # Result files are declared as they are written; cleanup removes everything
+    # else, so a stage that forgets to declare an intermediate cannot leak it.
+    results: set[Path] = set()
     try:
         out_dir = workspace / "out"
         mode = os.environ.get("AUTOSCRIBE_MODE", "structured")
@@ -110,6 +113,7 @@ def _run_job(job: str, video: Path, hz: float, seed: dict[str, str] | None = Non
             md_path = pipeline.run(
                 video, out_dir, vision_backend=backend, hz=hz, progress=progress,
             )
+        results.add(md_path)
         fresh = md_path.read_text(encoding="utf-8")
         # The draft is validated before anyone sees it, review pass or not.
         validate_caption(
@@ -127,6 +131,7 @@ def _run_job(job: str, video: Path, hz: float, seed: dict[str, str] | None = Non
             )
             final_path = md_path.with_suffix(".reviewed.md")
             final_path.write_text(result["final_caption"], encoding="utf-8")
+            results.add(final_path)
             _set(job, state="done", markdown=result["final_caption"], review=result,
                  blockers=blockers.as_dicts(), ready=result["ready"],
                  readiness_reason=result["readiness_reason"],
@@ -139,40 +144,29 @@ def _run_job(job: str, video: Path, hz: float, seed: dict[str, str] | None = Non
         _set(job, state="error", error=f"{type(exc).__name__}: {exc}")
     finally:
         _ACTIVE.release()
-        _cleanup_workspace(workspace)
+        _cleanup_workspace(workspace, keep=results)
 
 
-#: Everything the pipeline writes that is NOT a result. Listing directories by
-#: name was fragile: `dense/` (the boundary-adjacent frames) was added later and
-#: silently escaped cleanup, as did the uploaded video itself — by far the
-#: largest file, and the one with the real privacy cost.
-_MEDIA_SUFFIXES = frozenset({
-    ".png", ".jpg", ".jpeg", ".webp", ".wav", ".mp4", ".mov", ".mkv", ".avi",
-    ".webm", ".m4v", ".mpg", ".mpeg", ".m4a", ".mp3", ".aac", ".flac",
-})
-#: Results worth keeping: the caption files the run produced.
-_KEEP_SUFFIXES = frozenset({".md", ".json", ".txt"})
+def _cleanup_workspace(workspace: Path, keep: set[Path] | None = None) -> None:
+    """Delete everything in the workspace except the named result files.
 
+    Deny-listing was wrong twice over. By directory name, `dense/` was added
+    later and silently escaped. By file suffix, the upload survives whenever its
+    name does not end in a known media extension — and the name is
+    user-controlled, so `upload.txt`, `upload.ts` or a bare `upload` all
+    persisted while FFmpeg happily processed their MP4 content.
 
-def _cleanup_workspace(workspace: Path) -> None:
-    """Delete every media file a job produced or received, keeping results.
-
-    Removes by KIND rather than by directory name so a newly added frame
-    directory cannot quietly survive. The uploaded video is deleted too: it is
-    the largest artefact and the one a user would least expect to persist in a
-    temp directory after the job that needed it has finished.
+    An allow-list inverts the risk: anything the run did not explicitly declare
+    a result is removed. A future stage that writes new intermediates is
+    cleaned up by default rather than by remembering to add it here.
     """
     if not workspace.exists():
         return
+    keep_resolved = {p.resolve() for p in (keep or set())}
     for path in workspace.rglob("*"):
-        if not path.is_file():
-            continue
-        suffix = path.suffix.lower()
-        if suffix in _KEEP_SUFFIXES:
-            continue
-        if suffix in _MEDIA_SUFFIXES:
+        if path.is_file() and path.resolve() not in keep_resolved:
             path.unlink(missing_ok=True)
-    # Drop the directories those files lived in, once empty.
+    # Drop the directories those files lived in, deepest first, once empty.
     for path in sorted(workspace.rglob("*"), key=lambda p: len(p.parts), reverse=True):
         if path.is_dir() and not any(path.iterdir()):
             path.rmdir()
