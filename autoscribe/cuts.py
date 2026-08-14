@@ -424,8 +424,11 @@ def resolve_shots(
         if epsilon < snapped < duration - epsilon:
             confirmed.append((round(snapped, 3), ctype))
 
-    confirmed = sorted(set(confirmed))
-    # De-duplicate only true duplicates of the SAME boundary (frame resolution).
+    # Sort WITHOUT de-duplicating. A set() here would drop boundaries that
+    # snapped to an identical (time, cut_type) before the audited loop below
+    # could see them — the exact-collision case slipping past the very blocker
+    # meant to catch it. Every discard must pass through one audited path.
+    confirmed.sort()
     # Candidates were already separated by >= epsilon before verification, so
     # two confirmed boundaries closer than that can ONLY be the result of
     # snapping having pulled them together — i.e. a verified cut is about to be
@@ -434,11 +437,16 @@ def resolve_shots(
     for c in confirmed:
         if deduped and c[0] - deduped[-1][0] < epsilon:
             if blockers is not None:
+                gap = c[0] - deduped[-1][0]
+                how = (
+                    "onto exactly" if gap == 0.0
+                    else f"within {gap:.3f}s of"
+                )
                 blockers.add(
                     "SHOT_BOUNDARY_COLLAPSED",
                     f"A verified boundary at {c[0]:.3f}s was dropped because snapping "
-                    f"moved it within {epsilon:.3f}s of the boundary at "
-                    f"{deduped[-1][0]:.3f}s. A short shot may have been lost here.",
+                    f"moved it {how} the boundary at {deduped[-1][0]:.3f}s. A short "
+                    f"shot may have been lost here.",
                     start=c[0],
                 )
             continue

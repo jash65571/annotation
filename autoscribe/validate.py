@@ -259,6 +259,34 @@ def check_style_depth(style: str, log: BlockerLog) -> None:
 #: always-accepted answer is this exact phrase — never a guess, never silence.
 FOREIGN_LANGUAGE_PHRASE = "a foreign language"
 
+#: Negations that turn a mention into a denial. A declaration must ASSERT the
+#: language, so a plain substring search is not enough — the same weakness the
+#: delivery check had, where "without a supported tone" satisfied "tone".
+_NEGATION = re.compile(
+    r"\b(not|non|no|never|isn'?t|aren'?t|wasn'?t|doesn'?t|don'?t|rather than|"
+    r"instead of|other than|unlike|neither|nor|cannot|can'?t)\b",
+    re.IGNORECASE,
+)
+
+
+def _affirmatively_mentions(text: str, phrase: str) -> bool:
+    """Is ``phrase`` stated as a fact somewhere in ``text``?
+
+    The phrase must appear in at least one clause that does not negate it.
+    "The voice speaks a foreign language." counts; "The voice is not speaking a
+    foreign language." does not.
+    """
+    lowered = text.lower()
+    needle = phrase.lower()
+    if needle not in lowered:
+        return False
+    # Split on sentence and clause boundaries so a negation elsewhere in the
+    # field cannot suppress a genuine declaration, and vice versa.
+    for clause in re.split(r"[.;!?]|\bbut\b|\bthough\b|\balthough\b", lowered):
+        if needle in clause and not _NEGATION.search(clause):
+            return True
+    return False
+
 
 def check_language_declared(
     audio_field: str,
@@ -286,23 +314,23 @@ def check_language_declared(
         # a specific phrase precisely so an unestablished language is never
         # reported as a known one — and English is a named language like any
         # other, so accepting it re-opens exactly the guess the rule forbids.
-        if FOREIGN_LANGUAGE_PHRASE not in audio:
+        if not _affirmatively_mentions(audio, FOREIGN_LANGUAGE_PHRASE):
             log.add(
                 "LANGUAGE_NOT_DECLARED",
                 f"Speech is present but the language could not be established. The "
-                f"Audio field must state '{FOREIGN_LANGUAGE_PHRASE}' — naming any "
-                f"language, English included, asserts more than the evidence "
-                f"supports.",
+                f"Audio field must AFFIRMATIVELY state '{FOREIGN_LANGUAGE_PHRASE}' — "
+                f"naming any language (English included) asserts more than the "
+                f"evidence supports, and denying the phrase is not a declaration.",
             )
         return
 
     if not language or _ENGLISH.match(language):
         return
-    if language.lower() not in audio:
+    if not _affirmatively_mentions(audio, language):
         log.add(
             "LANGUAGE_NOT_DECLARED",
-            f"Speech was detected as {language} but the Audio field never names the "
-            f"language. Non-English speech must be declared.",
+            f"Speech was detected as {language} but the Audio field never "
+            f"affirmatively names the language. Non-English speech must be declared.",
         )
 
 

@@ -298,6 +298,39 @@ def test_field_holding_only_a_full_stop_is_empty() -> None:
     assert "SHOT_FIELD_EMPTY" in _codes(text)
 
 
+def test_negated_foreign_language_phrase_is_not_a_declaration() -> None:
+    """The fallback must be ASSERTED. A substring search accepted a sentence
+    that denies it — the same weakness the delivery check had."""
+    for audio in (
+        "Audio: The voice is not speaking a foreign language.",
+        "Audio: This is not a foreign language.",
+        "Audio: The speech is never in a foreign language.",
+    ):
+        text = GOOD.replace("Audio: Music plays throughout.", audio)
+        log = validate_caption(text, speech_present=True, language_confident=False)
+        assert any(b.code == "LANGUAGE_NOT_DECLARED" for b in log.blocking), audio
+
+
+def test_affirmative_declaration_alongside_other_sentences_passes() -> None:
+    """A negation elsewhere in the field must not suppress a real declaration."""
+    text = GOOD.replace(
+        "Audio: Music plays throughout.",
+        "Audio: Music plays throughout and is not diegetic. A voice speaks a "
+        "foreign language.",
+    )
+    log = validate_caption(text, speech_present=True, language_confident=False)
+    assert not any(b.code == "LANGUAGE_NOT_DECLARED" for b in log.entries)
+
+
+def test_negated_named_language_is_not_a_declaration() -> None:
+    text = GOOD.replace(
+        "Audio: Music plays throughout.",
+        "Audio: The speech is not in Tagalog.",
+    )
+    log = validate_caption(text, detected_language="tagalog")
+    assert any(b.code == "LANGUAGE_NOT_DECLARED" for b in log.blocking)
+
+
 def test_uncertain_language_does_not_accept_english() -> None:
     """§17's fallback is a specific phrase precisely so an unestablished
     language is never reported as a known one — English included."""

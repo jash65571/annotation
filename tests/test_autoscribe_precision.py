@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from autoscribe import cuts, render
 from autoscribe.audio_timeline import AudioSpan, describe
 from autoscribe.blockers import BlockerLog
@@ -111,6 +113,85 @@ def test_snap_span_is_unrestricted_for_an_isolated_candidate() -> None:
 def test_snap_span_never_collapses_below_one_frame() -> None:
     """Two candidates exactly one frame apart still get a usable window."""
     assert cuts.snap_span([1.00, 1.04], 0, 0.036) >= 0.02
+
+
+def test_exact_boundary_collision_is_audited_not_set_deduplicated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: `sorted(set(confirmed))` ran BEFORE the audited loop, so two
+    boundaries snapping to an identical (time, cut_type) had one silently
+    removed by the set — slipping past the very blocker meant to catch it."""
+    import json
+
+    from autoscribe.blockers import BlockerLog
+
+    class _AlwaysCut:
+        def complete(self, *_a: object, **_k: object) -> str:
+            return json.dumps({"is_cut": True, "cut": "Hard cut"})
+
+    ledger = [round(i * 0.04, 3) for i in range(60)]
+    frames_dir = tmp_path / "frames"
+    frames_dir.mkdir()
+    grid: list[GridFrame] = []
+    for i, t in enumerate(ledger):
+        png = frames_dir / f"{i}.png"
+        png.write_bytes(b"\x89PNG\r\n\x1a\n")  # the verifier only base64s it
+        grid.append(GridFrame(index=i, time_seconds=t, path=png, source_index=i))
+    log = BlockerLog()
+
+    import autoscribe.cuts as cuts_mod
+
+    # Two distinct candidates that both snap onto the same instant.
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        cuts_mod, "candidate_boundaries", lambda *_a, **_k: [1.00, 1.20]
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        cuts_mod, "snap_boundary", lambda *_a, **_k: 1.05
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        cuts_mod, "densify", lambda *_a, **_k: grid
+    )
+
+    shots = cuts_mod.resolve_shots(
+        _AlwaysCut(), Path("v.mp4"), grid, 2.36,  # type: ignore[arg-type]
+        blockers=log, frame_times=ledger, work_dir=tmp_path,
+    )
+
+    assert any(b.code == "SHOT_BOUNDARY_COLLAPSED" for b in log.blocking), (
+        "an exact collision was de-duplicated without any record"
+    )
+    assert len(shots) == 2, shots
+
+
+def test_incomplete_dense_extraction_blocks(tmp_path: Path) -> None:
+    """A candidate verified without its true neighbouring frames is verified
+    against images that never held the shot, so the model answers 'not a cut'
+    — erasing a short shot exactly as a hard failure would."""
+    import subprocess
+
+    from autoscribe.blockers import BlockerLog
+    from autoscribe.frames import extract_indices
+
+    class _Ok:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    log = BlockerLog()
+    original = subprocess.run
+    try:
+        subprocess.run = lambda *_a, **_k: _Ok()  # type: ignore[assignment]
+        out = extract_indices(
+            Path("v.mp4"), tmp_path / "dense", [1, 2, 3],
+            [0.0, 0.04, 0.08, 0.12], blockers=log,
+        )
+    finally:
+        subprocess.run = original  # type: ignore[assignment]
+
+    assert out == []
+    assert any(b.code == "DENSE_FRAMES_INCOMPLETE" for b in log.blocking), (
+        "silently returning no frames left the run looking clean"
+    )
 
 
 def test_densify_is_a_noop_without_a_ledger() -> None:

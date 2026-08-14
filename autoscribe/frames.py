@@ -246,12 +246,17 @@ def extract_indices(
         for path, src in zip(paths, wanted, strict=False)
     ]
     if blockers is not None and len(frames) < len(wanted):
+        # BLOCKING, not advisory: a candidate verified without its true
+        # neighbouring frames is verified against images that never contained
+        # the shot, and the model correctly answers "not a cut". That erases a
+        # short shot exactly as completely as a failed extraction does — the
+        # only difference is that this path reports success.
         blockers.add(
             "DENSE_FRAMES_INCOMPLETE",
             f"Only {len(frames)} of {len(wanted)} boundary-adjacent frames were "
-            f"extracted; some candidates were verified without their true "
-            f"neighbouring frames.",
-            severity=WARNING,
+            f"extracted, so some candidates were verified without their true "
+            f"neighbouring frames. Short shots near those boundaries may be "
+            f"missing from the shot list.",
         )
     return frames
 
