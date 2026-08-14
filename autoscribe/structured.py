@@ -31,6 +31,7 @@ from . import (
     prosody as prosody_mod,
 )
 from . import transcribe as tr
+from . import validate as validate_mod
 from .blockers import WARNING, BlockerLog
 from .vision import OpenAIVisionBackend, image_content, text_content
 
@@ -1021,6 +1022,15 @@ def analyze(
     )
     progress("cast", 0.4)
     g = _cast_pass(backend, grid, duration, transcript, resolved, spans)
+    # The language declaration is generated from measured evidence, not phrased
+    # by the model: §17's rule is exact, and prose cannot be parsed back into a
+    # reliable yes/no. Whatever the model wrote about audio stays; the canonical
+    # sentence is appended if absent.
+    g.audio = validate_mod.ensure_language_sentence(
+        g.audio, transcript.language,
+        speech_present=transcript.has_speech,
+        language_confident=transcript.language_confident,
+    )
     cast_text = _cast_text(g)
     shots: list[Shot] = []
     for i, (s, e, cut) in enumerate(resolved):
