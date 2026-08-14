@@ -215,20 +215,46 @@ def test_negated_delivery_does_not_satisfy_the_requirement() -> None:
 # --------------------------------------------------------------------------
 # language declaration
 # --------------------------------------------------------------------------
-FOREIGN_LINE = "Spoken Language: a foreign language."
-TAGALOG_LINE = "Spoken Language: Tagalog."
-
-
-def _with_language(line: str) -> str:
-    """Insert a Spoken Language field after the Audio field."""
-    return GOOD.replace(
-        "Audio: Music plays throughout.",
-        "Audio: Music plays throughout.\n\n" + line,
-    )
+FOREIGN_PREFIX = "The spoken language is a foreign language."
+TAGALOG_PREFIX = "The spoken language is Tagalog."
 
 
 def _audio(sentence: str) -> str:
     return GOOD.replace("Audio: Music plays throughout.", f"Audio: {sentence}")
+
+
+def _declared(prefix: str, rest: str = "Music plays throughout.") -> str:
+    return _audio(f"{prefix} {rest}")
+
+
+def _language_codes(text: str, **kw: object) -> set[str]:
+    log = validate_caption(text, **kw)  # type: ignore[arg-type]
+    return {b.code for b in log.blocking if b.code.startswith("LANGUAGE_")}
+
+
+def test_no_invented_overview_field() -> None:
+    """§5/§26 list exactly seven Overview fields. A dedicated 'Spoken Language:'
+    field was an eighth the live tool does not have."""
+    from autoscribe.validate import REQUIRED_OVERVIEW_FIELDS
+
+    assert "Spoken Language:" not in REQUIRED_OVERVIEW_FIELDS
+    assert set(REQUIRED_OVERVIEW_FIELDS) == {
+        "Cast:", "Scene:", "Style:", "Audio:", "Visual Concerns:", "Audio Concerns:",
+    }
+
+
+def test_declaration_renders_as_an_audio_prefix_not_a_field() -> None:
+    from autoscribe import render
+    from autoscribe.structured import Annotation, Globals
+
+    ann = Annotation(
+        video_name="c.mp4", duration=1.0,
+        globals=Globals(audio="Music throughout.", spoken_language="Tagalog"),
+        shots=[],
+    )
+    out = render.render(ann)
+    assert "Spoken Language:" not in out
+    assert f"Audio: {TAGALOG_PREFIX} Music throughout." in out
 
 
 def test_canonical_value_is_built_from_measured_evidence() -> None:
@@ -246,89 +272,126 @@ def test_canonical_value_is_built_from_measured_evidence() -> None:
 def test_non_english_speech_must_declare_the_language() -> None:
     """Missed case from the evaluator audit: Tagalog lines shipped with no
     language named anywhere."""
-    log = validate_caption(GOOD, detected_language="tagalog")
-    assert any(b.code == "LANGUAGE_NOT_DECLARED" for b in log.blocking)
+    assert "LANGUAGE_NOT_DECLARED" in _language_codes(
+        GOOD, detected_language="tagalog"
+    )
 
 
-def test_canonical_field_satisfies_the_check() -> None:
-    log = validate_caption(_with_language(TAGALOG_LINE), detected_language="tagalog")
-    assert not any(b.code == "LANGUAGE_NOT_DECLARED" for b in log.entries)
+def test_correct_prefix_satisfies_the_check() -> None:
+    assert not _language_codes(
+        _declared(TAGALOG_PREFIX), detected_language="tagalog"
+    )
+
+
+def test_correct_fallback_prefix_satisfies_the_check() -> None:
+    assert not _language_codes(
+        _declared(FOREIGN_PREFIX), speech_present=True, language_confident=False
+    )
 
 
 def test_english_needs_no_declaration() -> None:
-    log = validate_caption(GOOD, detected_language="english")
-    assert not any(b.code == "LANGUAGE_NOT_DECLARED" for b in log.entries)
+    assert not _language_codes(GOOD, detected_language="english")
 
 
 def test_nothing_is_demanded_without_speech() -> None:
-    log = validate_caption(GOOD, detected_language="")
-    assert not any(b.code == "LANGUAGE_NOT_DECLARED" for b in log.entries)
+    assert not _language_codes(GOOD, detected_language="")
 
 
 def test_uncertain_language_still_requires_the_fallback() -> None:
-    log = validate_caption(GOOD, speech_present=True, language_confident=False)
-    assert any(b.code == "LANGUAGE_NOT_DECLARED" for b in log.blocking)
-
-
-def test_fallback_field_satisfies_the_check() -> None:
-    log = validate_caption(
-        _with_language(FOREIGN_LINE), speech_present=True, language_confident=False
+    assert "LANGUAGE_NOT_DECLARED" in _language_codes(
+        GOOD, speech_present=True, language_confident=False
     )
-    assert not any(b.code == "LANGUAGE_NOT_DECLARED" for b in log.entries)
 
 
-def test_wrong_field_value_is_rejected() -> None:
-    """The field is tool-owned; editing it is a finding, not a paraphrase."""
-    log = validate_caption(
-        _with_language("Spoken Language: Spanish."),
+def test_declaration_without_evidence_is_rejected() -> None:
+    """No expected value used to RETURN EARLY, so a caption could declare a
+    language the evidence never supported and raise nothing at all."""
+    spanish = "The spoken language is Spanish."
+    assert "LANGUAGE_DECLARED_WITHOUT_EVIDENCE" in _language_codes(
+        _declared(spanish), detected_language="english"
+    )
+    assert "LANGUAGE_DECLARED_WITHOUT_EVIDENCE" in _language_codes(_declared(spanish))
+
+
+def test_wrong_value_is_rejected() -> None:
+    assert "LANGUAGE_NOT_DECLARED" in _language_codes(
+        _declared("The spoken language is Spanish."), detected_language="tagalog"
+    )
+
+
+def test_case_differences_are_rejected() -> None:
+    """The value is generated, so any difference is an edit. Comparison used to
+    ignore case, and 'tAgAlOg' passed."""
+    assert "LANGUAGE_NOT_DECLARED" in _language_codes(
+        _declared("The spoken language is tAgAlOg."), detected_language="tagalog"
+    )
+
+
+def _with_shot_declaration(base: str) -> str:
+    return base.replace(
+        "Cut: Opening shot.", "Cut: Opening shot.\n" + TAGALOG_PREFIX
+    )
+
+
+def test_declaration_inside_a_shot_does_not_satisfy_the_overview() -> None:
+    """It was accepted anywhere, including inside a shot."""
+    assert "LANGUAGE_NOT_DECLARED" in _language_codes(
+        _with_shot_declaration(GOOD), detected_language="tagalog"
+    )
+
+
+def test_duplicate_declarations_are_rejected() -> None:
+    """Only the FIRST match was read, so a second contradicting claim elsewhere
+    was invisible."""
+    assert "LANGUAGE_DECLARATION_COUNT" in _language_codes(
+        _with_shot_declaration(_declared(TAGALOG_PREFIX)),
         detected_language="tagalog",
     )
-    assert any(b.code == "LANGUAGE_NOT_DECLARED" for b in log.blocking)
+
+
+def test_prefix_must_open_the_audio_field() -> None:
+    """Mid-field it is prose again, and prose can be negated by what precedes it."""
+    assert "LANGUAGE_NOT_DECLARED" in _language_codes(
+        _audio(f"Music plays throughout. {TAGALOG_PREFIX}"),
+        detected_language="tagalog",
+    )
 
 
 @pytest.mark.parametrize(
     "audio",
     [
-        # Embedding the declaration in prose let it be negated or quoted, which
-        # both suppressed the check while the caption said the opposite.
         "It is false that The spoken language is Tagalog.",
         "Do not claim that The spoken language is a foreign language.",
-        "The spoken language is a foreign language.",
-        # Prose paraphrases never satisfied a tool-owned field.
         "A voice speaks in a foreign language.",
         "The speech is in Tagalog.",
     ],
 )
-def test_audio_prose_can_never_satisfy_the_declaration(audio: str) -> None:
-    """The declaration lives in its own field. No sentence in the model's Audio
-    prose — however phrased, negated or quoted — can stand in for it."""
-    log = validate_caption(
+def test_prose_can_never_satisfy_the_declaration(audio: str) -> None:
+    """No sentence in the model's Audio prose — however phrased, negated or
+    quoted — can stand in for the generated declaration."""
+    assert _language_codes(
         _audio(audio), speech_present=True, language_confident=False
-    )
-    assert any(b.code == "LANGUAGE_NOT_DECLARED" for b in log.blocking), audio
+    ), audio
 
 
 def test_speculative_audio_prose_is_advisory_not_blocking() -> None:
     """An unhedged guess in free prose ("The voice speaks Pashto.") cannot be
     detected without a language list, so this check must not pretend to be
     authoritative — it warns, and never decides the declaration."""
-    caption = _with_language(FOREIGN_LINE).replace(
-        "Audio: Music plays throughout.",
-        "Audio: Music plays throughout. The voice may be speaking Pashto.",
+    log = validate_caption(
+        _declared(FOREIGN_PREFIX, "The voice may be speaking Pashto."),
+        speech_present=True, language_confident=False,
     )
-    log = validate_caption(caption, speech_present=True, language_confident=False)
-    codes = {b.code for b in log.entries}
-    assert "AUDIO_PROSE_SPECULATIVE" in codes
+    assert any(b.code == "AUDIO_PROSE_SPECULATIVE" for b in log.entries)
     assert all(b.code != "AUDIO_PROSE_SPECULATIVE" for b in log.blocking)
 
 
 def test_ordinary_prose_words_do_not_trigger_the_advisory() -> None:
     """"Specifically, a door slams" is not a language guess."""
-    caption = _with_language(FOREIGN_LINE).replace(
-        "Audio: Music plays throughout.",
-        "Audio: Specifically, a door slams before the voice.",
+    log = validate_caption(
+        _declared(FOREIGN_PREFIX, "Specifically, a door slams before the voice."),
+        speech_present=True, language_confident=False,
     )
-    log = validate_caption(caption, speech_present=True, language_confident=False)
     assert not any(b.code == "AUDIO_PROSE_SPECULATIVE" for b in log.entries)
 
 

@@ -171,7 +171,9 @@ def _extract_descriptions(
                 shot_scenes.append((shot_index, body))
         elif line.startswith("Style:") and not style:
             style = line[len("Style:"):].strip()
-        elif line.startswith("Audio:") and not audio:
+        elif line.startswith("Audio:") and not audio and shot_index == 0:
+            # Overview only: a declaration sitting in a shot must not be able to
+            # satisfy the Overview's requirement.
             audio = line[len("Audio:"):].strip()
     return overview_scene, shot_scenes, style, audio
 
@@ -259,19 +261,21 @@ def check_style_depth(style: str, log: BlockerLog) -> None:
 #: always-accepted answer is this exact phrase — never a guess, never silence.
 FOREIGN_LANGUAGE_PHRASE = "a foreign language"
 
-#: The language claim is a TOOL-OWNED FIELD, not prose to be parsed.
+#: The language claim is TOOL-OWNED and generated, never parsed out of prose.
 #:
 #: Four rounds of scope regexes died here, and rightly: they were wrong in both
-#: directions every time. Then the generated sentence was embedded INSIDE the
-#: model's Audio prose, which merely moved the problem — "It is false that The
-#: spoken language is Tagalog." both suppressed insertion and satisfied the
-#: substring check.
+#: directions every time. Embedding the generated sentence in the model's Audio
+#: prose then merely moved the problem — "It is false that The spoken language
+#: is Tagalog." both suppressed insertion and satisfied a substring check. And a
+#: dedicated "Spoken Language:" field invented an eighth Overview field, which
+#: §5/§26 do not have.
 #:
-#: So the declaration now has its own rendered field, carrying a canonical VALUE
-#: compared by equality. There is no surrounding text that could reinterpret it,
-#: nothing to negate, and nothing to parse. The model is told not to name any
-#: language at all; its Audio prose is outside this fact's validation path.
-LANGUAGE_FIELD = "Spoken Language:"
+#: What survives all three failures: a fixed PREFIX at a known position inside
+#: an EXISTING field. Nothing precedes it that could negate it, no schema
+#: changes, and the check is an exact comparison rather than a search.
+LANGUAGE_PREFIX_TEMPLATE = "The spoken language is {value}."
+#: The invariant part, used to find any declaration anywhere in the caption.
+LANGUAGE_PREFIX_STEM = "The spoken language is"
 
 #: Speculation markers, used ONLY to advise on the model's own prose — never to
 #: decide the declaration. Deliberately excludes "namely"/"specifically", which
@@ -285,10 +289,15 @@ _SPECULATION = re.compile(
 )
 
 
+def language_prefix(value: str) -> str:
+    """The exact sentence that must open the Audio field, or "" if none is due."""
+    return LANGUAGE_PREFIX_TEMPLATE.format(value=value) if value else ""
+
+
 def canonical_language_value(
     detected_language: str, *, speech_present: bool, language_confident: bool
 ) -> str:
-    """The value of the Spoken Language field, or "" when none is due.
+    """The declared language value, or "" when no declaration is due.
 
     Built from measured evidence only. English needs no declaration (§17 is
     about foreign speech), so it returns "" as well.
@@ -306,56 +315,73 @@ def canonical_language_value(
 
 
 def check_language_declared(
-    lines: list[str],
-    audio_field: str,
+    text: str,
+    overview_audio: str,
     detected_language: str,
     log: BlockerLog,
     *,
     speech_present: bool = False,
     language_confident: bool = True,
 ) -> None:
-    """The Spoken Language field must carry exactly the canonical value.
+    """Exactly one declaration when one is due, and none when it is not.
 
     Missed case from the Aug 2026 evaluator audit: Tagalog lines ("Diba? Diba?",
-    "Arte-arte siya!") went out with no language declared anywhere.
+    "Arte-arte siya!") went out with no language declared anywhere. An UNCERTAIN
+    detection is not an exemption — §17 supplies a fallback, so an unestablished
+    language is still declared, just never named.
 
-    An UNCERTAIN detection is not an exemption — §17 supplies a fallback, so an
-    unestablished language is still declared, just never named.
+    Four bypasses closed here, all from treating the check as "find something
+    that looks right somewhere":
+
+    * no expected value returned EARLY, so a caption could declare a language
+      the evidence never supported (English speech, or none at all, captioned
+      "Spanish") and no finding was raised;
+    * only the FIRST matching line was read, so a second contradicting one was
+      invisible;
+    * the declaration was accepted ANYWHERE, including inside a shot;
+    * comparison ignored case, so "tAgAlOg" passed as "Tagalog".
     """
-    expected = canonical_language_value(
+    expected = language_prefix(canonical_language_value(
         detected_language,
         speech_present=speech_present,
         language_confident=language_confident,
-    )
+    ))
+    # Count declarations across the WHOLE caption, not just the expected slot:
+    # a stray copy in a shot is a second, unverified claim.
+    found = text.count(LANGUAGE_PREFIX_STEM)
+
     if not expected:
+        if found:
+            log.add(
+                "LANGUAGE_DECLARED_WITHOUT_EVIDENCE",
+                f"The caption declares a spoken language {found} time(s), but the "
+                f"measured evidence supports no declaration (English speech, or no "
+                f"speech at all). This claim is unsupported.",
+            )
         return
 
-    declared: str | None = None
-    for raw in lines:
-        line = raw.strip()
-        if line.startswith(LANGUAGE_FIELD):
-            declared = line[len(LANGUAGE_FIELD):].strip().rstrip(".")
-            break
-
-    if declared is None:
+    # Case-sensitive: the value is generated, so any difference is an edit.
+    if not overview_audio.startswith(expected):
         log.add(
             "LANGUAGE_NOT_DECLARED",
-            f"The caption has no '{LANGUAGE_FIELD}' field. It must read "
-            f"'{LANGUAGE_FIELD} {expected}.' — a value generated from the measured "
-            f"evidence, not written by the model.",
+            f"The Overview Audio field must begin with exactly {expected!r}. This "
+            f"sentence is generated from the measured evidence — it is tool-owned, "
+            f"so rewording, re-casing, moving or omitting it all fail.",
         )
-    elif declared.lower() != expected.lower():
+    if found != 1:
         log.add(
-            "LANGUAGE_NOT_DECLARED",
-            f"'{LANGUAGE_FIELD}' reads {declared!r} but the measured evidence gives "
-            f"{expected!r}. This field is tool-owned and must not be edited.",
+            "LANGUAGE_DECLARATION_COUNT",
+            f"The caption contains {found} spoken-language declarations; exactly "
+            f"one is allowed, at the start of the Overview Audio field.",
         )
 
     if speech_present and not language_confident:
         # ADVISORY ONLY. The declaration above is already decided; this cannot
         # reliably detect an unhedged guess in free prose ("The voice speaks
         # Pashto.") and must never be treated as if it could.
-        hedges = sorted({m.group(1).lower() for m in _SPECULATION.finditer(audio_field)})
+        hedges = sorted({
+            m.group(1).lower() for m in _SPECULATION.finditer(overview_audio)
+        })
         if hedges:
             log.add(
                 "AUDIO_PROSE_SPECULATIVE",
@@ -475,7 +501,7 @@ def validate_caption(
             f"describe what each one shows.",
         )
     check_language_declared(
-        lines, audio, detected_language, log,
+        text, audio, detected_language, log,
         speech_present=speech_present, language_confident=language_confident,
     )
     check_speech_delivery(lines, log)

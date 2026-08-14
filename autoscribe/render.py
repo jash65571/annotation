@@ -15,6 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .structured import Annotation, Shot, Timed
+from .validate import language_prefix
 
 #: en dash, per the caption spec
 DASH = "–"  # noqa: RUF001
@@ -82,13 +83,17 @@ def render(ann: Annotation) -> str:
     out.append("")
     out.append(f"Style: {_terminated(g.style)}")
     out.append("")
-    out.append(f"Audio: {_terminated(g.audio)}")
+    # The language declaration is TOOL-OWNED but it is NOT a field: §5/§26 list
+    # exactly seven Overview fields and "Spoken Language:" is not among them, so
+    # emitting it invented a schema the live tool does not have. It is rendered
+    # instead as a fixed PREFIX of Audio — a known position the validator can
+    # check exactly, with no new field and no prose that could negate it.
+    audio = _terminated(g.audio)
+    prefix = language_prefix(g.spoken_language)
+    if prefix:
+        audio = f"{prefix} {audio}".strip()
+    out.append(f"Audio: {audio}")
     out.append("")
-    # Tool-owned: derived from measured evidence, never phrased by the model.
-    # Rendered as its own field so no surrounding prose can negate or quote it.
-    if g.spoken_language:
-        out.append(f"Spoken Language: {_terminated(g.spoken_language)}")
-        out.append("")
     # Capital C: the source-of-truth §26 template is "Visual Concerns:" /
     # "Audio Concerns:". Empty means exactly "None." (§6.6).
     out.append(f"Visual Concerns: {_terminated(g.visual_concerns) or 'None.'}")
