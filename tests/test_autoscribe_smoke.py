@@ -56,6 +56,44 @@ def clip(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return out
 
 
+@pytest.fixture(scope="module")
+def flash_clip(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """25 fps red / ONE white frame / red — a genuine one-frame shot."""
+    out = tmp_path_factory.mktemp("autoscribe_flash") / "flash.mp4"
+    parts: list[Path] = []
+    for name, colour, count in (("a", "red", 25), ("b", "white", 1), ("c", "red", 25)):
+        p = out.parent / f"{name}.mp4"
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-f", "lavfi",
+             "-i", f"color=c={colour}:s=320x240:r=25:d=1",
+             "-vframes", str(count), "-c:v", "libx264", "-pix_fmt", "yuv420p", str(p)],
+            check=True,
+        )
+        parts.append(p)
+    listing = out.parent / "list.txt"
+    listing.write_text("".join(f"file '{p.as_posix()}'\n" for p in parts))
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0",
+         "-i", str(listing), "-c", "copy", str(out)],
+        check=True,
+    )
+    return out
+
+
+def test_one_frame_shot_produces_both_its_boundaries(flash_clip: Path) -> None:
+    """The regression this pins: PySceneDetect's 15-frame floor reported only the
+    flash's ENTRY at 1.00s and suppressed its EXIT at 1.04s, so the one-frame
+    shot was silently absorbed into the shot that followed it."""
+    ledger = frames.probe_frame_times(flash_clip)
+    eps = cuts.frame_epsilon(ledger)
+    found = cuts.candidate_boundaries(flash_clip, min_gap=eps)
+
+    entry = [t for t in found if 0.96 <= t <= 1.02]
+    exit_ = [t for t in found if 1.02 < t <= 1.10]
+    assert entry, f"flash entry not detected in {found}"
+    assert exit_, f"flash EXIT not detected in {found} — the shot would be absorbed"
+
+
 def test_probe_returns_a_real_frame_ledger(clip: Path) -> None:
     times = frames.probe_frame_times(clip)
     assert len(times) >= 40, "expected ~50 frames from 2s at 25fps"

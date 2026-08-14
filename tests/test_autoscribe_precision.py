@@ -48,6 +48,56 @@ def test_audio_not_crossing_is_not_detected() -> None:
     assert cuts.audio_crosses(spans, 2.3) is False
 
 
+def test_detectors_do_not_impose_a_minimum_shot_length() -> None:
+    """PySceneDetect defaults every detector to min_scene_len=15 FRAMES (0.6s at
+    25fps). With that floor a one-frame flash yields only its ENTRY boundary and
+    never its exit, so the shot is silently absorbed into the next one — no
+    downstream care can recover a candidate that was never proposed."""
+    assert cuts.MIN_SCENE_LEN == 1
+
+
+def test_densify_pulls_real_frames_around_a_candidate() -> None:
+    """A ~10Hz grid cannot contain a one-frame event at 25fps, so verifying
+    against the grid alone shows the model frames that never held the shot."""
+    ledger = [i * 0.04 for i in range(50)]
+    grid = [
+        GridFrame(index=k, time_seconds=ledger[i], path=Path(f"{i}.png"),
+                  source_index=i)
+        for k, i in enumerate(range(0, 50, 3))
+    ]
+    # Frame 25 (1.00s) is absent from a 3-frame-stride grid.
+    assert 25 not in {f.source_index for f in grid}
+
+    calls: list[list[int]] = []
+
+    def fake_extract(_v: Path, _o: Path, indices: list[int], times: list[float],
+                     width: int = 768) -> list[GridFrame]:
+        calls.append(indices)
+        return [
+            GridFrame(index=-1, time_seconds=times[i], path=Path(f"d{i}.png"),
+                      source_index=i)
+            for i in indices
+        ]
+
+    original = cuts.extract_indices
+    try:
+        cuts.extract_indices = fake_extract  # type: ignore[assignment]
+        dense = cuts.densify(Path("v.mp4"), grid, [1.00], ledger, Path("w"), radius=3)
+    finally:
+        cuts.extract_indices = original  # type: ignore[assignment]
+
+    assert calls, "no on-demand extraction was requested"
+    assert 25 in calls[0], "the candidate's own frame was not fetched"
+    assert 25 in {f.source_index for f in dense}
+    assert dense == sorted(dense, key=lambda f: f.time_seconds)
+
+
+def test_densify_is_a_noop_without_a_ledger() -> None:
+    grid = [GridFrame(index=0, time_seconds=0.0, path=Path("a.png"), source_index=0)]
+    assert cuts.densify(Path("v.mp4"), grid, [1.0], [], Path("w")) is grid
+    assert cuts.densify(Path("v.mp4"), grid, [], [0.0, 0.04], Path("w")) is grid
+
+
 def test_lj_cuts_are_not_offerable_to_the_vision_model() -> None:
     """The frame verifier only sees images, so it must not be able to answer
     with a transition that is defined by sound."""

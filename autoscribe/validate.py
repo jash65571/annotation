@@ -81,17 +81,29 @@ _NO_CHANGES = re.compile(r"^no changes from overview\.?$", re.IGNORECASE)
 #: A line that reports speech. Source of truth §10 Rule 4 requires each to carry
 #: a supported audible tone.
 _SPEECH_VERB = re.compile(
-    r"\b(says?|said|sings?|shouts?|whispers?|asks?|replies|replied|narrates?|"
-    r"calls? out|mutters?|yells?|screams?|chants?)\b",
+    r"\b(says?|said|speaks?|spoke|speaking|talks?|sings?|sang|shouts?|whispers?|"
+    r"asks?|asked|answers?|replies|replied|responds?|adds?|continues?|narrates?|"
+    r"reads? out|calls? out|mutters?|murmurs?|yells?|screams?|chants?|recites?|"
+    r"exclaims?|states?|declares?)\b",
     re.IGNORECASE,
 )
 #: The canonical delivery phrasing ("in a questioning tone", "in a low, strained
-#: tone") plus the other supported ways a delivery attribute can appear.
+#: tone") or a delivery adverb. A BARE occurrence of the word "tone" is NOT
+#: accepted: "says off-screen without a supported tone" contains it while
+#: asserting the opposite, and any sentence merely mentioning tone would pass.
 _DELIVERY = re.compile(
-    r"\bin an? [^,\"]{2,60}\b(tone|voice|delivery|pitch|register)\b"
-    r"|\b(tone|pitch|pace|delivery)\b"
+    r"\bin an? [^,\"]{2,60}?\b(tone|voice|delivery|pitch|register)\b"
     r"|\b(quietly|loudly|softly|firmly|urgently|calmly|slowly|quickly|rapidly|"
-    r"hesitantly|flatly|sharply|wearily|breathlessly)\b",
+    r"hesitantly|flatly|sharply|wearily|breathlessly|angrily|cheerfully|"
+    r"nervously|gently|harshly|coldly|warmly|excitedly|tearfully|deadpan)\b",
+    re.IGNORECASE,
+)
+#: Phrases that MENTION delivery in order to deny it. These must never satisfy
+#: the requirement.
+_DELIVERY_NEGATED = re.compile(
+    r"\b(without|no|lacking|absent|unsupported|unknown|undetermined|"
+    r"cannot be determined|not determined|unclear)\b[^,\"]{0,40}?"
+    r"\b(tone|voice|delivery|pitch|pace|register)\b",
     re.IGNORECASE,
 )
 #: English is the default caption language; anything else must be declared.
@@ -243,24 +255,82 @@ def check_style_depth(style: str, log: BlockerLog) -> None:
         )
 
 
+#: Source of truth §17: when the language cannot be established, the safe,
+#: always-accepted answer is this exact phrase — never a guess, never silence.
+FOREIGN_LANGUAGE_PHRASE = "a foreign language"
+
+
 def check_language_declared(
-    audio_field: str, detected_language: str, log: BlockerLog
+    audio_field: str,
+    detected_language: str,
+    log: BlockerLog,
+    *,
+    speech_present: bool = False,
+    language_confident: bool = True,
 ) -> None:
     """Non-English speech must be named in the Audio field.
 
     Missed case from the Aug 2026 evaluator audit: Tagalog lines ("Diba? Diba?",
     "Arte-arte siya!") went out with no language declared anywhere. Requiring it
     in the prompt is not enforcement — the rendered caption is checked here.
+
+    An UNCERTAIN detection is not an exemption. §17 gives a specific fallback
+    ("a foreign language"), so an unconfident detection over real speech still
+    has to say something; it just must not name a language it cannot support.
     """
+    audio = audio_field.lower()
     language = detected_language.strip()
+
+    if speech_present and not language_confident:
+        if FOREIGN_LANGUAGE_PHRASE not in audio and "english" not in audio:
+            log.add(
+                "LANGUAGE_NOT_DECLARED",
+                f"Speech is present but the language could not be established, and "
+                f"the Audio field declares no language. State "
+                f"'{FOREIGN_LANGUAGE_PHRASE}' rather than naming one or omitting it.",
+            )
+        return
+
     if not language or _ENGLISH.match(language):
         return
-    if language.lower() not in audio_field.lower():
+    if language.lower() not in audio:
         log.add(
             "LANGUAGE_NOT_DECLARED",
             f"Speech was detected as {language} but the Audio field never names the "
             f"language. Non-English speech must be declared.",
         )
+
+
+def check_shot_fields(lines: list[str], log: BlockerLog) -> None:
+    """Every shot carries the canonical field set (SOT §27).
+
+    CANONICAL_SHOT_FIELDS was declared but never checked, so a shot missing
+    Camera, Scene or Playback Speed produced no finding at all.
+    """
+    blocks: list[tuple[int, list[str]]] = []
+    current: list[str] | None = None
+    index = 0
+    for raw in lines:
+        line = raw.strip()
+        header = _SHOT_HEADER.match(line)
+        if header:
+            if current is not None:
+                blocks.append((index, current))
+            index = int(header.group(1))
+            current = []
+            continue
+        if current is not None:
+            current.append(line)
+    if current is not None:
+        blocks.append((index, current))
+
+    for shot_index, body in blocks:
+        for field in CANONICAL_SHOT_FIELDS:
+            if not any(line.startswith(field) for line in body):
+                log.add(
+                    "SHOT_FIELD_MISSING",
+                    f"Shot {shot_index} is missing the required '{field}' field.",
+                )
 
 
 def check_speech_delivery(lines: list[str], log: BlockerLog) -> None:
@@ -280,7 +350,7 @@ def check_speech_delivery(lines: list[str], log: BlockerLog) -> None:
         # Check outside the quoted words: the delivery describes the speech,
         # it is not part of it.
         outside = strip_quotes(body)
-        if not _DELIVERY.search(outside):
+        if _DELIVERY_NEGATED.search(outside) or not _DELIVERY.search(outside):
             log.add(
                 "SPEECH_NO_DELIVERY",
                 f"Line {lineno} reports speech with no delivery attribute (tone, "
@@ -293,6 +363,9 @@ def validate_caption(
     text: str,
     blockers: BlockerLog | None = None,
     detected_language: str = "",
+    *,
+    speech_present: bool = False,
+    language_confident: bool = True,
 ) -> BlockerLog:
     """Check a rendered caption and return the log of everything wrong with it.
 
@@ -328,8 +401,12 @@ def validate_caption(
             f"no shot carries a description. Separate shots differ by definition — "
             f"describe what each one shows.",
         )
-    check_language_declared(audio, detected_language, log)
+    check_language_declared(
+        audio, detected_language, log,
+        speech_present=speech_present, language_confident=language_confident,
+    )
     check_speech_delivery(lines, log)
+    check_shot_fields(lines, log)
 
     defined_ids = {m.group(1) for line in lines if (m := _ID_DEF.match(line.strip()))}
     referenced_ids: set[str] = set()

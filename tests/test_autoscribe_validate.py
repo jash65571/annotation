@@ -188,6 +188,25 @@ def test_non_speech_line_needs_no_delivery() -> None:
     assert "SPEECH_NO_DELIVERY" not in _codes(text)
 
 
+def test_all_speech_verbs_require_delivery() -> None:
+    """'speaks' and 'talks' were missing from the verb list, so those lines
+    skipped the delivery requirement entirely."""
+    for verb in ("speaks", "talks", "adds", "responds", "murmurs", "exclaims"):
+        text = _with_speech(f'(1.0s–2.0s) C1 {verb} off-screen, "Hola."')
+        assert "SPEECH_NO_DELIVERY" in _codes(text), f"{verb!r} bypassed the check"
+
+
+def test_negated_delivery_does_not_satisfy_the_requirement() -> None:
+    """A bare occurrence of the word 'tone' used to pass — including a phrase
+    that explicitly denies having one."""
+    for line in (
+        '(1.0s–2.0s) C1 says off-screen without a supported tone, "Hola."',
+        '(1.0s–2.0s) C1 says off-screen with no clear tone, "Hola."',
+        '(1.0s–2.0s) C1 says off-screen, tone unclear, "Hola."',
+    ):
+        assert "SPEECH_NO_DELIVERY" in _codes(_with_speech(line)), line
+
+
 # --------------------------------------------------------------------------
 # language declaration
 # --------------------------------------------------------------------------
@@ -212,10 +231,53 @@ def test_english_needs_no_declaration() -> None:
     assert not any(b.code == "LANGUAGE_NOT_DECLARED" for b in log.entries)
 
 
-def test_unknown_language_is_not_demanded() -> None:
-    """An unconfident detection must not force a fabricated declaration."""
+def test_unknown_language_is_not_demanded_without_speech() -> None:
+    """No speech at all means nothing to declare."""
     log = validate_caption(GOOD, detected_language="")
     assert not any(b.code == "LANGUAGE_NOT_DECLARED" for b in log.entries)
+
+
+def test_uncertain_language_over_real_speech_still_requires_a_declaration() -> None:
+    """SOT §17 gives a fallback ('a foreign language'), so an unconfident
+    detection is not an exemption — it just must not name a language."""
+    log = validate_caption(GOOD, speech_present=True, language_confident=False)
+    assert any(b.code == "LANGUAGE_NOT_DECLARED" for b in log.blocking)
+
+
+def test_foreign_language_fallback_phrase_satisfies_the_check() -> None:
+    text = GOOD.replace(
+        "Audio: Music plays throughout.",
+        "Audio: Music plays throughout. A voice speaks in a foreign language.",
+    )
+    log = validate_caption(text, speech_present=True, language_confident=False)
+    assert not any(b.code == "LANGUAGE_NOT_DECLARED" for b in log.entries)
+
+
+# --------------------------------------------------------------------------
+# canonical shot fields (SOT §27)
+# --------------------------------------------------------------------------
+def test_missing_shot_fields_are_caught() -> None:
+    """CANONICAL_SHOT_FIELDS was declared but never checked, so a shot with no
+    Camera, Scene or Playback Speed produced no finding at all."""
+    text = GOOD
+    for field in (
+        "Camera: Medium-wide, eye-level, handheld.",
+        "Scene: No changes from overview.",
+        "Playback Speed: regular.",
+    ):
+        text = text.replace(field, "")
+    findings = [b for b in validate_caption(text).blocking
+                if b.code == "SHOT_FIELD_MISSING"]
+    assert len(findings) == 3, [b.detail for b in findings]
+
+
+def test_complete_shot_reports_no_missing_fields() -> None:
+    assert "SHOT_FIELD_MISSING" not in _codes(GOOD)
+
+
+def test_missing_cut_field_is_caught() -> None:
+    text = GOOD.replace("Cut: Opening shot.", "")
+    assert "SHOT_FIELD_MISSING" in _codes(text)
 
 
 def test_ghost_character_id_is_caught() -> None:

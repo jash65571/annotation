@@ -95,6 +95,11 @@ class Annotation:
     #: Detected speech language, so the renderer's Audio field can be checked
     #: for the required non-English declaration.
     detected_language: str = ""
+    #: Whether any speech was heard at all, and whether the language detection
+    #: was trustworthy — an uncertain detection still requires the §17 fallback
+    #: phrase rather than silence.
+    speech_present: bool = False
+    language_confident: bool = True
 
     def labelled_frames(self) -> list[tuple[float, Path]]:
         """(timestamp, path) pairs — a reviewer needs the WHEN, not just the image."""
@@ -790,8 +795,13 @@ def _shot_pass(
         if usable:
             prompt += (
                 "\n\nMEASURED DELIVERY for the speech runs in this shot (signal "
-                "analysis — loudness is relative to this clip's own speech, pitch to "
-                "this speaker's own norm):\n" + prosody_mod.describe(usable) +
+                "analysis). Both loudness and pitch are measured against ONE "
+                "CLIP-WIDE baseline pooled over all speech: there is NO speaker "
+                "separation, so if several people speak, each is being compared "
+                "with the others rather than with an earlier version of the same "
+                "voice. Treat 'higher' or 'louder' as relative to the clip, never "
+                "as a claim about how this person normally sounds:\n"
+                + prosody_mod.describe(usable) +
                 "\nWrite each speech line's tone from these measurements only. Omit "
                 "any attribute not listed."
             )
@@ -1007,7 +1017,7 @@ def analyze(
     progress("shots", 0.3)
     resolved = cuts_mod.resolve_shots(
         backend, video, grid, duration, blockers=blockers, audio_spans=spans,
-        frame_times=ledger,
+        frame_times=ledger, work_dir=work,
     )
     progress("cast", 0.4)
     g = _cast_pass(backend, grid, duration, transcript, resolved, spans)
@@ -1032,4 +1042,6 @@ def analyze(
         detected_language=(
             transcript.language if transcript.language_confident else ""
         ),
+        speech_present=transcript.has_speech,
+        language_confident=transcript.language_confident,
     )

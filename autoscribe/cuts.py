@@ -34,7 +34,7 @@ from pathlib import Path
 
 from .audio_timeline import AudioSpan
 from .blockers import WARNING, BlockerLog
-from .frames import GridFrame
+from .frames import GridFrame, extract_indices
 from .vision import OpenAIVisionBackend, image_content, text_content
 
 #: Transitions decided from PICTURE evidence alone — what the VLM may choose.
@@ -80,17 +80,28 @@ def frame_epsilon(frame_times: list[float]) -> float:
     return max(period * 0.9, 0.005)
 
 
+#: PySceneDetect defaults every detector to min_scene_len=15 FRAMES — 0.6 s at
+#: 25 fps. That floor silently makes short shots undetectable at the source:
+#: a genuine one-frame white flash produces NO candidate at all, so no amount of
+#: careful de-duplication downstream can recover it. Detection must be allowed
+#: to propose short shots; rejecting them is the verifier's job, not the
+#: detector's.
+MIN_SCENE_LEN = 1
+
+
 def _adaptive(video: Path) -> list[float]:
     from scenedetect import AdaptiveDetector, detect
 
-    scenes = detect(str(video), AdaptiveDetector())
+    scenes = detect(str(video), AdaptiveDetector(min_scene_len=MIN_SCENE_LEN))
     return [round(s.seconds, 3) for i, (s, _e) in enumerate(scenes) if i > 0]
 
 
 def _content(video: Path, threshold: float = 27.0) -> list[float]:
     from scenedetect import ContentDetector, detect
 
-    scenes = detect(str(video), ContentDetector(threshold=threshold))
+    scenes = detect(
+        str(video), ContentDetector(threshold=threshold, min_scene_len=MIN_SCENE_LEN)
+    )
     return [round(s.seconds, 3) for i, (s, _e) in enumerate(scenes) if i > 0]
 
 
@@ -99,7 +110,7 @@ def _fades(video: Path) -> list[float]:
     that content detectors and the motion-robust detector both miss."""
     from scenedetect import ThresholdDetector, detect
 
-    scenes = detect(str(video), ThresholdDetector())
+    scenes = detect(str(video), ThresholdDetector(min_scene_len=MIN_SCENE_LEN))
     return [round(s.seconds, 3) for i, (s, _e) in enumerate(scenes) if i > 0]
 
 
@@ -134,6 +145,37 @@ def _near(
         return fs[-n:]
     fs = [f for f in grid if t <= f.time_seconds <= t + span]
     return fs[:n]
+
+
+def densify(
+    video: Path,
+    grid: list[GridFrame],
+    boundaries: list[float],
+    frame_times: list[float],
+    work_dir: Path,
+    radius: int = 3,
+) -> list[GridFrame]:
+    """Grid plus the ACTUAL source frames straddling each candidate boundary.
+
+    A ~10 Hz review grid cannot contain a one-frame event on 25 fps footage, so
+    verifying such a candidate against the grid means showing the model frames
+    that never contained the shot — and it correctly answers "not a cut". The
+    neighbouring encoded frames are pulled on demand so the verifier sees what
+    the detector saw.
+    """
+    if not frame_times or not boundaries:
+        return grid
+    have = {f.source_index for f in grid if f.source_index >= 0}
+    wanted: set[int] = set()
+    for t in boundaries:
+        nearest = min(range(len(frame_times)), key=lambda i: abs(frame_times[i] - t))
+        for i in range(nearest - radius, nearest + radius + 1):
+            if 0 <= i < len(frame_times) and i not in have:
+                wanted.add(i)
+    if not wanted:
+        return grid
+    extra = extract_indices(video, work_dir, sorted(wanted), frame_times)
+    return sorted([*grid, *extra], key=lambda f: f.time_seconds)
 
 
 _VERIFY = (
@@ -295,6 +337,7 @@ def resolve_shots(
     blockers: BlockerLog | None = None,
     audio_spans: list[AudioSpan] | None = None,
     frame_times: list[float] | None = None,
+    work_dir: Path | None = None,
 ) -> list[tuple[float, float, str]]:
     """Return verified shots as (start, end, cut_type). Always >= 1 shot.
 
@@ -316,14 +359,22 @@ def resolve_shots(
                 f"that cannot be detected.",
                 severity=WARNING,
             )
+    candidates = candidate_boundaries(video, min_gap=epsilon)
+    # Verify against the real frames straddling each candidate, not against a
+    # sampled grid that may never have contained the shot.
+    verify_grid = grid
+    if frame_times and work_dir is not None:
+        verify_grid = densify(video, grid, candidates, frame_times, work_dir / "dense")
+
     confirmed: list[tuple[float, str]] = []
-    for t in candidate_boundaries(video, min_gap=epsilon):
+    for t in candidates:
         # Only a boundary at or past the very first/last frame is meaningless.
         # A real 0.2 s opening title is a shot and must survive.
         if t <= epsilon or t >= duration - epsilon:
             continue
         is_cut, ctype = _verify(
-            backend, _near(grid, t, before=True), _near(grid, t, before=False),
+            backend, _near(verify_grid, t, before=True),
+            _near(verify_grid, t, before=False),
             blockers=blockers, at=t,
         )
         if is_cut is None:
@@ -337,8 +388,10 @@ def resolve_shots(
             continue
         if not is_cut:
             continue
-        snapped = (snap_gradual(backend, grid, t, ctype) if ctype in _GRADUAL
-                   else snap_boundary(grid, t))
+        # Snap against the dense frames too — snapping to a sampled grid would
+        # re-round a boundary the dense pass just located precisely.
+        snapped = (snap_gradual(backend, verify_grid, t, ctype) if ctype in _GRADUAL
+                   else snap_boundary(verify_grid, t))
         if epsilon < snapped < duration - epsilon:
             confirmed.append((round(snapped, 3), ctype))
 

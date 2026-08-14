@@ -196,6 +196,45 @@ def extract_grid(
     return frames
 
 
+def extract_indices(
+    video: Path,
+    out_dir: Path,
+    indices: list[int],
+    frame_times: list[float],
+    width: int = 768,
+) -> list[GridFrame]:
+    """Extract specific SOURCE frames by index, tagged with their real PTS.
+
+    The sampled review grid (~10 Hz) physically cannot contain a one-frame event
+    on 25 fps footage, so verifying a candidate boundary against the grid alone
+    means verifying it against frames that never showed it. This pulls the exact
+    neighbouring frames on demand.
+    """
+    if not indices or not frame_times:
+        return []
+    wanted = sorted({i for i in indices if 0 <= i < len(frame_times)})
+    if not wanted:
+        return []
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ffmpeg = find_tool("ffmpeg")
+    pattern = out_dir / "d%06d.png"
+    cmd = _extract_cmd(ffmpeg, video, pattern, wanted, width, legacy=False)
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0 and "fps_mode" in (proc.stderr or ""):
+        proc = subprocess.run(
+            _extract_cmd(ffmpeg, video, pattern, wanted, width, legacy=True),
+            capture_output=True, text=True,
+        )
+    if proc.returncode != 0:
+        return []
+    paths = sorted(out_dir.glob("d??????.png"))
+    return [
+        GridFrame(index=-1, time_seconds=round(frame_times[src], 3), path=path,
+                  source_index=src)
+        for path, src in zip(paths, wanted, strict=False)
+    ]
+
+
 def _extract_resampled(
     ffmpeg: str, video: Path, pattern: Path, out_dir: Path, hz: float, width: int
 ) -> list[GridFrame]:
