@@ -62,6 +62,17 @@
     padding: 16px; white-space: pre-wrap; word-break: break-word; margin: 0; max-height: 60vh; overflow: auto;
   }
   .err { color: #ff8a8a; margin-top: 12px; white-space: pre-wrap; }
+  .privacy { color: #ffca7a; border: 1px solid #6b4d1f; background: #2a1f0c;
+             border-radius: 8px; padding: 10px 12px; margin-bottom: 14px;
+             font-size: 12.5px; line-height: 1.5; }
+  .gate { border-radius: 8px; padding: 10px 12px; margin: 0 0 14px;
+          font-size: 13px; font-weight: 600; }
+  .gate.blocked { color: #ff8a8a; border: 1px solid #6b2222; background: #2a0f0f; }
+  .blockers { list-style: none; padding: 0; margin: 0; }
+  .blockers li { font-size: 12.5px; line-height: 1.5; padding: 6px 0;
+                 border-bottom: 1px solid #24262b; color: var(--muted); }
+  .blockers li b { color: #ff9c9c; font-weight: 600; }
+  .blockers li.warn b { color: #ffca7a; }
   .copied { color: var(--ok); }
   .score { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
   .badge {
@@ -110,6 +121,7 @@
       <div class="bar"><i id="fill"></i></div>
       <div class="stage" id="stage"></div>
       <div class="err" id="err"></div>
+      <div class="privacy" id="privacy" style="margin-top:14px"></div>
     </div>
 
     <div class="result panel" id="review">
@@ -123,6 +135,12 @@
       <ul class="issues" id="issues"></ul>
       <h3 class="small">Attempter feedback <button class="ghost" id="copyFb" style="padding:4px 10px;font-size:12px">Copy</button> <span class="copied" id="copiedFb"></span></h3>
       <pre id="fbOut" style="max-height:30vh"></pre>
+    </div>
+
+    <div class="result panel" id="gatePanel">
+      <div class="gate blocked" id="gate"></div>
+      <h3 class="small">Unresolved — must be checked against the video before delivery</h3>
+      <ul class="blockers" id="blockers"></ul>
     </div>
 
     <div class="result panel" id="result">
@@ -150,11 +168,12 @@ function setMode(rev) {
   $("fbField").classList.toggle("show", rev);
   $("run").textContent = rev ? "Review" : "Analyze";
   $("sub").textContent = rev
-    ? "Drop the task video + paste the attempter's seed → full audit, score, feedback, and the final RTD caption."
-    : "Drop a video → precise transcript of everything said and done → copy-paste.";
+    ? "Drop the task video + paste the attempter's seed → full audit, score, feedback, and a reviewed draft caption. Always verify against the video before delivering."
+    : "Drop a video → a draft transcript of what was said and done → verify, then copy.";
   updateRun();
   $("result").classList.remove("show");
   $("review").classList.remove("show");
+  $("gatePanel").classList.remove("show");
 }
 $("tabAnn").onclick = () => setMode(false);
 $("tabRev").onclick = () => setMode(true);
@@ -204,7 +223,7 @@ async function poll(job) {
   try {
     const s = await (await fetch("/api/status?job=" + job)).json();
     setProgress(s.stage, s.fraction);
-    if (s.state === "done") { show(s.markdown, s.review); return; }
+    if (s.state === "done") { show(s.markdown, s.review, s); return; }
     if (s.state === "error") { fail(s.error); return; }
     setTimeout(() => poll(job), 600);
   } catch (e) { fail(e.message || String(e)); }
@@ -214,10 +233,15 @@ function setProgress(stage, frac) {
   $("fill").style.width = Math.round((frac || 0) * 100) + "%";
   $("stage").textContent = stage ? (stage + " …") : "";
 }
-function show(md, rev) {
+function show(md, rev, status) {
   setProgress("done", 1); updateRun();
   $("out").textContent = md;
-  $("resultTitle").textContent = rev ? "Final RTD caption" : "Result";
+  // Never "Final RTD": nothing here has been checked against the video by a
+  // human, which is precisely what RTD means.
+  $("resultTitle").textContent = rev
+    ? "Reviewed draft — requires human verification"
+    : "Draft — requires human verification";
+  renderGate(status || {});
   if (rev) {
     $("scoreNum").innerHTML = (rev.score || "–") + "<span>score</span>";
     $("verdict").innerHTML = (rev.verdict || "–") + "<span>seed decision</span>";
@@ -232,6 +256,43 @@ function show(md, rev) {
   }
   $("result").classList.add("show");
 }
+function renderGate(status) {
+  const items = status.blockers || [];
+  const blocking = items.filter(b => b.severity === "blocking");
+  $("gate").textContent = "NOT READY TO DELIVER — " +
+    (status.readiness_reason || "awaiting human review signoff") +
+    (blocking.length ? " (" + blocking.length + " blocking)" : "");
+  const ul = $("blockers");
+  ul.innerHTML = "";
+  if (!items.length) {
+    ul.innerHTML = "<li>No automated blockers. A human must still verify every " +
+                   "claim against the video before this is delivered.</li>";
+  }
+  items.forEach(b => {
+    const li = document.createElement("li");
+    if (b.severity !== "blocking") li.className = "warn";
+    let where = "";
+    if (b.start !== null && b.start !== undefined) {
+      where = " [" + b.start.toFixed(1) + "s" +
+              (b.end !== null && b.end !== undefined ? "–" + b.end.toFixed(1) + "s" : "") + "]";
+    }
+    const tag = document.createElement("b");
+    tag.textContent = b.code + where + ": ";
+    li.appendChild(tag);
+    li.appendChild(document.createTextNode(b.detail));
+    ul.appendChild(li);
+  });
+  $("gatePanel").classList.add("show");
+}
+
+async function loadPrivacy() {
+  try {
+    const r = await (await fetch("/api/privacy")).json();
+    $("privacy").textContent = r.notice || "";
+  } catch (e) { /* notice is best-effort */ }
+}
+loadPrivacy();
+
 function fail(msg) {
   updateRun(); $("err").textContent = "Error: " + msg; setProgress("", 0);
 }

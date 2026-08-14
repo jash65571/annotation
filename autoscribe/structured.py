@@ -21,11 +21,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import asr
-from . import audio_timeline
+from . import (
+    asr,
+    audio_timeline,
+)
 from . import cuts as cuts_mod
 from . import frames as frames_mod
 from . import transcribe as tr
+from .blockers import WARNING, BlockerLog
 from .vision import OpenAIVisionBackend, image_content, text_content
 
 
@@ -68,6 +71,8 @@ class Shot:
     scene: str
     actions: list[Timed]
     playback_speed: str
+    #: Timed speed transitions within the shot (master template 'Speed Changes:').
+    speed_changes: list[Timed] = field(default_factory=list)
 
 
 @dataclass
@@ -76,6 +81,29 @@ class Annotation:
     duration: float
     globals: Globals
     shots: list[Shot]
+    #: Unresolved state gathered during analysis. A non-empty blocking list
+    #: means this is a draft, never a deliverable caption.
+    blockers: BlockerLog = field(default_factory=BlockerLog)
+    #: The measured audio timeline this annotation was built from.
+    audio_spans: list[audio_timeline.AudioSpan] = field(default_factory=list)
+
+    def evidence_summary(self) -> str:
+        """The measured observations behind this caption, as text.
+
+        This is what the reviewer pass is given so it can weigh claims against
+        measurements instead of against the other caption's confidence.
+        """
+        lines = [f"Duration: {self.duration:.2f}s", "", "SHOT BOUNDARIES (measured):"]
+        for shot in self.shots:
+            lines.append(
+                f"  Shot {shot.index}: {shot.start:.2f}s-{shot.end:.2f}s, cut={shot.cut}"
+            )
+        if self.audio_spans:
+            lines += ["", "AUDIO TIMELINE (measured, layers may overlap):",
+                      audio_timeline.describe(self.audio_spans)]
+        if self.blockers.entries:
+            lines += ["", "UNRESOLVED DURING ANALYSIS:", self.blockers.describe()]
+        return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------
@@ -121,13 +149,16 @@ _CAST_PROMPT = (
     "Describe ONLY what is genuinely visible — never invent, never guess. If something is "
     "uncertain, omit it.\n\n"
     "CHARACTERS: assign C1, C2, ... in order of appearance to each DISTINCT person "
-    "(disambiguate by appearance). Give a full head-to-toe description: apparent "
-    "race/ethnicity (only if confident), apparent age range, build, hair "
+    "(disambiguate by appearance). Give a full head-to-toe description: build, hair "
     "(length/color/style), facial hair, and EVERY visible clothing item and accessory "
     "(jacket, shirt, tie/bow tie, dress cut/color, hat, glasses, watch, pocket square, "
     "lanyard, in-ear monitor). When the lower body or shoes are not visible, state "
     "EXACTLY: 'Lower body and shoes are not visible.'. Use ONE aggregate character for "
     "an indistinguishable crowd. Do NOT invent names.\n"
+    "PROTECTED TRAITS ARE FORBIDDEN: never state or guess race, ethnicity, "
+    "nationality, or apparent age. These cannot be established from footage and are "
+    "not permitted in a description. Describe only observable appearance (hair, "
+    "clothing, build, posture, visible features).\n"
     "NO PRONOUNS ANYWHERE IN THE OVERVIEW: never write he/she/him/her/his/hers/they/"
     "them/their in any description or the scene. Repeat the C-ID or use neutral "
     "phrasing: 'C2 wears a black cap.', 'The hair is shoulder-length.', 'C3 raises the "
@@ -136,12 +167,12 @@ _CAST_PROMPT = (
     "- ONE C-ID per real person. The SAME person may reappear across shots of a vlog "
     "or montage in different clothing or locations: judge by the FACE — if it is the same "
     "person, keep ONE C-ID and mention the outfit changes inside that one description.\n"
-    "- CLOTHING LOCK: within footage of the SAME visit/scene (same location, minutes "
-    "apart), a person CANNOT change clothes. If two people wear clearly different tops "
-    "(e.g. a gray short-sleeve tee vs a black high-neck top) in nearby shots of the same "
-    "place, they are TWO different people — give them separate C-IDs even if hair and "
-    "build look similar. Merging two people into one C-ID is a critical error; when "
-    "unsure, keep them separate.\n"
+    "- DIFFERENT CLOTHING IS EVIDENCE, NOT PROOF: if two figures in nearby shots wear "
+    "clearly different clothing, that is a reason to keep them as separate C-IDs, but "
+    "it does NOT establish they are different people (footage can be shot across time, "
+    "and people do change clothes). When identity is genuinely uncertain, keep the "
+    "figures separate AND say in each description that the identity is unconfirmed — "
+    "never assert a merge or a split you cannot see evidence for.\n"
     "- Never write 'cannot be determined', 'not verifiable', or similar hedges in a "
     "description. State what IS supported and simply omit unknown traits.\n"
     "- Different shots may show completely UNRELATED scenes or people (e.g. two different "
@@ -192,8 +223,12 @@ _SHOT_PROMPT = (
     "1. NO PRONOUNS. Never write he/she/they/his/her/them. Refer to people only as C1, "
     "C2, ... and to objects as O1, O2, .... Use 'the left hand'/'the right arm', not "
     "'his hand'. List IDs individually (C1, C2, C3), never a range (not 'C1-C3').\n"
-    "2. Every timestamp range must be DISTINCT — never reuse the same start/end for two "
-    "entries. Overlapping actions get their own precise, different ranges.\n"
+    "2. Each line's range must be the TRUE range of its own event. Do not invent a "
+    "different range just to avoid a collision: when two independent events genuinely "
+    "occupy the same span (music plus a gesture, two people acting at once, two "
+    "overlapping speakers), keep them as SEPARATE lines with the SAME true range. "
+    "Never merge two events into one line, and never nudge a timestamp to fake a "
+    "difference.\n"
     "3. Camera motion goes ONLY in camera_movements — never in actions. GRAPHIC motion "
     "is NOT camera motion: sliding collage panels, expanding circular masks, moving "
     "text/overlays are EDITS — describe them as timed action lines, and put an entry in "
@@ -207,19 +242,28 @@ _SHOT_PROMPT = (
     "contains 'then', 'followed by', 'afterward', 'before', 'while', 'as', more than "
     "one quoted speech act, an action and a sound with different timing, or two people "
     "acting independently — split it, each part with its own true range.\n"
-    "4. Describe only what is visible; never invent. Only transcribe words you can truly "
-    "read/lip-read — otherwise write [inaudible]. Never fabricate lyrics or dialogue.\n"
+    "4. Describe only what is visible; never invent. NEVER LIP-READ: you cannot hear "
+    "this video, so the ONLY words you may write are the verbatim transcript words "
+    "supplied below. Words you think you can see being mouthed are NOT evidence — if a "
+    "range has no supplied transcript, write no words for it. Never fabricate lyrics or "
+    "dialogue, and never transcribe on-screen speech from mouth movement.\n"
     "5. Reference ONLY cast members actually visible in THIS shot (plus off-screen voice "
     "C-IDs). Do not mention characters who belong to other shots.\n"
-    "6. SINGER/SPEAKER ATTRIBUTION: attribute singing or speech to an on-screen character "
-    "ONLY if that character is visibly performing it (at or holding a microphone, mouth "
-    "clearly performing vocals). A person who is dancing is NOT the singer. If no visible "
-    "performer exists, attribute to the off-screen voice C-ID from the cast.\n"
+    "6. SINGER/SPEAKER ATTRIBUTION: a visible mouth moving, or a person holding a "
+    "microphone, does NOT establish who is speaking — many people hold microphones "
+    "without talking, and speech is often dubbed or off-screen. Attribute speech to an "
+    "on-screen character only when the footage makes it unambiguous. When more than one "
+    "person could be the speaker, attribute to the off-screen voice C-ID and say the "
+    "speaker is unconfirmed. A person who is dancing is NOT the singer.\n"
     "7a. SPEECH INTEGRITY: every speech line needs the correct C-ID, off-screen status "
-    "when the speaker is not visible ('C1 says off-screen ...'), audible delivery/tone "
-    "ONLY when clearly supportable (firm, teasing, loud, urgent), and the EXACT words — "
+    "when the speaker is not visible ('C1 says off-screen ...'), and the EXACT words — "
     "preserve fillers, repeats, stutters, false starts, and cutoffs verbatim. The "
-    "timestamp covers the audible words only, never surrounding silence.\n"
+    "timestamp covers the audible words only, never surrounding silence. DO NOT state "
+    "delivery or tone (firm, teasing, urgent, cheerful): tone is an audible property "
+    "and you are given frames and text, not sound. Omit it.\n"
+    "7e. MID-SENTENCE CUT: when the supplied transcript marks a run as continuing past "
+    "this shot, append the tag [mid-sentence cut] to that speech line — the sentence is "
+    "genuinely severed by the boundary and the tag is the record of it.\n"
     "7b. NO TIMING FILLER: never write 'near the end', 'around 5 seconds', 'partway "
     "through', 'in the final frames' — the timestamps carry the timing.\n"
     "7c. NO FILLER LINES: never write 'No speech.', 'No dialogue.', 'No music.' or "
@@ -254,11 +298,16 @@ _SHOT_PROMPT = (
     "transcript words given below. If the audio facts show no speech in this shot, do "
     "NOT write any narration or dialogue line. Every timestamp must lie within "
     "[{start:.1f}s, {end:.1f}s].\n"
-    "- playback_speed: exactly one of 'regular', 'slow_motion', 'accelerated'.\n"
+    "- playback_speed: the speed for the MAJORITY of the shot, exactly one of "
+    "'regular', 'slow_motion', 'accelerated'.\n"
+    "- speed_changes: a {{start,end,text}} entry for each timed span whose speed "
+    "DIFFERS from playback_speed (e.g. a ramp into slow motion). Empty list when the "
+    "shot runs at one constant speed.\n"
     "Return STRICT JSON: {{\"shot_type\":\"...\",\"camera\":\"...\","
     "\"camera_movements\":[{{\"start\":0.0,\"end\":0.5,\"text\":\"...\"}}],"
     "\"scene\":\"...\",\"actions\":[{{\"start\":0.0,\"end\":1.5,\"text\":\"...\"}}],"
-    "\"playback_speed\":\"regular\"}}."
+    "\"playback_speed\":\"regular\","
+    "\"speed_changes\":[{{\"start\":0.0,\"end\":0.5,\"text\":\"...\"}}]}}."
 )
 
 
@@ -279,7 +328,8 @@ def _audio_facts(spans: list[audio_timeline.AudioSpan], start: float, end: float
     for sp in spans:
         s, e = max(sp.start, start), min(sp.end, end)
         if e - s >= 0.15:
-            rows.append("  " + audio_timeline.AudioSpan(round(s, 1), round(e, 1), sp.label).describe())
+            clipped = audio_timeline.AudioSpan(round(s, 1), round(e, 1), sp.label)
+            rows.append("  " + clipped.describe())
     return "\n".join(rows)
 
 
@@ -432,8 +482,10 @@ def _norm_speed(value: object) -> str:
 
 def _unclear_token() -> str:
     """Playbook 'Current syntax conflicts': the live tool decides the unclear-
-    speech token ([inaudible] vs <unintelligible>). Configurable, never mixed."""
-    return os.environ.get("AUTOSCRIBE_UNCLEAR_TOKEN", "[inaudible]")
+    speech token. The current retraining standard is <unintelligible>; set
+    AUTOSCRIBE_UNCLEAR_TOKEN to [inaudible] only when a task UI asks for it.
+    Configurable, never mixed within one caption."""
+    return os.environ.get("AUTOSCRIBE_UNCLEAR_TOKEN", "<unintelligible>")
 
 
 def _shot_speech(
@@ -541,7 +593,7 @@ def _polish(shot: Shot) -> Shot:
             text = " ".join(t.text.split())
             if not text or _FILLER_RX.match(text):
                 continue
-            if text[-1] not in '.!?"’”':
+            if text[-1] not in '.!?"’”':  # noqa: RUF001
                 text += "."
             s = round(max(shot.start, min(t.start, shot.end)), 1)
             e = round(max(s, min(t.end, shot.end)), 1)
@@ -550,34 +602,24 @@ def _polish(shot: Shot) -> Shot:
                 continue
             seen.add(key)
             out.append(Timed(s, e, text))
-        # The live validator blocks two entries sharing an identical full
-        # start/end pair even with different text — merge them into one
-        # tightly-linked line rather than faking a 0.1s offset.
-        by_window: dict[tuple[float, float], int] = {}
-        merged: list[Timed] = []
-        for t in out:
-            w = (t.start, t.end)
-            if w in by_window:
-                prev = merged[by_window[w]]
-                nxt = t.text
-                if not re.match(r'[CO]\d|"|On-screen', nxt):  # keep IDs/quotes cased
-                    nxt = nxt[0].lower() + nxt[1:]
-                merged[by_window[w]] = Timed(prev.start, prev.end,
-                                             prev.text.rstrip(".") + "; " + nxt)
-            else:
-                by_window[w] = len(merged)
-                merged.append(t)
-        return merged
+        # Two entries sharing an identical range are NOT merged. Genuinely
+        # simultaneous events (music plus a gesture, two overlapping speakers)
+        # legitimately share a span, and the old semicolon merge produced a
+        # single line describing two events — which violates one-event-per-line
+        # and destroyed information. The validator surfaces the shared range for
+        # confirmation instead.
+        return out
 
     shot.actions = tidy(shot.actions)
     shot.camera_movements = tidy(shot.camera_movements)
+    shot.speed_changes = tidy(shot.speed_changes)
     if shot.camera_movements:
         # Strip only a standalone trailing static claim ('..., locked static.');
         # 'settles to locked static' after a real move is a truthful phrase.
         shot.camera = re.sub(r",\s*locked static\s*\.?\s*$", ".", shot.camera).strip()
     for attr in ("camera", "scene"):
         val = " ".join(getattr(shot, attr, "").split())
-        if val and val[-1] not in '.!?"’”':
+        if val and val[-1] not in '.!?"’”':  # noqa: RUF001
             val += "."
         setattr(shot, attr, val)
     return shot
@@ -600,12 +642,42 @@ def _is_ladder(items: list[Timed], run: int = 5) -> bool:
     return False
 
 
+#: Upper bound on frames sent for one shot. The old fixed 0.25 s stride silently
+#: hid every event shorter than a quarter second (a flash, a gesture, a text
+#: change). The sampler now uses the FULL grid and only thins it — visibly, via a
+#: blocker — when a long shot would exceed this many images.
+MAX_SHOT_FRAMES = 60
+
+
+def _shot_frames(
+    grid: list[frames_mod.GridFrame], start: float, end: float,
+    blockers: BlockerLog | None, index: int,
+) -> list[frames_mod.GridFrame]:
+    """Every grid frame in the shot, thinned only if the shot is long."""
+    inside = [f for f in grid if start - 1e-6 <= f.time_seconds <= end + 1e-6]
+    if len(inside) <= MAX_SHOT_FRAMES:
+        return inside
+    stride = len(inside) / MAX_SHOT_FRAMES
+    thinned = [inside[int(i * stride)] for i in range(MAX_SHOT_FRAMES)]
+    if blockers is not None:
+        gap = (end - start) / MAX_SHOT_FRAMES
+        blockers.add(
+            "SHOT_UNDERSAMPLED",
+            f"Shot {index} is {end - start:.1f}s long; only {MAX_SHOT_FRAMES} of "
+            f"{len(inside)} frames were shown to the vision model (~{gap:.2f}s apart). "
+            f"Events shorter than that may be missing.",
+            severity=WARNING, start=start, end=end,
+        )
+    return thinned
+
+
 def _shot_pass(
     backend: OpenAIVisionBackend, grid: list[frames_mod.GridFrame],
     cast: str, index: int, cut: str, start: float, end: float,
     transcript: tr.Transcript, spans: list[audio_timeline.AudioSpan],
+    blockers: BlockerLog | None = None,
 ) -> Shot:
-    frames = _sample(grid, start, end, step=0.25)
+    frames = _shot_frames(grid, start, end, blockers, index)
     prompt = _SHOT_PROMPT.format(cast=cast, start=start, end=end)
     facts = _audio_facts(spans, start, end)
     if facts:
@@ -632,7 +704,8 @@ def _shot_pass(
         lang = _lang_label(transcript)
         lines = "\n".join(
             f'  ({s:.1f}s-{e:.1f}s) "{txt}"'
-            + ("  <- sentence continues in the NEXT shot" if cont else "")
+            + ("  <- CONTINUES past this shot: tag this line [mid-sentence cut]"
+               if cont else "")
             for s, e, txt, cont in good
         )
         prompt += (
@@ -642,11 +715,11 @@ def _shot_pass(
             f"words, no translation: '(start-end) C# says in {lang}: \\\"exact "
             f"words\\\".' (use 'sings' for singing). A sentence that continues across a "
             f"cut is SPLIT at the cut: this shot contains ONLY the words above — never "
-            f"complete the sentence, never repeat words that belong to another shot, "
-            f"and when marked as continuing, do NOT add editorial notes like 'the line "
-            f"ends mid-sentence' — the split itself is the record. Attribution follows "
-            f"HARD RULE 6: only a character visibly performing vocals, else the "
-            f"off-screen voice C-ID — never a dancer."
+            f"complete the sentence and never repeat words that belong to another shot. "
+            f"A run marked as continuing gets the tag [mid-sentence cut] appended to "
+            f"its line. Attribution follows HARD RULE 6: name an on-screen character "
+            f"only when the footage makes the speaker unambiguous, otherwise the "
+            f"off-screen voice C-ID — never a dancer, never from mouth movement alone."
         )
     if bad:
         lang = _lang_label(transcript)
@@ -664,16 +737,27 @@ def _shot_pass(
     actions = sorted(_clean(_timed_items(data.get("actions", []))), key=lambda t: t.start)
     if _is_ladder(actions):
         # Templated windows detected — one corrective retry with the defect named.
-        retry = content[:1] + [text_content(
-            "\n\nQC REJECTION: a previous attempt produced sliding template windows "
-            "(constant stride/duration ladders like 0.4-0.7, 0.5-0.9, 0.6-1.0). That "
-            "violates rule 3b. Re-time every line to the true first/last frame of its "
-            "event, merge unchanged states into single spanning lines, and never use a "
-            "fixed stride.")] + content[1:]
+        retry = [
+            *content[:1],
+            text_content(
+                "\n\nQC REJECTION: a previous attempt produced sliding template windows "
+                "(constant stride/duration ladders like 0.4-0.7, 0.5-0.9, 0.6-1.0). That "
+                "violates rule 3b. Re-time every line to the true first/last frame of its "
+                "event, merge unchanged states into single spanning lines, and never use a "
+                "fixed stride."),
+            *content[1:],
+        ]
         data2 = _complete_json(backend, retry, max_tokens=4000)
         actions2 = sorted(_clean(_timed_items(data2.get("actions", []))), key=lambda t: t.start)
         if actions2 and not _is_ladder(actions2):
             data, actions = data2, actions2
+        elif blockers is not None:
+            blockers.add(
+                "TIMESTAMP_LADDER",
+                f"Shot {index} still shows templated sliding-window timestamps after a "
+                f"corrective retry — the action timings are not real event boundaries.",
+                start=start, end=end,
+            )
     return _polish(Shot(
         index=index, cut=cut, start=start, end=end,
         shot_type=data.get("shot_type", "shot"), camera=data.get("camera", ""),
@@ -681,6 +765,7 @@ def _shot_pass(
         scene=data.get("scene", ""),
         actions=actions,
         playback_speed=_norm_speed(data.get("playback_speed", "regular")),
+        speed_changes=_clean(_timed_items(data.get("speed_changes", []))),
     ))
 
 
@@ -720,6 +805,7 @@ def _contradiction_qc(
     shots: list[Shot], transcript: tr.Transcript,
     spans: list[audio_timeline.AudioSpan],
     progress: Callable[[str, float], None],
+    blockers: BlockerLog | None = None,
 ) -> list[Shot]:
     """Catch self-contradictions: a shot whose OWN text describes a transition
     (iris, wipe, dissolve, fade) mid-shot that the boundary pass missed.
@@ -744,7 +830,15 @@ def _contradiction_qc(
                 backend,
                 cuts_mod._near(grid, t, before=True),
                 cuts_mod._near(grid, t, before=False),
+                blockers=blockers, at=t,
             )
+            if is_cut is None and blockers is not None:
+                blockers.add(
+                    "MIDSHOT_TRANSITION_UNRESOLVED",
+                    f"Shot {shot.index} describes a transition at {t:.1f}s that could "
+                    f"not be verified; it may be an unrecorded shot boundary.",
+                    start=t,
+                )
             if is_cut:
                 split_at = (t, cut_type)
                 break
@@ -754,9 +848,9 @@ def _contradiction_qc(
         t, cut_type = split_at
         progress(f"qc: splitting shot {shot.index} at {t:.1f}s ({cut_type})", 0.94)
         out.append(_shot_pass(backend, grid, cast, shot.index, shot.cut,
-                              shot.start, t, transcript, spans))
+                              shot.start, t, transcript, spans, blockers))
         out.append(_shot_pass(backend, grid, cast, shot.index, cut_type,
-                              t, shot.end, transcript, spans))
+                              t, shot.end, transcript, spans, blockers))
     for i, shot in enumerate(out):
         shot.index = i + 1
     return out
@@ -768,33 +862,68 @@ def analyze(
 ) -> Annotation:
     video = Path(video)
     work = out_dir / video.stem
+    blockers = BlockerLog()
     progress("frames", 0.1)
     duration = frames_mod.probe_duration(video)
-    grid = frames_mod.extract_grid(video, work / "frames", hz=hz)
+    grid = frames_mod.extract_grid(video, work / "frames", hz=hz, blockers=blockers)
+    if not grid:
+        blockers.add("NO_FRAMES", "No frames could be extracted from the video.")
     backend = OpenAIVisionBackend()
 
+    # Audio is NOT optional. Swallowing these exceptions turned "we could not
+    # listen" into "there is nothing to hear", which is how missing dialogue
+    # became a clean-looking caption. Each stage now records what was lost.
     progress("audio", 0.2)
     spans: list[audio_timeline.AudioSpan] = []
+    transcript = tr.Transcript(language="", text="", segments=[])
+    wav: Path | None = None
     try:
         wav = asr.extract_audio(video, work / "audio.wav")
-        transcript = tr.transcribe(wav)
-        spans = audio_timeline.analyze(wav, transcript)
-    except Exception:  # audio is optional; never block the visual pass
-        transcript = tr.Transcript(language="", text="", segments=[])
+    except Exception as exc:
+        blockers.add_exception("AUDIO_EXTRACTION_FAILED", exc)
+    if wav is not None:
+        try:
+            transcript = tr.transcribe(wav)
+        except Exception as exc:
+            blockers.add_exception("TRANSCRIPTION_FAILED", exc)
+        try:
+            spans = audio_timeline.analyze(wav, transcript, blockers)
+        except Exception as exc:
+            blockers.add_exception("AUDIO_ANALYSIS_FAILED", exc)
+    if not transcript.has_speech and spans:
+        # Measured audible non-speech with no transcript at all is suspicious
+        # rather than conclusive — say so instead of asserting silence.
+        audible = [sp for sp in spans if sp.label != "quiet"]
+        if audible:
+            blockers.add(
+                "NO_TRANSCRIPT_DESPITE_AUDIO",
+                f"{len(audible)} audible span(s) were measured but the transcript is "
+                f"empty. Any speech in this clip is missing from the caption.",
+                severity=WARNING,
+            )
 
     # Shots FIRST: the cast pass needs the shot structure to keep identities
     # straight across cuts (different shots may show unrelated people).
     progress("shots", 0.3)
-    resolved = cuts_mod.resolve_shots(backend, video, grid, duration)
+    resolved = cuts_mod.resolve_shots(
+        backend, video, grid, duration, blockers=blockers, audio_spans=spans,
+    )
     progress("cast", 0.4)
     g = _cast_pass(backend, grid, duration, transcript, resolved, spans)
     cast_text = _cast_text(g)
     shots: list[Shot] = []
     for i, (s, e, cut) in enumerate(resolved):
         progress(f"shot {i + 1}/{len(resolved)}", 0.45 + 0.45 * i / len(resolved))
-        shots.append(_shot_pass(backend, grid, cast_text, i + 1, cut, s, e, transcript, spans))
+        shots.append(_shot_pass(
+            backend, grid, cast_text, i + 1, cut, s, e, transcript, spans, blockers,
+        ))
     progress("qc: contradictions", 0.92)
-    shots = _contradiction_qc(backend, grid, cast_text, shots, transcript, spans, progress)
+    shots = _contradiction_qc(
+        backend, grid, cast_text, shots, transcript, spans, progress, blockers,
+    )
     shots = _dedup_dialogue(shots)
     progress("done", 1.0)
-    return Annotation(video_name=video.name, duration=duration, globals=g, shots=shots)
+    return Annotation(
+        video_name=video.name, duration=duration, globals=g, shots=shots,
+        blockers=blockers, audio_spans=spans,
+    )

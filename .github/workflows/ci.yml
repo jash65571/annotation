@@ -37,7 +37,9 @@ jobs:
           enable-cache: true
 
       - name: Sync dependencies
-        run: uv sync --dev
+        # --extra autoscribe: AutoScribe ships in the wheel and is type-checked
+        # and tested here, so its dependencies must be present in CI.
+        run: uv sync --dev --extra autoscribe
 
       - name: Tests
         run: uv run pytest

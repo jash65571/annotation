@@ -22,6 +22,10 @@ manuscript-reviewer = "manuscript_reviewer.cli:app"
 [project.optional-dependencies]
 autoscribe = [
     "scenedetect>=0.7.1",
+    # Flat mode (autoscribe/asr.py) transcribes locally and is unusable without
+    # this; the documented `uv sync --extra autoscribe` used to install a tool
+    # whose flat mode could not transcribe at all.
+    "faster-whisper>=1.0",
 ]
 
 [dependency-groups]
@@ -38,7 +42,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["engine/manuscript_reviewer"]
+packages = ["engine/manuscript_reviewer", "autoscribe"]
 
 [tool.uv]
 package = true
@@ -46,7 +50,7 @@ package = true
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["engine", "tests"]
+src = ["engine", "tests", "."]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "SIM", "RUF", "PTH", "C4"]
@@ -55,11 +59,17 @@ ignore = [
     "RUF012",  # Pydantic v2 handles mutable field defaults safely (deep-copies them)
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# Caption fixtures quote the real template, whose timestamp separator IS an en
+# dash (RUF001 flags it as a confusable hyphen). Changing it would make the
+# fixtures stop matching the format under test.
+"tests/test_autoscribe_*.py" = ["RUF001"]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true
 mypy_path = "engine"
-packages = ["manuscript_reviewer"]
+packages = ["manuscript_reviewer", "autoscribe"]
 warn_unreachable = true
 # ASR worker scripts run inside their own isolated uv environments whose
 # dependencies (faster_whisper, whisperx, torch) are never installed in the
@@ -72,6 +82,11 @@ ignore_missing_imports = false
 
 [[tool.mypy.overrides]]
 module = "cv2.*"
+ignore_missing_imports = true
+
+# AutoScribe's optional heavy dependencies ship no type stubs.
+[[tool.mypy.overrides]]
+module = ["scenedetect.*", "faster_whisper.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

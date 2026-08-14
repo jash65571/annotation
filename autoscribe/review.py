@@ -1,12 +1,25 @@
 """Reviewer pass: audit a seeded (attempter) caption against AutoScribe's own
-fresh annotation of the same video, then produce the final RTD caption, a
+fresh annotation of the same video, then produce a reviewed DRAFT caption, a
 1-5 score for the original attempt, and attempter feedback.
 
-The fresh machine annotation is the evidence baseline: its shot boundaries and
-timestamps come from actual media analysis and are never overwritten by the
-seed ("AI never owns the clock" — the seed's clock is even less trustworthy).
-The seed may only contribute extra *descriptive* detail that is consistent
-with the fresh annotation.
+Three things this pass is NOT allowed to pretend:
+
+*It is not comparing evidence to text.* The reviewer model sees two captions and
+some measured facts — not the video. It can tell which caption is internally
+consistent with the measured timeline; it cannot see the footage. So the source
+hierarchy is stated honestly: the MEDIA is truth, and both captions plus every
+automated measurement are leads. Where the two captions disagree on something no
+measurement covers, the disagreement is reported as unresolved rather than
+silently decided in the fresh caption's favour.
+
+*Its output is not automatically valid.* The rewritten caption is put back
+through the full deterministic validator. Previously a reviewer model could
+introduce a broken timestamp, an unbalanced quote or a ghost C-ID and the web app
+would write it straight to disk as the final file.
+
+*A failure is not a pass.* If the model returns nothing usable, that is recorded
+as a blocking failure instead of quietly returning the fresh caption as if it
+had been reviewed.
 """
 
 from __future__ import annotations
@@ -14,16 +27,30 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .blockers import BlockerLog
+from .validate import validate_caption
 from .vision import OpenAIVisionBackend, text_content
 
 _REVIEW_PROMPT = (
     "You are a Manuscript-II REVIEWER. You are given:\n"
-    "1. FRESH CAPTION — a machine annotation built directly from the actual video "
-    "frames and audio. Its shot boundaries and timestamps are measured from the "
-    "media and are the factual baseline.\n"
+    "1. FRESH CAPTION — a machine annotation of the same video. Its shot boundaries "
+    "and timestamps were measured from the media, so they are the best available "
+    "evidence for TIMING — but it is a machine draft and can still be wrong about "
+    "what it describes.\n"
     "2. SEED CAPTION — the original attempter's submission, which must be audited. "
     "Automated evaluations passing it prove nothing; there is always something to fix.\n"
+    "{evidence_clause}"
     "{feedback_clause}"
+    "\nSOURCE HIERARCHY (this is the rule that decides every conflict):\n"
+    "- The actual MEDIA is the only truth. NEITHER caption is truth.\n"
+    "- MEASURED FACTS (shot boundaries, the audio timeline, word-level transcript "
+    "timings) are direct observations of the media and outrank both captions.\n"
+    "- For anything NOT covered by a measured fact — what an object is, what a "
+    "gesture means, who a person is — the two captions are competing claims and "
+    "NEITHER automatically wins. Prefer the more specific claim only when it is "
+    "consistent with the measured facts. When they genuinely conflict and no "
+    "measurement settles it, keep the more conservative wording and list the "
+    "conflict in 'unresolved'. Do NOT invent a tiebreak.\n"
     "\nREVIEWER RULES:\n"
     "- C-IDs ARE LABELS, NOT IDENTITIES: the seed and the fresh caption may number "
     "the same people differently. Before comparing them, match characters by "
@@ -37,32 +64,39 @@ _REVIEW_PROMPT = (
     "- FINAL CAPTION: start from the FRESH caption's structure and timestamps. "
     "NEVER import a timestamp, shot boundary, cut label, or playback speed from the "
     "seed. You MAY merge extra descriptive detail from the seed (names of garments, "
-    "colors, verbatim on-screen text, dialogue wording) ONLY when it is consistent "
-    "with the fresh caption; when they conflict, the fresh caption wins. Keep the "
-    "exact section format of the fresh caption ([Overview], Characters:, [Shot N: "
-    "...], Cut:, Camera:, Scene:, Action & Audio:, Video playback speed:). No "
-    "pronouns outside quotes; C#/O# labels; one sentence per action line; no "
-    "duplicate identical timestamp ranges; never mention the seed, reviewer, or "
+    "colors, verbatim on-screen text, dialogue wording) when it is consistent "
+    "with the measured facts. Keep the exact section format of the fresh caption "
+    "([Overview], Cast:, [Shot N: ...], Cut:, Camera:, Camera Movements:, Scene:, "
+    "Action & Audio:, Playback Speed:, Speed Changes:). No pronouns outside quotes; "
+    "C#/O# labels; one event per action line; never mention the seed, reviewer, or "
     "review process inside the caption.\n"
-    "- RTD QUALITY GATE (audit-flag playbook — check every one):\n"
+    "- NEVER state race, ethnicity, nationality or apparent age of any person, and "
+    "remove any such claim inherited from the seed — those are not observable from "
+    "footage.\n"
+    "- NEVER state tone or delivery of speech unless the measured facts support it; "
+    "you cannot hear this video.\n"
+    "- QUALITY GATE (audit-flag playbook — check every one):\n"
     "  * Split any line whose events start or end at different times (watch for "
     "'then', 'followed by', 'while', 'as', two quotes in one line, action+sound "
     "with different timing, two people acting independently).\n"
+    "  * Two genuinely SIMULTANEOUS events keep their identical range on SEPARATE "
+    "lines — never merge them into one line and never fake an offset.\n"
     "  * No timing-filler phrases ('near the end', 'around 5 seconds', 'partway "
     "through') — timestamps carry the timing.\n"
     "  * No filler lines ('No speech.', 'No music.'); genuine silence belongs in "
     "Audio concerns.\n"
-    "  * Speech lines need C-ID + off-screen status when unseen + supported tone + "
-    "exact words with fillers/stutters/false starts preserved; timestamp covers the "
-    "audible words only; pauses > 0.5s split the line; overlapping speakers keep "
-    "separate overlapping ranges.\n"
+    "  * Speech lines need C-ID + off-screen status when unseen + exact words with "
+    "fillers/stutters/false starts preserved; timestamp covers the audible words "
+    "only; pauses > 0.5s split the line; overlapping speakers keep separate "
+    "overlapping ranges; a sentence severed by a cut is tagged [mid-sentence cut].\n"
     "  * Camera setup in Camera; every timed pan/tilt/zoom/push/track split by "
     "phase with direction in Camera Movements; never 'locked static' when any "
     "drift is visible; graphic/collage panel motion is an edit, NOT camera motion.\n"
     "  * A stable whole-shot state belongs in Scene, not repeated action lines.\n"
     "  * Audio completeness: dialogue alone is incomplete — music, ambience, SFX, "
     "and reactions (laughter, gasps, cheers) need truthful ranges; non-diegetic "
-    "music needs no visible source.\n"
+    "music needs no visible source; music under dialogue is BOTH and neither one "
+    "removes the other.\n"
     "  * Every relevant voice gets a C-ID (narrator, singer, crowd as one grouped "
     "ID, filmer, partial figure); no ghost C/O-IDs; one O-ID never combines "
     "distinct object types; never write 'cannot be determined' — omit instead.\n"
@@ -72,7 +106,9 @@ _REVIEW_PROMPT = (
     "empty concerns, no stray separators, no ghost references.\n"
     "  * Transitions: verify each boundary's defining evidence (Wipe = incoming "
     "pushes across a line; Iris = circular opening/closing; jump cut = time "
-    "removed, same framing); a short shot is still a shot.\n"
+    "removed, same framing); a short shot is still a shot. L-cut and J-cut are "
+    "defined by SOUND crossing a picture boundary — never assign them from "
+    "description alone.\n"
     "- SCORE the ORIGINAL attempt (not the final caption): 5 = no issues; 4 = one "
     "minor issue; 3 = several minor issues; 2 = one major issue or many minor "
     "(meaningful rework); 1 = multiple major issues / rebuild. Major issues: missing "
@@ -80,23 +116,33 @@ _REVIEW_PROMPT = (
     "timing.\n"
     "- FEEDBACK for the attempter: clear, factual, material issues only — what was "
     "wrong and what to check next time. Bullet lines.\n"
+    "- UNRESOLVED: list every question you could NOT settle from the measured facts. "
+    "An empty list means you are certain, so do not pad it — but never resolve a "
+    "genuine conflict by guessing just to keep it empty.\n"
     "{feedback_rules}"
     "\nReturn STRICT JSON:\n"
     '{{"verdict": "KEEP" | "FIX / ENRICH" | "REDO / REBUILD",\n'
     '  "score": 1-5,\n'
     '  "score_reason": "one sentence",\n'
     '  "issues": ["each material issue found in the seed, with timestamps"],\n'
+    '  "unresolved": ["each conflict the measured facts could not settle"],\n'
     '  "feedback": "attempter feedback, bullet lines separated by \\n",\n'
-    '  "final_caption": "the complete final RTD caption text"}}\n'
-    "\n=== FRESH CAPTION (evidence baseline) ===\n{fresh}\n"
+    '  "final_caption": "the complete reviewed caption text"}}\n'
+    "\n=== FRESH CAPTION (machine draft) ===\n{fresh}\n"
     "\n=== SEED CAPTION (attempter submission under review) ===\n{seed}\n"
+    "{evidence_block}"
     "{feedback_block}"
 )
 
+_EVIDENCE_CLAUSE = (
+    "3. MEASURED FACTS — direct signal measurements of the actual media (shot "
+    "boundaries with real frame timestamps, and the audio timeline). These outrank "
+    "both captions.\n"
+)
 _FEEDBACK_CLAUSE = (
-    "3. EVALUATOR / FINAL-REVIEW FEEDBACK — suggestions attached to the task. They "
-    "describe the ORIGINAL SEED, not the fresh caption. Judge each against the media "
-    "evidence; never invent content to satisfy one.\n"
+    "4. EVALUATOR / FINAL-REVIEW FEEDBACK — suggestions attached to the task. They "
+    "describe the ORIGINAL SEED, not the fresh caption. Judge each against the "
+    "measured facts; never invent content to satisfy one.\n"
 )
 _FEEDBACK_RULES = (
     "- FEEDBACK VERDICTS: each evaluator item concerns the SEED. In 'issues', mark it "
@@ -112,37 +158,76 @@ def review(
     fresh_caption: str,
     seed_caption: str,
     evaluator_feedback: str = "",
+    evidence: str = "",
+    blockers: BlockerLog | None = None,
 ) -> dict[str, Any]:
-    """Run the reviewer pass. Returns verdict/score/issues/feedback/final_caption;
-    falls back to the fresh caption if the model returns no usable final text."""
+    """Run the reviewer pass over a caption and return the reviewed draft.
+
+    The result is ALWAYS a draft: ``ready`` is never True, and ``blockers``
+    carries everything that must be resolved by a human first.
+    """
+    log = blockers if blockers is not None else BlockerLog()
     backend = OpenAIVisionBackend()
     fb = evaluator_feedback.strip()
+    ev = evidence.strip()
     prompt = _REVIEW_PROMPT.format(
+        evidence_clause=_EVIDENCE_CLAUSE if ev else "",
         feedback_clause=_FEEDBACK_CLAUSE if fb else "",
         feedback_rules=_FEEDBACK_RULES if fb else "",
         fresh=fresh_caption.strip(),
         seed=seed_caption.strip(),
+        evidence_block=f"\n=== MEASURED FACTS ===\n{ev}\n" if ev else "",
         feedback_block=f"\n=== EVALUATOR FEEDBACK ===\n{fb}\n" if fb else "",
     )
     data: dict[str, Any] = {}
+    last_error = "no response"
     for _ in range(3):
-        raw = backend.complete([text_content(prompt)], json_mode=True, max_tokens=8000)
+        try:
+            raw = backend.complete([text_content(prompt)], json_mode=True, max_tokens=8000)
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            continue
         if not raw:
+            last_error = "empty response"
             continue
         try:
             parsed = json.loads(raw)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as exc:
+            last_error = f"invalid JSON: {exc}"
             continue
         if isinstance(parsed, dict):
             data = parsed
             break
+
     final = str(data.get("final_caption") or "").strip()
+    if not final:
+        # A failed review is NOT a passed review. The fresh caption is returned
+        # so the work is not lost, but it is explicitly marked un-reviewed.
+        log.add(
+            "REVIEW_FAILED",
+            f"The reviewer pass produced no caption ({last_error}). The text below is "
+            f"the UNREVIEWED machine draft — no audit of the seed was performed.",
+        )
+        final = fresh_caption
+
+    # The reviewer's rewrite is re-validated. Nothing reaches a file unchecked.
+    validate_caption(final, log)
+
     score = data.get("score")
+    unresolved = [str(u) for u in data.get("unresolved", []) if str(u).strip()]
+    for item in unresolved:
+        log.add("REVIEW_UNRESOLVED", item)
+
+    ready, reason = log.readiness()
     return {
         "verdict": str(data.get("verdict") or "FIX / ENRICH"),
         "score": int(score) if isinstance(score, (int, float)) and 1 <= score <= 5 else 0,
         "score_reason": str(data.get("score_reason") or ""),
         "issues": [str(i) for i in data.get("issues", []) if str(i).strip()],
+        "unresolved": unresolved,
         "feedback": str(data.get("feedback") or ""),
-        "final_caption": final if final else fresh_caption,
+        "final_caption": final,
+        "ready": ready,
+        "readiness_reason": reason,
+        "blockers": log.as_dicts(),
     }

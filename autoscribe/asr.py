@@ -45,8 +45,13 @@ def extract_audio(video: Path, out_wav: Path) -> Path:
 def transcribe(
     wav: Path, model_name: str = "large-v3-turbo", language: str | None = None
 ) -> list[SpeechSegment]:
-    """Transcribe with faster-whisper. Empty list means no speech detected."""
-    from faster_whisper import WhisperModel  # type: ignore[import-not-found]  # heavy dep
+    """Transcribe with faster-whisper. Empty list means no speech detected.
+
+    ``faster-whisper`` is a heavy optional dependency, imported lazily so the
+    structured (cloud-ASR) path never pays for it. It ships in the ``autoscribe``
+    extra because this flat-mode path is unusable without it.
+    """
+    from faster_whisper import WhisperModel
 
     model = WhisperModel(model_name, device="auto", compute_type="auto")
     segments, _info = model.transcribe(

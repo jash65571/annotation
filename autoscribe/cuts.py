@@ -1,4 +1,4 @@
-"""Robust shot/cut detection: sensitive candidate detection + VLM verification.
+"""Shot/cut detection: sensitive candidate detection + VLM verification.
 
 Getting the SHOT COUNT right is critical. Two failure modes:
   - Over-counting: fast motion / strobing lights fool a naive detector into
@@ -9,37 +9,63 @@ Getting the SHOT COUNT right is critical. Two failure modes:
 Strategy: collect candidate boundaries from BOTH a motion-robust detector
 (AdaptiveDetector) and a sensitive one (ContentDetector) so nothing is missed,
 then have the vision model look at the frames straddling each candidate and
-confirm whether it is a genuine shot change (and, if so, its cut type). Only
-verified boundaries become shots.
+confirm whether it is a genuine shot change (and, if so, its cut type).
+
+Short shots are structurally preserved. The previous version merged candidates
+within 0.4 s, discarded anything within 0.3 s of either end, and de-duplicated
+confirmed cuts within 0.3 s — so a genuine 0.25 s shot, a fast montage, or a
+brief opening title could never survive no matter what the footage showed.
+Clustering now happens at frame resolution only, which removes duplicate reports
+of the SAME boundary from different detectors without ever erasing two distinct
+boundaries that are genuinely close together.
+
+Picture boundaries and audio-over-picture transitions (L-cut / J-cut) are
+separate questions and are resolved from separate evidence: the vision model
+only ever sees images, so it is never asked to name a transition that is defined
+by sound. When measured audio runs across a confirmed picture boundary, the
+boundary is flagged UNRESOLVED for a human rather than silently called a hard cut.
 """
 
 from __future__ import annotations
 
 import json
+from itertools import pairwise
 from pathlib import Path
 
+from .audio_timeline import AudioSpan
+from .blockers import WARNING, BlockerLog
 from .frames import GridFrame
 from .vision import OpenAIVisionBackend, image_content, text_content
 
-CUT_TYPES = (
-    "Opening shot", "Hard cut", "Cross dissolve", "Fade in", "Fade out",
+#: Transitions decided from PICTURE evidence alone — what the VLM may choose.
+PICTURE_CUT_TYPES = (
+    "Hard cut", "Cross dissolve", "Fade in", "Fade out",
     "Match cut", "Jump cut", "Smash cut", "Wipe", "Iris",
-    "L-cut", "J-cut", "Whip pan", "Swish pan",
+    "Whip pan", "Swish pan",
 )
+#: Transitions defined by audio crossing a picture boundary. Never selectable
+#: from frames; only a human (or audio evidence + review) may assign these.
+AUDIO_CUT_TYPES = ("L-cut", "J-cut")
+
+CUT_TYPES = ("Opening shot", *PICTURE_CUT_TYPES, *AUDIO_CUT_TYPES)
+
+#: Below this, two candidate times are the SAME boundary reported twice, not two
+#: boundaries. Anything longer is a real (if short) shot and must survive.
+FRAME_EPSILON = 0.08
 
 
 def _adaptive(video: Path) -> list[float]:
-    from scenedetect import AdaptiveDetector, detect  # type: ignore[import-untyped]
+    from scenedetect import AdaptiveDetector, detect
 
     scenes = detect(str(video), AdaptiveDetector())
-    return [round(s.get_seconds(), 2) for i, (s, _e) in enumerate(scenes) if i > 0]
+    return [round(s.seconds, 3) for i, (s, _e) in enumerate(scenes) if i > 0]
 
 
 def _content(video: Path, threshold: float = 27.0) -> list[float]:
     from scenedetect import ContentDetector, detect
 
     scenes = detect(str(video), ContentDetector(threshold=threshold))
-    return [round(s.get_seconds(), 2) for i, (s, _e) in enumerate(scenes) if i > 0]
+    return [round(s.seconds, 3) for i, (s, _e) in enumerate(scenes) if i > 0]
 
 
 def _fades(video: Path) -> list[float]:
@@ -48,16 +74,22 @@ def _fades(video: Path) -> list[float]:
     from scenedetect import ThresholdDetector, detect
 
     scenes = detect(str(video), ThresholdDetector())
-    return [round(s.get_seconds(), 2) for i, (s, _e) in enumerate(scenes) if i > 0]
+    return [round(s.seconds, 3) for i, (s, _e) in enumerate(scenes) if i > 0]
 
 
-def candidate_boundaries(video: Path, min_gap: float = 0.4) -> list[float]:
-    """Union of robust + sensitive + extra-sensitive + fade detectors, de-duped
-    within ``min_gap``. The extra-sensitive pass (threshold 12) exists for
-    GRADUAL masked transitions — an expanding circular iris changes only ~15% of
-    the frame per step and slips under the default threshold entirely (verified
-    miss: a real Iris at 3.2s produced no candidate). Over-candidates are cheap:
-    every candidate is VLM-verified before it becomes a shot."""
+def candidate_boundaries(video: Path, min_gap: float = FRAME_EPSILON) -> list[float]:
+    """Union of robust + sensitive + extra-sensitive + fade detectors.
+
+    The extra-sensitive pass (threshold 12) exists for GRADUAL masked
+    transitions — an expanding circular iris changes only ~15% of the frame per
+    step and slips under the default threshold entirely (verified miss: a real
+    Iris at 3.2s produced no candidate).
+
+    ``min_gap`` defaults to one frame period, NOT a shot-length heuristic: its
+    only job is to collapse the same boundary reported by several detectors.
+    Over-candidates are cheap — every candidate is VLM-verified before it
+    becomes a shot — whereas a dropped candidate is a silently deleted shot.
+    """
     raw = sorted(set(
         _adaptive(video) + _content(video) + _content(video, threshold=12.0) + _fades(video)
     ))
@@ -91,42 +123,69 @@ _VERIFY = (
     "- live footage replaced by (or emerging from) a GRAPHIC: a logo, title card, "
     "full-screen animation, scoreboard or branding screen. A footage-to-graphic "
     "transition is ALWAYS a boundary, even when it happens gradually.\n"
+    "A boundary may be VERY brief — two boundaries a fraction of a second apart are "
+    "normal in a fast montage. Never reject a boundary for being close to another one.\n"
     "It is NOT a boundary when it is the same continuous shot with only camera or "
     "subject motion (pans, fast movement of the same people/scene) or lighting/strobe "
     "changes over the same scene.\n"
     "If it is a boundary, also give the cut type from: Hard cut, Cross dissolve, "
     "Fade in, Fade out, Match cut, Jump cut, Smash cut, Wipe, Iris, Whip pan, Swish pan "
-    "(use 'Hard cut' if unsure).\n"
-    'Return JSON {"is_cut": true|false, "cut": "<type>"}.'
+    "(use 'Hard cut' if unsure). You are seeing IMAGES ONLY, so never answer L-cut or "
+    "J-cut — those are defined by sound and are decided elsewhere.\n"
+    "If the frames genuinely do not let you decide, answer "
+    '{"is_cut": null} rather than guessing.\n'
+    'Return JSON {"is_cut": true|false|null, "cut": "<type>"}.'
 )
 
 
 def _verify(
-    backend: OpenAIVisionBackend, before: list[GridFrame], after: list[GridFrame]
-) -> tuple[bool, str]:
+    backend: OpenAIVisionBackend, before: list[GridFrame], after: list[GridFrame],
+    blockers: BlockerLog | None = None, at: float | None = None,
+) -> tuple[bool | None, str]:
+    """(is_cut, cut_type). ``None`` means UNRESOLVED — never silently 'not a cut'.
+
+    A model/network error used to return False here, which quietly reduced the
+    shot count and produced a caption that looked complete.
+    """
     if not before or not after:
-        return False, "Hard cut"
+        if blockers is not None:
+            blockers.add(
+                "CUT_UNVERIFIABLE",
+                "No frames available on one side of a candidate boundary.",
+                start=at,
+            )
+        return None, "Hard cut"
     content: list[dict[str, object]] = [text_content(_VERIFY), text_content("Before:")]
     content += [image_content(f.path) for f in before]
     content.append(text_content("After:"))
     content += [image_content(f.path) for f in after]
     try:
         data = json.loads(backend.complete(content, json_mode=True, max_tokens=60))
-    except Exception:
-        return False, "Hard cut"
-    is_cut = bool(data.get("is_cut"))
+    except Exception as exc:
+        if blockers is not None:
+            blockers.add_exception("CUT_VERIFY_FAILED", exc, start=at)
+        return None, "Hard cut"
+    value = data.get("is_cut")
+    if value is None:
+        if blockers is not None:
+            blockers.add(
+                "CUT_UNDECIDED",
+                "The vision model could not decide whether this is a shot boundary.",
+                start=at,
+            )
+        return None, "Hard cut"
     cut = str(data.get("cut", "Hard cut")).strip()
-    return is_cut, (cut if cut in CUT_TYPES else "Hard cut")
+    return bool(value), (cut if cut in PICTURE_CUT_TYPES else "Hard cut")
 
 
 def snap_boundary(grid: list[GridFrame], t: float, span: float = 0.45) -> float:
     """Snap a confirmed boundary to the FIRST CHANGED grid frame near ``t``.
 
     Verified failure: the detector reported an iris at 3.1s, but frame 3.1s is
-    still pure collage — the first changed frame is 3.167s (=> 3.2s on the 0.1s
-    grid). Strategy: inter-frame pixel differences in a small window; baseline
-    noise = median; the boundary is the first frame whose difference clearly
-    exceeds the baseline (fallback: the largest single change)."""
+    still pure collage — the first changed frame is 3.167s. Strategy:
+    inter-frame pixel differences in a small window; baseline noise = median;
+    the boundary is the first frame whose difference clearly exceeds the
+    baseline (fallback: the largest single change)."""
     try:
         import cv2  # bundled with scenedetect's opencv dependency
     except ImportError:
@@ -134,10 +193,11 @@ def snap_boundary(grid: list[GridFrame], t: float, span: float = 0.45) -> float:
     fs = [f for f in grid if t - span <= f.time_seconds <= t + span]
     if len(fs) < 4:
         return t
-    imgs = [cv2.imread(str(f.path), cv2.IMREAD_GRAYSCALE) for f in fs]
-    if any(i is None for i in imgs):
+    loaded = [cv2.imread(str(f.path), cv2.IMREAD_GRAYSCALE) for f in fs]
+    if any(img is None for img in loaded):
         return t
-    diffs = [float(cv2.absdiff(a, b).mean()) for a, b in zip(imgs, imgs[1:])]
+    imgs = [img for img in loaded if img is not None]
+    diffs = [float(cv2.absdiff(a, b).mean()) for a, b in pairwise(imgs)]
     med = sorted(diffs)[len(diffs) // 2]
     mx = max(diffs)
     if mx < max(4.0 * med, 2.0):
@@ -162,15 +222,17 @@ def snap_gradual(
     span: float = 0.4,
 ) -> float:
     """Verified failure: an iris was stamped 3.1s but the first mask pixel
-    appears at 3.167s (=> 3.2s). Pixel differencing cannot separate a gradual
-    mask onset from in-shot motion, so the model picks the first frame showing
-    the incoming transition from a labelled strip."""
+    appears at 3.167s. Pixel differencing cannot separate a gradual mask onset
+    from in-shot motion, so the model picks the first frame showing the incoming
+    transition from a labelled strip."""
+    from .vision import image_content, text_content
+
     fs = [f for f in grid if t - span <= f.time_seconds <= t + span]
     if len(fs) < 3:
         return t
     content: list[dict[str, object]] = [text_content(_SNAP_PROMPT.format(ctype=ctype))]
     for f in fs:
-        content.append(text_content(f"t={f.time_seconds:.1f}s:"))
+        content.append(text_content(f"t={f.time_seconds:.2f}s:"))
         content.append(image_content(f.path))
     try:
         data = json.loads(backend.complete(content, json_mode=True, max_tokens=40))
@@ -182,26 +244,94 @@ def snap_gradual(
     return t
 
 
+def audio_crosses(spans: list[AudioSpan], t: float, margin: float = 0.3) -> bool:
+    """Does a continuous audible span run across the picture boundary at ``t``?
+
+    An L-cut (outgoing audio continues under the incoming picture) and a J-cut
+    (incoming audio starts under the outgoing picture) both look like this from
+    the timeline alone. Which one it is depends on which SCENE the sound belongs
+    to, which the signal cannot answer — so this only reports that the question
+    exists, and the boundary is marked unresolved for a human.
+    """
+    for sp in spans:
+        if sp.label == "quiet":
+            continue
+        if sp.start <= t - margin and sp.end >= t + margin:
+            return True
+    return False
+
+
 def resolve_shots(
-    backend: OpenAIVisionBackend, video: Path, grid: list[GridFrame], duration: float
+    backend: OpenAIVisionBackend,
+    video: Path,
+    grid: list[GridFrame],
+    duration: float,
+    blockers: BlockerLog | None = None,
+    audio_spans: list[AudioSpan] | None = None,
 ) -> list[tuple[float, float, str]]:
-    """Return verified shots as (start, end, cut_type). Always >= 1 shot."""
+    """Return verified shots as (start, end, cut_type). Always >= 1 shot.
+
+    Candidates that could not be verified are NOT silently dropped: each one
+    becomes a blocking unresolved item, because "we could not tell" and "there
+    is no cut here" are different facts and only one of them is safe to render.
+    """
     confirmed: list[tuple[float, str]] = []
     for t in candidate_boundaries(video):
-        if t <= 0.3 or t >= duration - 0.3:
+        # Only a boundary at or past the very first/last frame is meaningless.
+        # A real 0.2 s opening title is a shot and must survive.
+        if t <= FRAME_EPSILON or t >= duration - FRAME_EPSILON:
             continue
-        is_cut, ctype = _verify(backend, _near(grid, t, before=True), _near(grid, t, before=False))
-        if is_cut:
-            snapped = (snap_gradual(backend, grid, t, ctype) if ctype in _GRADUAL
-                       else snap_boundary(grid, t))
-            if 0.3 < snapped < duration - 0.3:
-                confirmed.append((round(snapped, 2), ctype))
+        is_cut, ctype = _verify(
+            backend, _near(grid, t, before=True), _near(grid, t, before=False),
+            blockers=blockers, at=t,
+        )
+        if is_cut is None:
+            if blockers is not None:
+                blockers.add(
+                    "SHOT_BOUNDARY_UNRESOLVED",
+                    f"A candidate shot boundary at {t:.2f}s could not be verified. The "
+                    "shot list below may be missing a shot.",
+                    start=t,
+                )
+            continue
+        if not is_cut:
+            continue
+        snapped = (snap_gradual(backend, grid, t, ctype) if ctype in _GRADUAL
+                   else snap_boundary(grid, t))
+        if FRAME_EPSILON < snapped < duration - FRAME_EPSILON:
+            confirmed.append((round(snapped, 3), ctype))
+
     confirmed = sorted(set(confirmed))
-    confirmed = [c for i, c in enumerate(confirmed)
-                 if i == 0 or c[0] - confirmed[i - 1][0] > 0.3]
-    marks = [0.0, *[t for t, _ in confirmed], round(duration, 2)]
+    # De-duplicate only true duplicates of the SAME boundary (frame resolution).
+    deduped: list[tuple[float, str]] = []
+    for c in confirmed:
+        if deduped and c[0] - deduped[-1][0] <= FRAME_EPSILON:
+            continue
+        deduped.append(c)
+
+    if audio_spans:
+        for t, ctype in deduped:
+            if audio_crosses(audio_spans, t) and blockers is not None:
+                blockers.add(
+                    "TRANSITION_TYPE_UNRESOLVED",
+                    f"Audio runs continuously across the picture boundary at {t:.2f}s, "
+                    f"which is the signature of an L-cut or J-cut. Frames alone cannot "
+                    f"tell them apart; rendered as '{ctype}' pending human confirmation.",
+                    start=t,
+                )
+
+    marks = [0.0, *[t for t, _ in deduped], round(duration, 3)]
     shots: list[tuple[float, float, str]] = []
     for i in range(len(marks) - 1):
-        cut = "Opening shot" if i == 0 else confirmed[i - 1][1]
+        cut = "Opening shot" if i == 0 else deduped[i - 1][1]
         shots.append((marks[i], marks[i + 1], cut))
+    if blockers is not None:
+        for s, e, _c in shots:
+            if e - s < 0.4:
+                blockers.add(
+                    "SHORT_SHOT",
+                    f"Shot of {e - s:.2f}s at {s:.2f}s is very short — confirm it is a "
+                    "real shot and not a duplicated boundary.",
+                    severity=WARNING, start=s, end=e,
+                )
     return shots

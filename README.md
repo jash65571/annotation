@@ -57,9 +57,16 @@ uv run pytest -m asr_integration                                  # real local A
 Audio analysis runs by default. ASR runs locally in isolated uv worker
 environments (faster-whisper 1.2.1, default model `large-v3-turbo`; WhisperX
 3.4.3 alignment). First use downloads packages/models (`--no-asr-bootstrap`
-to forbid); task media is never uploaded anywhere and there is no cloud or
-Descript fallback — an ASR failure degrades to waveform/spectrogram/energy
-evidence and manual review.
+to forbid); the Manuscript Reviewer **engine** never uploads task media anywhere
+and there is no cloud or Descript fallback — an ASR failure degrades to
+waveform/spectrogram/energy evidence and manual review.
+
+> **AutoScribe is different.** The separate `autoscribe/` tool in this repo is a
+> cloud-backed draft generator: in its default `structured` mode it uploads
+> extracted audio and video frames to OpenAI. It is **not** part of the
+> review-gated engine described above, its output is a draft rather than an RTD
+> caption, and the local-only guarantee in this section does not apply to it.
+> See [autoscribe/README.md](autoscribe/README.md).
 
 Shot analysis runs by default and reports supported boundaries, rejected false
 positives, and review-required candidates with structured reason codes. Expert
