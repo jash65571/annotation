@@ -248,21 +248,36 @@ def test_upload_and_rate_limits_are_bounded() -> None:
     assert webapp.MAX_CONCURRENT_JOBS >= 1
 
 
-def test_cleanup_removes_frames_and_audio(tmp_path: Any) -> None:
+def test_cleanup_removes_every_media_artefact(tmp_path: Any) -> None:
+    """Cleanup listed directories by name, so `dense/` (added later) and the
+    uploaded video itself both survived — the video being the largest file and
+    the one with the real privacy cost."""
     workspace = tmp_path / "job"
-    frames_dir = workspace / "out" / "clip" / "frames"
-    frames_dir.mkdir(parents=True)
+    clip_dir = workspace / "out" / "clip"
+    frames_dir = clip_dir / "frames"
+    dense_dir = clip_dir / "dense"
+    for d in (frames_dir, dense_dir):
+        d.mkdir(parents=True)
     (frames_dir / "g000000.png").write_bytes(b"x")
-    wav = workspace / "out" / "clip" / "audio.wav"
+    (dense_dir / "d000000.png").write_bytes(b"x")
+    wav = clip_dir / "audio.wav"
     wav.write_bytes(b"x")
+    upload = workspace / "upload.mp4"
+    upload.write_bytes(b"x")
     caption = workspace / "out" / "clip.manuscript.md"
     caption.write_text("keep me")
 
-    webapp._cleanup_frames(workspace)
+    webapp._cleanup_workspace(workspace)
 
     assert not frames_dir.exists(), "extracted frames must not be left behind"
+    assert not dense_dir.exists(), "boundary-adjacent frames must not survive"
     assert not wav.exists(), "extracted audio must not be left behind"
+    assert not upload.exists(), "the uploaded video must not be left behind"
     assert caption.read_text() == "keep me", "results must survive cleanup"
+
+
+def test_cleanup_is_safe_on_a_missing_workspace(tmp_path: Any) -> None:
+    webapp._cleanup_workspace(tmp_path / "never_created")
 
 
 def test_unclear_token_defaults_to_current_standard(monkeypatch: pytest.MonkeyPatch) -> None:

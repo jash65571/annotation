@@ -6,6 +6,8 @@ file unchallenged.
 
 from __future__ import annotations
 
+import pytest
+
 from autoscribe.validate import validate_caption
 
 #: A caption that actually meets the standard: Scene reconstructs the space,
@@ -296,6 +298,52 @@ def test_present_but_empty_shot_fields_are_caught() -> None:
 def test_field_holding_only_a_full_stop_is_empty() -> None:
     text = GOOD.replace("Camera: Medium-wide, eye-level, handheld.", "Camera: .")
     assert "SHOT_FIELD_EMPTY" in _codes(text)
+
+
+@pytest.mark.parametrize(
+    ("audio", "affirmative"),
+    [
+        # Denials the clause-wide scan let through: its negator list was
+        # incomplete, and splitting on "but" handed the phrase a clean clause.
+        ("The voice speaks without using a foreign language.", False),
+        ("The voice uses anything but a foreign language.", False),
+        ("The audio lacks a foreign language.", False),
+        ("The speech is devoid of a foreign language.", False),
+        # Valid statements the clause-wide scan wrongly rejected: the negation
+        # governs something else entirely, or follows the mention.
+        ("Non-diegetic music plays under a foreign language.", True),
+        ("C1 speaks a foreign language, not English.", True),
+        ("A voice speaks a foreign language.", True),
+        ("Music is not diegetic. A voice speaks a foreign language.", True),
+    ],
+)
+def test_negation_is_judged_from_what_precedes_the_mention(
+    audio: str, affirmative: bool
+) -> None:
+    from autoscribe.validate import _affirmatively_mentions
+
+    assert _affirmatively_mentions(audio, "a foreign language") is affirmative
+
+
+def test_fallback_plus_a_guess_is_still_a_guess() -> None:
+    """§17 forbids hedging by listing possible languages. Stating the fallback
+    does not license also naming one — the branch used to confirm the phrase
+    and return without ever checking."""
+    text = GOOD.replace(
+        "Audio: Music plays throughout.",
+        "Audio: A voice speaks a foreign language, possibly Tagalog.",
+    )
+    log = validate_caption(text, speech_present=True, language_confident=False)
+    assert any(b.code == "LANGUAGE_GUESSED" for b in log.blocking)
+
+
+def test_bare_fallback_is_not_reported_as_a_guess() -> None:
+    text = GOOD.replace(
+        "Audio: Music plays throughout.",
+        "Audio: A voice speaks a foreign language.",
+    )
+    log = validate_caption(text, speech_present=True, language_confident=False)
+    assert not any(b.code.startswith("LANGUAGE_") for b in log.entries)
 
 
 def test_negated_foreign_language_phrase_is_not_a_declaration() -> None:

@@ -139,19 +139,43 @@ def _run_job(job: str, video: Path, hz: float, seed: dict[str, str] | None = Non
         _set(job, state="error", error=f"{type(exc).__name__}: {exc}")
     finally:
         _ACTIVE.release()
-        _cleanup_frames(workspace)
+        _cleanup_workspace(workspace)
 
 
-def _cleanup_frames(workspace: Path) -> None:
-    """Delete extracted frames/audio once a job ends.
+#: Everything the pipeline writes that is NOT a result. Listing directories by
+#: name was fragile: `dense/` (the boundary-adjacent frames) was added later and
+#: silently escaped cleanup, as did the uploaded video itself — by far the
+#: largest file, and the one with the real privacy cost.
+_MEDIA_SUFFIXES = frozenset({
+    ".png", ".jpg", ".jpeg", ".webp", ".wav", ".mp4", ".mov", ".mkv", ".avi",
+    ".webm", ".m4v", ".mpg", ".mpeg", ".m4a", ".mp3", ".aac", ".flac",
+})
+#: Results worth keeping: the caption files the run produced.
+_KEEP_SUFFIXES = frozenset({".md", ".json", ".txt"})
 
-    A 15-second clip at 10 Hz is ~150 PNGs; the old code left every one of them,
-    plus the uploaded video, in the system temp directory forever.
+
+def _cleanup_workspace(workspace: Path) -> None:
+    """Delete every media file a job produced or received, keeping results.
+
+    Removes by KIND rather than by directory name so a newly added frame
+    directory cannot quietly survive. The uploaded video is deleted too: it is
+    the largest artefact and the one a user would least expect to persist in a
+    temp directory after the job that needed it has finished.
     """
-    for path in workspace.rglob("frames"):
-        shutil.rmtree(path, ignore_errors=True)
-    for wav in workspace.rglob("audio.wav"):
-        wav.unlink(missing_ok=True)
+    if not workspace.exists():
+        return
+    for path in workspace.rglob("*"):
+        if not path.is_file():
+            continue
+        suffix = path.suffix.lower()
+        if suffix in _KEEP_SUFFIXES:
+            continue
+        if suffix in _MEDIA_SUFFIXES:
+            path.unlink(missing_ok=True)
+    # Drop the directories those files lived in, once empty.
+    for path in sorted(workspace.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+        if path.is_dir() and not any(path.iterdir()):
+            path.rmdir()
 
 
 class Handler(BaseHTTPRequestHandler):

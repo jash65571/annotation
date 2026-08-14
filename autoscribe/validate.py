@@ -259,31 +259,66 @@ def check_style_depth(style: str, log: BlockerLog) -> None:
 #: always-accepted answer is this exact phrase — never a guess, never silence.
 FOREIGN_LANGUAGE_PHRASE = "a foreign language"
 
+#: §17 also forbids hedging by listing possible languages, so an unestablished
+#: language must not be NAMED even alongside the fallback phrase.
+LANGUAGE_NAMES = frozenset({
+    "english", "spanish", "french", "german", "italian", "portuguese", "dutch",
+    "swedish", "norwegian", "danish", "finnish", "icelandic", "polish", "czech",
+    "slovak", "hungarian", "romanian", "bulgarian", "greek", "russian",
+    "ukrainian", "serbian", "croatian", "bosnian", "slovenian", "albanian",
+    "turkish", "arabic", "hebrew", "persian", "farsi", "urdu", "hindi",
+    "punjabi", "bengali", "gujarati", "marathi", "tamil", "telugu", "kannada",
+    "malayalam", "sinhala", "nepali", "thai", "lao", "khmer", "vietnamese",
+    "indonesian", "malay", "tagalog", "filipino", "cebuano", "javanese",
+    "mandarin", "cantonese", "chinese", "japanese", "korean", "mongolian",
+    "swahili", "amharic", "somali", "hausa", "yoruba", "igbo", "zulu", "xhosa",
+    "afrikaans", "welsh", "irish", "gaelic", "basque", "catalan", "galician",
+    "latin", "esperanto", "maori", "samoan", "hawaiian", "quechua",
+})
+_LANGUAGE_NAME_RX = re.compile(
+    r"\b(" + "|".join(sorted(LANGUAGE_NAMES)) + r")\b", re.IGNORECASE
+)
+
 #: Negations that turn a mention into a denial. A declaration must ASSERT the
 #: language, so a plain substring search is not enough — the same weakness the
 #: delivery check had, where "without a supported tone" satisfied "tone".
+#:
+#: Deliberately excludes a bare "non": it never negates a language claim on its
+#: own and its only real effect was to reject "Non-diegetic music plays under
+#: Tagalog speech."
 _NEGATION = re.compile(
-    r"\b(not|non|no|never|isn'?t|aren'?t|wasn'?t|doesn'?t|don'?t|rather than|"
-    r"instead of|other than|unlike|neither|nor|cannot|can'?t)\b",
+    r"\b(not|no|never|without|lack|lacks|lacking|but|except|excluding|besides|"
+    r"rather than|instead of|other than|unlike|neither|nor|cannot|can'?t|"
+    r"isn'?t|aren'?t|wasn'?t|weren'?t|doesn'?t|don'?t|didn'?t|devoid|absent|"
+    r"hardly|barely|fails? to|free of|none of)\b",
     re.IGNORECASE,
 )
+_SENTENCE_SPLIT = re.compile(r"[.;!?]")
 
 
 def _affirmatively_mentions(text: str, phrase: str) -> bool:
     """Is ``phrase`` stated as a fact somewhere in ``text``?
 
-    The phrase must appear in at least one clause that does not negate it.
-    "The voice speaks a foreign language." counts; "The voice is not speaking a
-    foreign language." does not.
+    Negation is judged from what comes BEFORE the mention within its own
+    sentence, not by scanning the whole clause. Scanning the clause was wrong in
+    both directions: it accepted "speaks without using a foreign language" and
+    "the audio lacks Tagalog" (negators it did not list), while rejecting
+    "C1 speaks Tagalog, not Spanish." and "Non-diegetic music plays under
+    Tagalog speech." — where the negation governs something else entirely.
+
+    English negates a claim ahead of it, so the text between the start of the
+    sentence and the mention is what decides.
     """
     lowered = text.lower()
     needle = phrase.lower()
     if needle not in lowered:
         return False
-    # Split on sentence and clause boundaries so a negation elsewhere in the
-    # field cannot suppress a genuine declaration, and vice versa.
-    for clause in re.split(r"[.;!?]|\bbut\b|\bthough\b|\balthough\b", lowered):
-        if needle in clause and not _NEGATION.search(clause):
+    for match in re.finditer(re.escape(needle), lowered):
+        sentence_start = 0
+        for boundary in _SENTENCE_SPLIT.finditer(lowered, 0, match.start()):
+            sentence_start = boundary.end()
+        preceding = lowered[sentence_start:match.start()]
+        if not _NEGATION.search(preceding):
             return True
     return False
 
@@ -321,6 +356,18 @@ def check_language_declared(
                 f"Audio field must AFFIRMATIVELY state '{FOREIGN_LANGUAGE_PHRASE}' — "
                 f"naming any language (English included) asserts more than the "
                 f"evidence supports, and denying the phrase is not a declaration.",
+            )
+        # Stating the fallback does NOT license also guessing. §17 forbids
+        # hedging by listing possible languages, so "a foreign language,
+        # possibly Tagalog" is still an unsupported claim — the fallback
+        # existing is not a reason to stop checking.
+        guessed = sorted({m.group(1).lower() for m in _LANGUAGE_NAME_RX.finditer(audio)})
+        if guessed:
+            log.add(
+                "LANGUAGE_GUESSED",
+                f"The language could not be established, but the Audio field names "
+                f"{guessed}. State '{FOREIGN_LANGUAGE_PHRASE}' only — never hedge by "
+                f"listing possible languages.",
             )
         return
 
