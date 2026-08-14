@@ -71,7 +71,7 @@ def test_densify_pulls_real_frames_around_a_candidate() -> None:
     calls: list[list[int]] = []
 
     def fake_extract(_v: Path, _o: Path, indices: list[int], times: list[float],
-                     width: int = 768) -> list[GridFrame]:
+                     width: int = 768, blockers: object = None) -> list[GridFrame]:
         calls.append(indices)
         return [
             GridFrame(index=-1, time_seconds=times[i], path=Path(f"d{i}.png"),
@@ -90,6 +90,27 @@ def test_densify_pulls_real_frames_around_a_candidate() -> None:
     assert 25 in calls[0], "the candidate's own frame was not fetched"
     assert 25 in {f.source_index for f in dense}
     assert dense == sorted(dense, key=lambda f: f.time_seconds)
+
+
+def test_snap_span_never_reaches_a_neighbouring_candidate() -> None:
+    """A boundary that snaps onto its neighbour de-duplicates away, deleting the
+    shot between them. The exit of a 1.00-1.04s flash must not be able to reach
+    back to the entry, where the red-to-white change is strongest."""
+    candidates = [1.00, 1.04]
+    eps = 0.036
+    exit_span = cuts.snap_span(candidates, 1, eps)
+    entry_span = cuts.snap_span(candidates, 0, eps)
+    assert 1.04 - exit_span > 1.00, "exit could snap onto the entry"
+    assert 1.00 + entry_span < 1.04, "entry could snap onto the exit"
+
+
+def test_snap_span_is_unrestricted_for_an_isolated_candidate() -> None:
+    assert cuts.snap_span([5.0], 0, 0.04) == 0.45
+
+
+def test_snap_span_never_collapses_below_one_frame() -> None:
+    """Two candidates exactly one frame apart still get a usable window."""
+    assert cuts.snap_span([1.00, 1.04], 0, 0.036) >= 0.02
 
 
 def test_densify_is_a_noop_without_a_ledger() -> None:

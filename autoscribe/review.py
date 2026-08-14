@@ -166,6 +166,8 @@ def review(
     blockers: BlockerLog | None = None,
     frames: list[tuple[float, Path]] | None = None,
     detected_language: str = "",
+    speech_present: bool = False,
+    language_confident: bool = True,
 ) -> dict[str, Any]:
     """Run the reviewer pass over a caption and return the reviewed draft.
 
@@ -248,8 +250,14 @@ def review(
         )
         final = fresh_caption
 
-    # The reviewer's rewrite is re-validated. Nothing reaches a file unchecked.
-    validate_caption(final, log, detected_language=detected_language)
+    # The reviewer's rewrite is re-validated under the SAME evidence context as
+    # the draft. Dropping speech_present/language_confident here would let a
+    # reviewer delete the required "a foreign language" declaration and have the
+    # final validation record nothing.
+    validate_caption(
+        final, log, detected_language=detected_language,
+        speech_present=speech_present, language_confident=language_confident,
+    )
 
     score = data.get("score")
     unresolved = [str(u) for u in data.get("unresolved", []) if str(u).strip()]

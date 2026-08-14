@@ -178,6 +178,35 @@ def test_review_without_frames_is_flagged(monkeypatch: pytest.MonkeyPatch) -> No
     assert any(b["code"] == "REVIEW_WITHOUT_PICTURE" for b in result["blockers"])
 
 
+def test_reviewer_rewrite_keeps_the_language_evidence_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The draft was validated with speech_present/language_confident, but the
+    reviewer's rewrite was not — so a reviewer could delete the required
+    'a foreign language' declaration and final validation recorded nothing."""
+    import json
+
+    stripped = FRESH.replace(
+        "Audio: Music throughout.", "Audio: Music throughout."
+    )
+
+    class _Stripping:
+        def complete(self, *_a: Any, **_k: Any) -> str:
+            return json.dumps({
+                "verdict": "KEEP", "score": 5, "score_reason": "-",
+                "issues": [], "unresolved": [], "feedback": "-",
+                "final_caption": stripped,
+            })
+
+    monkeypatch.setattr(review_mod, "OpenAIVisionBackend", lambda *a, **k: _Stripping())
+    result = review_mod.review(
+        FRESH, "seed", speech_present=True, language_confident=False,
+    )
+    assert any(b["code"] == "LANGUAGE_NOT_DECLARED" for b in result["blockers"]), (
+        "the rewrite was revalidated without the evidence context"
+    )
+
+
 def test_review_is_never_ready_even_when_clean(monkeypatch: pytest.MonkeyPatch) -> None:
     import json
 

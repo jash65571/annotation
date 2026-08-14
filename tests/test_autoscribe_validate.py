@@ -203,6 +203,9 @@ def test_negated_delivery_does_not_satisfy_the_requirement() -> None:
         '(1.0s–2.0s) C1 says off-screen without a supported tone, "Hola."',
         '(1.0s–2.0s) C1 says off-screen with no clear tone, "Hola."',
         '(1.0s–2.0s) C1 says off-screen, tone unclear, "Hola."',
+        '(1.0s–2.0s) C1 says off-screen in a not supported tone, "Hola."',
+        '(1.0s–2.0s) C1 says off-screen in an undetermined tone, "Hola."',
+        '(1.0s–2.0s) C1 says off-screen in an unspecified voice, "Hola."',
     ):
         assert "SPEECH_NO_DELIVERY" in _codes(_with_speech(line)), line
 
@@ -278,6 +281,32 @@ def test_complete_shot_reports_no_missing_fields() -> None:
 def test_missing_cut_field_is_caught() -> None:
     text = GOOD.replace("Cut: Opening shot.", "")
     assert "SHOT_FIELD_MISSING" in _codes(text)
+
+
+def test_present_but_empty_shot_fields_are_caught() -> None:
+    """A bare label carries no information; it used to satisfy the check."""
+    text = GOOD.replace(
+        "Camera: Medium-wide, eye-level, handheld.", "Camera:"
+    ).replace("Playback Speed: regular.", "Playback Speed:")
+    findings = [b for b in validate_caption(text).blocking
+                if b.code == "SHOT_FIELD_EMPTY"]
+    assert len(findings) == 2, [b.detail for b in findings]
+
+
+def test_field_holding_only_a_full_stop_is_empty() -> None:
+    text = GOOD.replace("Camera: Medium-wide, eye-level, handheld.", "Camera: .")
+    assert "SHOT_FIELD_EMPTY" in _codes(text)
+
+
+def test_uncertain_language_does_not_accept_english() -> None:
+    """§17's fallback is a specific phrase precisely so an unestablished
+    language is never reported as a known one — English included."""
+    text = GOOD.replace(
+        "Audio: Music plays throughout.",
+        "Audio: Music plays throughout. A voice speaks in English.",
+    )
+    log = validate_caption(text, speech_present=True, language_confident=False)
+    assert any(b.code == "LANGUAGE_NOT_DECLARED" for b in log.blocking)
 
 
 def test_ghost_character_id_is_caught() -> None:

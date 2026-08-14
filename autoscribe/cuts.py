@@ -154,6 +154,7 @@ def densify(
     frame_times: list[float],
     work_dir: Path,
     radius: int = 3,
+    blockers: BlockerLog | None = None,
 ) -> list[GridFrame]:
     """Grid plus the ACTUAL source frames straddling each candidate boundary.
 
@@ -174,7 +175,9 @@ def densify(
                 wanted.add(i)
     if not wanted:
         return grid
-    extra = extract_indices(video, work_dir, sorted(wanted), frame_times)
+    extra = extract_indices(
+        video, work_dir, sorted(wanted), frame_times, blockers=blockers,
+    )
     return sorted([*grid, *extra], key=lambda f: f.time_seconds)
 
 
@@ -244,6 +247,26 @@ def _verify(
         return None, "Hard cut"
     cut = str(data.get("cut", "Hard cut")).strip()
     return bool(value), (cut if cut in PICTURE_CUT_TYPES else "Hard cut")
+
+
+def snap_span(candidates: list[float], index: int, epsilon: float,
+              default: float = 0.45) -> float:
+    """How far a boundary may be snapped without swallowing its neighbour.
+
+    Snapping searches for the biggest pixel change near a candidate. With a
+    fixed ±0.45 s window, the EXIT of a one-frame shot at 1.04 s sees the
+    entry's red-to-white change at 1.00 s, snaps backward onto it, and the two
+    boundaries then de-duplicate into one — deleting the very shot the rest of
+    this module works to preserve. A boundary may never snap onto or past an
+    adjacent candidate.
+    """
+    span = default
+    t = candidates[index]
+    if index > 0:
+        span = min(span, max((t - candidates[index - 1]) / 2, epsilon))
+    if index + 1 < len(candidates):
+        span = min(span, max((candidates[index + 1] - t) / 2, epsilon))
+    return span
 
 
 def snap_boundary(grid: list[GridFrame], t: float, span: float = 0.45) -> float:
@@ -364,10 +387,13 @@ def resolve_shots(
     # sampled grid that may never have contained the shot.
     verify_grid = grid
     if frame_times and work_dir is not None:
-        verify_grid = densify(video, grid, candidates, frame_times, work_dir / "dense")
+        verify_grid = densify(
+            video, grid, candidates, frame_times, work_dir / "dense",
+            blockers=blockers,
+        )
 
     confirmed: list[tuple[float, str]] = []
-    for t in candidates:
+    for candidate_index, t in enumerate(candidates):
         # Only a boundary at or past the very first/last frame is meaningless.
         # A real 0.2 s opening title is a shot and must survive.
         if t <= epsilon or t >= duration - epsilon:
@@ -389,17 +415,32 @@ def resolve_shots(
         if not is_cut:
             continue
         # Snap against the dense frames too — snapping to a sampled grid would
-        # re-round a boundary the dense pass just located precisely.
-        snapped = (snap_gradual(backend, verify_grid, t, ctype) if ctype in _GRADUAL
-                   else snap_boundary(verify_grid, t))
+        # re-round a boundary the dense pass just located precisely — and never
+        # further than half-way to the neighbouring candidate.
+        allowed = snap_span(candidates, candidate_index, epsilon)
+        snapped = (snap_gradual(backend, verify_grid, t, ctype, span=allowed)
+                   if ctype in _GRADUAL
+                   else snap_boundary(verify_grid, t, span=allowed))
         if epsilon < snapped < duration - epsilon:
             confirmed.append((round(snapped, 3), ctype))
 
     confirmed = sorted(set(confirmed))
     # De-duplicate only true duplicates of the SAME boundary (frame resolution).
+    # Candidates were already separated by >= epsilon before verification, so
+    # two confirmed boundaries closer than that can ONLY be the result of
+    # snapping having pulled them together — i.e. a verified cut is about to be
+    # discarded. That is a lost shot and must never happen silently.
     deduped: list[tuple[float, str]] = []
     for c in confirmed:
         if deduped and c[0] - deduped[-1][0] < epsilon:
+            if blockers is not None:
+                blockers.add(
+                    "SHOT_BOUNDARY_COLLAPSED",
+                    f"A verified boundary at {c[0]:.3f}s was dropped because snapping "
+                    f"moved it within {epsilon:.3f}s of the boundary at "
+                    f"{deduped[-1][0]:.3f}s. A short shot may have been lost here.",
+                    start=c[0],
+                )
             continue
         deduped.append(c)
 

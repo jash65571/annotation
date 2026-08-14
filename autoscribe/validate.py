@@ -101,9 +101,9 @@ _DELIVERY = re.compile(
 #: Phrases that MENTION delivery in order to deny it. These must never satisfy
 #: the requirement.
 _DELIVERY_NEGATED = re.compile(
-    r"\b(without|no|lacking|absent|unsupported|unknown|undetermined|"
-    r"cannot be determined|not determined|unclear)\b[^,\"]{0,40}?"
-    r"\b(tone|voice|delivery|pitch|pace|register)\b",
+    r"\b(without|not|no|non|lacking|lacks|absent|unsupported|unknown|"
+    r"undetermined|indeterminate|unclear|unspecified|missing|cannot|could not)\b"
+    r"[^,\"]{0,40}?\b(tone|voice|delivery|pitch|pace|register)\b",
     re.IGNORECASE,
 )
 #: English is the default caption language; anything else must be declared.
@@ -282,12 +282,17 @@ def check_language_declared(
     language = detected_language.strip()
 
     if speech_present and not language_confident:
-        if FOREIGN_LANGUAGE_PHRASE not in audio and "english" not in audio:
+        # "English" is NOT an acceptable substitute here. §17 makes the fallback
+        # a specific phrase precisely so an unestablished language is never
+        # reported as a known one — and English is a named language like any
+        # other, so accepting it re-opens exactly the guess the rule forbids.
+        if FOREIGN_LANGUAGE_PHRASE not in audio:
             log.add(
                 "LANGUAGE_NOT_DECLARED",
-                f"Speech is present but the language could not be established, and "
-                f"the Audio field declares no language. State "
-                f"'{FOREIGN_LANGUAGE_PHRASE}' rather than naming one or omitting it.",
+                f"Speech is present but the language could not be established. The "
+                f"Audio field must state '{FOREIGN_LANGUAGE_PHRASE}' — naming any "
+                f"language, English included, asserts more than the evidence "
+                f"supports.",
             )
         return
 
@@ -326,10 +331,18 @@ def check_shot_fields(lines: list[str], log: BlockerLog) -> None:
 
     for shot_index, body in blocks:
         for field in CANONICAL_SHOT_FIELDS:
-            if not any(line.startswith(field) for line in body):
+            matches = [line for line in body if line.startswith(field)]
+            if not matches:
                 log.add(
                     "SHOT_FIELD_MISSING",
                     f"Shot {shot_index} is missing the required '{field}' field.",
+                )
+            elif not any(line[len(field):].strip(" .") for line in matches):
+                # A present-but-empty label is not a filled field: "Camera:" on
+                # its own carries no information yet satisfied the check.
+                log.add(
+                    "SHOT_FIELD_EMPTY",
+                    f"Shot {shot_index} has '{field}' with no value.",
                 )
 
 

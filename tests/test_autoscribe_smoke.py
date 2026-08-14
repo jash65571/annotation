@@ -94,6 +94,46 @@ def test_one_frame_shot_produces_both_its_boundaries(flash_clip: Path) -> None:
     assert exit_, f"flash EXIT not detected in {found} — the shot would be absorbed"
 
 
+class _AlwaysCut:
+    """Confirms every candidate, isolating the resolver's own arithmetic from
+    any model judgement."""
+
+    def complete(self, *_a: Any, **_k: Any) -> str:
+        return json.dumps({"is_cut": True, "cut": "Hard cut"})
+
+
+def test_one_frame_shot_survives_the_full_resolver(
+    flash_clip: Path, tmp_path: Path
+) -> None:
+    """END TO END, not just candidate detection.
+
+    The previous version of this test stopped at candidate_boundaries() and
+    passed while the complete path still lost the shot: snap_boundary() searched
+    a fixed ±0.45s window, so the exit at 1.04s found the entry's red-to-white
+    change at 1.00s, snapped backward onto it, and de-duplication then removed
+    the collapsed pair — silently. Assert the SHOT LIST, not an intermediate.
+    """
+    from autoscribe.blockers import BlockerLog
+
+    ledger = frames.probe_frame_times(flash_clip)
+    grid = frames.extract_grid(flash_clip, tmp_path / "grid", hz=10.0)
+    log = BlockerLog()
+
+    shots = cuts.resolve_shots(
+        _AlwaysCut(), flash_clip, grid, ledger[-1],  # type: ignore[arg-type]
+        blockers=log, frame_times=ledger, work_dir=tmp_path,
+    )
+
+    assert len(shots) == 3, f"expected 3 shots, got {[(s, e) for s, e, _ in shots]}"
+    start, end, _cut = shots[1]
+    assert start == pytest.approx(1.00, abs=0.02)
+    assert end == pytest.approx(1.04, abs=0.02)
+    assert end - start == pytest.approx(0.04, abs=0.02), "the one-frame shot"
+    assert not any(b.code == "SHOT_BOUNDARY_COLLAPSED" for b in log.entries)
+
+
+
+
 def test_probe_returns_a_real_frame_ledger(clip: Path) -> None:
     times = frames.probe_frame_times(clip)
     assert len(times) >= 40, "expected ~50 frames from 2s at 25fps"

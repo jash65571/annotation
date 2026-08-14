@@ -202,6 +202,7 @@ def extract_indices(
     indices: list[int],
     frame_times: list[float],
     width: int = 768,
+    blockers: BlockerLog | None = None,
 ) -> list[GridFrame]:
     """Extract specific SOURCE frames by index, tagged with their real PTS.
 
@@ -226,13 +227,33 @@ def extract_indices(
             capture_output=True, text=True,
         )
     if proc.returncode != 0:
+        # Falling back to the sparse grid means short shots become unverifiable
+        # again — the exact failure this function exists to prevent. Never
+        # silent.
+        if blockers is not None:
+            blockers.add(
+                "DENSE_FRAMES_UNAVAILABLE",
+                f"Could not extract the {len(wanted)} frames straddling candidate "
+                f"boundaries ({(proc.stderr or '').strip()[:160]}). Boundary "
+                f"verification fell back to the sparse review grid, which cannot "
+                f"show a shot shorter than its sampling interval.",
+            )
         return []
     paths = sorted(out_dir.glob("d??????.png"))
-    return [
+    frames = [
         GridFrame(index=-1, time_seconds=round(frame_times[src], 3), path=path,
                   source_index=src)
         for path, src in zip(paths, wanted, strict=False)
     ]
+    if blockers is not None and len(frames) < len(wanted):
+        blockers.add(
+            "DENSE_FRAMES_INCOMPLETE",
+            f"Only {len(frames)} of {len(wanted)} boundary-adjacent frames were "
+            f"extracted; some candidates were verified without their true "
+            f"neighbouring frames.",
+            severity=WARNING,
+        )
+    return frames
 
 
 def _extract_resampled(

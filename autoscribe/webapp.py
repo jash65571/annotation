@@ -122,7 +122,8 @@ def _run_job(job: str, video: Path, hz: float, seed: dict[str, str] | None = Non
             result = review_mod.review(
                 fresh, seed["seed"], seed.get("feedback", ""),
                 evidence=evidence, blockers=blockers, frames=evidence_frames,
-                detected_language=language,
+                detected_language=language, speech_present=speech_present,
+                language_confident=language_confident,
             )
             final_path = md_path.with_suffix(".reviewed.md")
             final_path.write_text(result["final_caption"], encoding="utf-8")
