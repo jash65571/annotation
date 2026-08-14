@@ -143,6 +143,13 @@ before being written to disk.
   conservatively and falls back to an off-screen voice C-ID when ambiguous.
 - **Prosody is not emotion.** Loudness, pitch and pace are measured; inferring
   "angry" or "teasing" from them remains a human judgement.
+- **Only the language DECLARATION is enforced, not the audio prose.** The
+  `Spoken Language:` field is tool-owned and checked exactly. The model's
+  `Audio:` prose is outside that check: an unhedged guess written there
+  (e.g. "The voice speaks Pashto.") cannot be detected without a language list
+  that would never be complete, and four attempts at inferring it from prose
+  failed in both directions. A hedge in that prose raises a non-blocking
+  advisory; anything stronger needs the human read-through.
 - **Cost:** ~1 audio + 1 cast + N cut-verify + 1 per-shot vision call per video.
 
 ## Development

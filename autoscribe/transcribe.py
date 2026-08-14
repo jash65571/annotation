@@ -71,7 +71,16 @@ class Transcript:
     @property
     def language_confident(self) -> bool:
         """Name the language (Rule 7) only when the transcription itself is
-        trustworthy; a hallucinated transcript means a guessed language."""
+        trustworthy; a hallucinated transcript means a guessed language.
+
+        An ABSENT language is unestablished by definition. Without this, a
+        transcript carrying real speech but no language value (the API can
+        return none) reported ``language_confident=True`` — the state that
+        skips the §17 fallback entirely, so speech shipped with no declaration
+        at all.
+        """
+        if not self.language.strip():
+            return False
         if not self.segments:
             return False
         return len(self.reliable_segments) * 2 >= len(self.segments)

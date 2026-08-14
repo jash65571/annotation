@@ -54,6 +54,10 @@ class Globals:
     audio: str = ""
     visual_concerns: str = ""
     audio_concerns: str = ""
+    #: The spoken-language declaration. TOOL-OWNED: derived from measured
+    #: evidence and rendered as its own field, never phrased by the model and
+    #: never embedded in model prose where it could be negated or quoted.
+    spoken_language: str = ""
 
 
 @dataclass
@@ -414,16 +418,19 @@ def _cast_pass(
                 f"the shots, not here. Add a C-ID for the performer only if one is visibly "
                 f"performing vocals (at/holding a microphone); otherwise add an off-screen "
                 f"voice C-ID.\n"
-                f"LANGUAGE DECLARATION (required): the speech is in {lang}. State the "
-                f"language explicitly in the Audio field. A caption whose speech is not "
-                f"in English but never names the language is incomplete."
+                f"DO NOT NAME ANY LANGUAGE in the Audio field. The spoken language is "
+                f"declared by the tool in its own field from measured evidence — writing "
+                f"it yourself can only contradict or duplicate that record."
             )
         else:
             prompt += (
-                f"\n\nAUDIO: vocals/speech are audible but the words are NOT intelligible "
-                f"(automatic transcription was unreliable — do not treat it as verbatim). "
-                f"Describe the audio as vocals in {lang}; never quote specific words. Add "
-                f"an off-screen voice C-ID unless a character is visibly performing vocals."
+                "\n\nAUDIO: vocals/speech are audible but the words are NOT intelligible "
+                "(automatic transcription was unreliable — do not treat it as verbatim). "
+                "Describe the audio as vocals; never quote specific words. Add an "
+                "off-screen voice C-ID unless a character is visibly performing vocals.\n"
+                "DO NOT NAME OR GUESS THE LANGUAGE, and never hedge about it "
+                "('possibly X', 'sounds like X'). The tool declares it separately; the "
+                "language here is NOT established."
             )
     prompt = prompt.replace("[inaudible]", _unclear_token())
     content = [text_content(prompt), *_labelled(frames, shot_bounds)]
@@ -1022,12 +1029,12 @@ def analyze(
     )
     progress("cast", 0.4)
     g = _cast_pass(backend, grid, duration, transcript, resolved, spans)
-    # The language declaration is generated from measured evidence, not phrased
-    # by the model: §17's rule is exact, and prose cannot be parsed back into a
-    # reliable yes/no. Whatever the model wrote about audio stays; the canonical
-    # sentence is appended if absent.
-    g.audio = validate_mod.ensure_language_sentence(
-        g.audio, transcript.language,
+    # The language declaration is a TOOL-OWNED FIELD, not a sentence inserted
+    # into model prose. Embedded in prose it could be negated ("It is false
+    # that The spoken language is Tagalog.") or quoted, and both suppressed the
+    # check. As its own field there is no surrounding text to reinterpret it.
+    g.spoken_language = validate_mod.canonical_language_value(
+        transcript.language,
         speech_present=transcript.has_speech,
         language_confident=transcript.language_confident,
     )

@@ -215,22 +215,32 @@ def test_negated_delivery_does_not_satisfy_the_requirement() -> None:
 # --------------------------------------------------------------------------
 # language declaration
 # --------------------------------------------------------------------------
-FOREIGN = "The spoken language is a foreign language."
-TAGALOG = "The spoken language is Tagalog."
+FOREIGN_LINE = "Spoken Language: a foreign language."
+TAGALOG_LINE = "Spoken Language: Tagalog."
+
+
+def _with_language(line: str) -> str:
+    """Insert a Spoken Language field after the Audio field."""
+    return GOOD.replace(
+        "Audio: Music plays throughout.",
+        "Audio: Music plays throughout.\n\n" + line,
+    )
 
 
 def _audio(sentence: str) -> str:
     return GOOD.replace("Audio: Music plays throughout.", f"Audio: {sentence}")
 
 
-def test_canonical_sentence_is_built_from_measured_evidence() -> None:
-    from autoscribe.validate import canonical_language_sentence as sentence
+def test_canonical_value_is_built_from_measured_evidence() -> None:
+    from autoscribe.validate import canonical_language_value as value
 
-    assert sentence("tagalog", speech_present=True, language_confident=False) == FOREIGN
-    assert sentence("tagalog", speech_present=True, language_confident=True) == TAGALOG
+    assert value("tagalog", speech_present=True, language_confident=False) == (
+        "a foreign language"
+    )
+    assert value("tagalog", speech_present=True, language_confident=True) == "Tagalog"
     # English needs no declaration; §17 is about foreign speech.
-    assert sentence("english", speech_present=True, language_confident=True) == ""
-    assert sentence("", speech_present=False, language_confident=True) == ""
+    assert value("english", speech_present=True, language_confident=True) == ""
+    assert value("", speech_present=False, language_confident=True) == ""
 
 
 def test_non_english_speech_must_declare_the_language() -> None:
@@ -240,8 +250,8 @@ def test_non_english_speech_must_declare_the_language() -> None:
     assert any(b.code == "LANGUAGE_NOT_DECLARED" for b in log.blocking)
 
 
-def test_canonical_sentence_satisfies_the_check() -> None:
-    log = validate_caption(_audio(TAGALOG), detected_language="tagalog")
+def test_canonical_field_satisfies_the_check() -> None:
+    log = validate_caption(_with_language(TAGALOG_LINE), detected_language="tagalog")
     assert not any(b.code == "LANGUAGE_NOT_DECLARED" for b in log.entries)
 
 
@@ -255,94 +265,82 @@ def test_nothing_is_demanded_without_speech() -> None:
     assert not any(b.code == "LANGUAGE_NOT_DECLARED" for b in log.entries)
 
 
-def test_uncertain_language_still_requires_the_fallback_sentence() -> None:
+def test_uncertain_language_still_requires_the_fallback() -> None:
     log = validate_caption(GOOD, speech_present=True, language_confident=False)
     assert any(b.code == "LANGUAGE_NOT_DECLARED" for b in log.blocking)
 
 
-def test_fallback_sentence_satisfies_the_check() -> None:
+def test_fallback_field_satisfies_the_check() -> None:
     log = validate_caption(
-        _audio(FOREIGN), speech_present=True, language_confident=False
+        _with_language(FOREIGN_LINE), speech_present=True, language_confident=False
     )
-    assert not any(b.code.startswith("LANGUAGE_") for b in log.entries)
+    assert not any(b.code == "LANGUAGE_NOT_DECLARED" for b in log.entries)
+
+
+def test_wrong_field_value_is_rejected() -> None:
+    """The field is tool-owned; editing it is a finding, not a paraphrase."""
+    log = validate_caption(
+        _with_language("Spoken Language: Spanish."),
+        detected_language="tagalog",
+    )
+    assert any(b.code == "LANGUAGE_NOT_DECLARED" for b in log.blocking)
 
 
 @pytest.mark.parametrize(
     "audio",
     [
-        # Denials that four generations of scope regex accepted.
-        "The speech is not classified as Tagalog.",
-        "Tagalog is clearly not spoken.",
-        "A foreign language may not be spoken.",
-        "The voice speaks without using a foreign language.",
-        "The voice is not speaking a foreign language.",
-        "This is not a foreign language.",
-        "The audio lacks a foreign language.",
-        # Paraphrases. The sentence is generated, so it is not paraphrasable —
-        # this is the property that makes the check decidable at all.
+        # Embedding the declaration in prose let it be negated or quoted, which
+        # both suppressed the check while the caption said the opposite.
+        "It is false that The spoken language is Tagalog.",
+        "Do not claim that The spoken language is a foreign language.",
+        "The spoken language is a foreign language.",
+        # Prose paraphrases never satisfied a tool-owned field.
         "A voice speaks in a foreign language.",
-        "Music plays throughout. The speech is in Tagalog.",
-        "The language spoken is foreign.",
+        "The speech is in Tagalog.",
     ],
 )
-def test_only_the_exact_canonical_sentence_counts(audio: str) -> None:
-    """The declaration is no longer parsed out of prose. Free-form English
-    cannot be safely interpreted — every attempt failed in both directions —
-    so the caption must carry the generated sentence verbatim."""
+def test_audio_prose_can_never_satisfy_the_declaration(audio: str) -> None:
+    """The declaration lives in its own field. No sentence in the model's Audio
+    prose — however phrased, negated or quoted — can stand in for it."""
     log = validate_caption(
         _audio(audio), speech_present=True, language_confident=False
     )
     assert any(b.code == "LANGUAGE_NOT_DECLARED" for b in log.blocking), audio
 
 
-@pytest.mark.parametrize(
-    "audio",
-    [
-        # Unlisted language, no word list can catch it by name.
-        f"{FOREIGN} A voice may be speaking Pashto.",
-        # Lowercase, so proper-noun detection cannot see it.
-        f"{FOREIGN} Possibly pashto.",
-        # A hedge with no listed marker in the old scheme.
-        f"{FOREIGN} Namely Pashto.",
-        f"{FOREIGN} It sounds like Turkish.",
-        f"{FOREIGN} The words are probably Spanish.",
-    ],
-)
-def test_speculation_alongside_the_fallback_is_still_a_guess(audio: str) -> None:
-    """§17 forbids hedging by listing possible languages. With the declaration
-    generated, any speculation left in Audio is the model adding a guess — and
-    detecting SPECULATION needs no language list, so an unlisted or lowercase
-    name cannot slip through."""
-    log = validate_caption(
-        _audio(audio), speech_present=True, language_confident=False
+def test_speculative_audio_prose_is_advisory_not_blocking() -> None:
+    """An unhedged guess in free prose ("The voice speaks Pashto.") cannot be
+    detected without a language list, so this check must not pretend to be
+    authoritative — it warns, and never decides the declaration."""
+    caption = _with_language(FOREIGN_LINE).replace(
+        "Audio: Music plays throughout.",
+        "Audio: Music plays throughout. The voice may be speaking Pashto.",
     )
-    assert any(b.code == "LANGUAGE_GUESSED" for b in log.blocking), audio
+    log = validate_caption(caption, speech_present=True, language_confident=False)
+    codes = {b.code for b in log.entries}
+    assert "AUDIO_PROSE_SPECULATIVE" in codes
+    assert all(b.code != "AUDIO_PROSE_SPECULATIVE" for b in log.blocking)
 
 
-def test_unspeculative_audio_prose_is_left_alone() -> None:
-    """A French horn is not a language claim, and never was."""
-    log = validate_caption(
-        _audio(f"A French horn plays under the dialogue. {FOREIGN}"),
-        speech_present=True, language_confident=False,
+def test_ordinary_prose_words_do_not_trigger_the_advisory() -> None:
+    """"Specifically, a door slams" is not a language guess."""
+    caption = _with_language(FOREIGN_LINE).replace(
+        "Audio: Music plays throughout.",
+        "Audio: Specifically, a door slams before the voice.",
     )
-    assert not any(b.code.startswith("LANGUAGE_") for b in log.entries)
+    log = validate_caption(caption, speech_present=True, language_confident=False)
+    assert not any(b.code == "AUDIO_PROSE_SPECULATIVE" for b in log.entries)
 
 
-def test_pipeline_appends_the_sentence_so_the_model_never_authors_it() -> None:
-    from autoscribe.validate import ensure_language_sentence
+def test_absent_language_counts_as_unestablished() -> None:
+    """A transcript with real speech but no language value reported
+    language_confident=True, which skipped the fallback entirely."""
+    from autoscribe.transcribe import Segment, Transcript
 
-    out = ensure_language_sentence(
-        "Music plays throughout.", "tagalog",
-        speech_present=True, language_confident=False,
-    )
-    assert out == f"Music plays throughout. {FOREIGN}"
-    # Idempotent, and silent when nothing is due.
-    assert ensure_language_sentence(
-        out, "tagalog", speech_present=True, language_confident=False
-    ) == out
-    assert ensure_language_sentence(
-        "Music plays.", "english", speech_present=True, language_confident=True
-    ) == "Music plays."
+    good = Segment(0.0, 1.0, "Hola", avg_logprob=-0.2, no_speech_prob=0.01)
+    t = Transcript(language="", text="Hola", segments=[good])
+    assert t.has_speech is True
+    assert t.language_confident is False
 
 
 # --------------------------------------------------------------------------

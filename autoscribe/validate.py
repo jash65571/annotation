@@ -259,40 +259,36 @@ def check_style_depth(style: str, log: BlockerLog) -> None:
 #: always-accepted answer is this exact phrase — never a guess, never silence.
 FOREIGN_LANGUAGE_PHRASE = "a foreign language"
 
-#: The language claim is CANONICAL AND GENERATED, not prose to be parsed.
+#: The language claim is a TOOL-OWNED FIELD, not prose to be parsed.
 #:
-#: Four rounds of review killed the parsing approach, and rightly. Scope regexes
-#: were wrong in both directions every single time — accepting denials ("the
-#: speech is not classified as Tagalog", "Tagalog is clearly not spoken") while
-#: rejecting truths ("C1 speaks not only Tagalog but Spanish"). Free-form
-#: English cannot be safely parsed this way, and each fix only moved the
-#: failures around.
+#: Four rounds of scope regexes died here, and rightly: they were wrong in both
+#: directions every time. Then the generated sentence was embedded INSIDE the
+#: model's Audio prose, which merely moved the problem — "It is false that The
+#: spoken language is Tagalog." both suppressed insertion and satisfied the
+#: substring check.
 #:
-#: So the claim is no longer authored in prose by the model and reverse
-#: engineered here. The pipeline emits ONE fixed sentence built from the
-#: measured evidence, and this module checks for that exact sentence. There is
-#: nothing left to parse: no negation scope, no word list, no proper-noun
-#: heuristics. It is the same principle the rest of the tool already follows —
-#: the model does not own a fact the measurement already settled.
-_LANGUAGE_SENTENCE = "The spoken language is {language}."
+#: So the declaration now has its own rendered field, carrying a canonical VALUE
+#: compared by equality. There is no surrounding text that could reinterpret it,
+#: nothing to negate, and nothing to parse. The model is told not to name any
+#: language at all; its Audio prose is outside this fact's validation path.
+LANGUAGE_FIELD = "Spoken Language:"
 
-#: Speculation markers. With the declaration itself generated, ANY hedge left in
-#: the Audio field while the language is unestablished is §17's forbidden
-#: "hedging by listing possible languages" — which needs no language list to
-#: detect, and so cannot be bypassed by an unlisted or lowercase name.
+#: Speculation markers, used ONLY to advise on the model's own prose — never to
+#: decide the declaration. Deliberately excludes "namely"/"specifically", which
+#: are ordinary prose words ("Specifically, a door slams") and produced false
+#: positives when this scanned all audio text.
 _SPECULATION = re.compile(
-    r"\b(possibly|probably|perhaps|maybe|likely|apparently|presumably|seemingly|"
-    r"namely|specifically|may be|might be|could be|sounds? like|seems? to be|"
-    r"appears? to be|resembl\w*|reminiscent|something like|either|or perhaps|"
-    r"i think|believed to be|thought to be|assumed to be)\b",
+    r"\b(possibly|probably|perhaps|maybe|likely|apparently|presumably|"
+    r"seemingly|may be|might be|could be|sounds? like|seems? to be|"
+    r"appears? to be|believed to be|thought to be|assumed to be)\b",
     re.IGNORECASE,
 )
 
 
-def canonical_language_sentence(
+def canonical_language_value(
     detected_language: str, *, speech_present: bool, language_confident: bool
 ) -> str:
-    """The one sentence that declares the spoken language, or "" if none is due.
+    """The value of the Spoken Language field, or "" when none is due.
 
     Built from measured evidence only. English needs no declaration (§17 is
     about foreign speech), so it returns "" as well.
@@ -303,35 +299,14 @@ def canonical_language_sentence(
     if not speech_present and not language:
         return ""
     if not language_confident:
-        return _LANGUAGE_SENTENCE.format(language=FOREIGN_LANGUAGE_PHRASE)
+        return FOREIGN_LANGUAGE_PHRASE
     if not language or _ENGLISH.match(language):
         return ""
-    return _LANGUAGE_SENTENCE.format(language=language.capitalize())
-
-
-def ensure_language_sentence(
-    audio_field: str, detected_language: str, *,
-    speech_present: bool, language_confident: bool,
-) -> str:
-    """Append the canonical declaration to an Audio field if it is missing.
-
-    The pipeline calls this so the caption always carries the exact sentence
-    the validator expects; the model is never asked to phrase this claim.
-    """
-    sentence = canonical_language_sentence(
-        detected_language,
-        speech_present=speech_present,
-        language_confident=language_confident,
-    )
-    if not sentence or sentence in audio_field:
-        return audio_field
-    body = audio_field.strip()
-    if body and body[-1] not in ".!?":
-        body += "."
-    return f"{body} {sentence}".strip()
+    return language.capitalize()
 
 
 def check_language_declared(
+    lines: list[str],
     audio_field: str,
     detected_language: str,
     log: BlockerLog,
@@ -339,7 +314,7 @@ def check_language_declared(
     speech_present: bool = False,
     language_confident: bool = True,
 ) -> None:
-    """The Audio field must carry the exact canonical language sentence.
+    """The Spoken Language field must carry exactly the canonical value.
 
     Missed case from the Aug 2026 evaluator audit: Tagalog lines ("Diba? Diba?",
     "Arte-arte siya!") went out with no language declared anywhere.
@@ -347,28 +322,47 @@ def check_language_declared(
     An UNCERTAIN detection is not an exemption — §17 supplies a fallback, so an
     unestablished language is still declared, just never named.
     """
-    expected = canonical_language_sentence(
+    expected = canonical_language_value(
         detected_language,
         speech_present=speech_present,
         language_confident=language_confident,
     )
-    if expected and expected not in audio_field:
+    if not expected:
+        return
+
+    declared: str | None = None
+    for raw in lines:
+        line = raw.strip()
+        if line.startswith(LANGUAGE_FIELD):
+            declared = line[len(LANGUAGE_FIELD):].strip().rstrip(".")
+            break
+
+    if declared is None:
         log.add(
             "LANGUAGE_NOT_DECLARED",
-            f"The Audio field must contain the exact sentence {expected!r}. This "
-            f"sentence is generated from the measured evidence, so it is not "
-            f"paraphrasable — rewording, negating or omitting it all fail.",
+            f"The caption has no '{LANGUAGE_FIELD}' field. It must read "
+            f"'{LANGUAGE_FIELD} {expected}.' — a value generated from the measured "
+            f"evidence, not written by the model.",
         )
+    elif declared.lower() != expected.lower():
+        log.add(
+            "LANGUAGE_NOT_DECLARED",
+            f"'{LANGUAGE_FIELD}' reads {declared!r} but the measured evidence gives "
+            f"{expected!r}. This field is tool-owned and must not be edited.",
+        )
+
     if speech_present and not language_confident:
-        # The declaration is fixed, so anything speculative left in Audio is the
-        # model adding a guess on top of it.
+        # ADVISORY ONLY. The declaration above is already decided; this cannot
+        # reliably detect an unhedged guess in free prose ("The voice speaks
+        # Pashto.") and must never be treated as if it could.
         hedges = sorted({m.group(1).lower() for m in _SPECULATION.finditer(audio_field)})
         if hedges:
             log.add(
-                "LANGUAGE_GUESSED",
-                f"The language could not be established, but the Audio field hedges "
-                f"with {hedges}. State only {expected!r} — §17 forbids hedging by "
-                f"listing possible languages.",
+                "AUDIO_PROSE_SPECULATIVE",
+                f"The language is unestablished and the Audio prose hedges with "
+                f"{hedges}. Check it does not guess a language — §17 forbids "
+                f"hedging by listing possible languages.",
+                severity=WARNING,
             )
 
 
@@ -481,7 +475,7 @@ def validate_caption(
             f"describe what each one shows.",
         )
     check_language_declared(
-        audio, detected_language, log,
+        lines, audio, detected_language, log,
         speech_present=speech_present, language_confident=language_confident,
     )
     check_speech_delivery(lines, log)

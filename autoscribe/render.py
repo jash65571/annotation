@@ -84,6 +84,11 @@ def render(ann: Annotation) -> str:
     out.append("")
     out.append(f"Audio: {_terminated(g.audio)}")
     out.append("")
+    # Tool-owned: derived from measured evidence, never phrased by the model.
+    # Rendered as its own field so no surrounding prose can negate or quote it.
+    if g.spoken_language:
+        out.append(f"Spoken Language: {_terminated(g.spoken_language)}")
+        out.append("")
     # Capital C: the source-of-truth §26 template is "Visual Concerns:" /
     # "Audio Concerns:". Empty means exactly "None." (§6.6).
     out.append(f"Visual Concerns: {_terminated(g.visual_concerns) or 'None.'}")
