@@ -84,8 +84,10 @@ def render(ann: Annotation) -> str:
     out.append("")
     out.append(f"Audio: {_terminated(g.audio)}")
     out.append("")
-    out.append(f"Visual concerns: {_terminated(g.visual_concerns) or 'None.'}")
-    out.append(f"Audio concerns: {_terminated(g.audio_concerns) or 'None.'}")
+    # Capital C: the source-of-truth §26 template is "Visual Concerns:" /
+    # "Audio Concerns:". Empty means exactly "None." (§6.6).
+    out.append(f"Visual Concerns: {_terminated(g.visual_concerns) or 'None.'}")
+    out.append(f"Audio Concerns: {_terminated(g.audio_concerns) or 'None.'}")
     out.append("")
     for shot in ann.shots:
         out += _shot(shot)

@@ -49,9 +49,30 @@ AUDIO_CUT_TYPES = ("L-cut", "J-cut")
 
 CUT_TYPES = ("Opening shot", *PICTURE_CUT_TYPES, *AUDIO_CUT_TYPES)
 
-#: Below this, two candidate times are the SAME boundary reported twice, not two
-#: boundaries. Anything longer is a real (if short) shot and must survive.
+#: Fallback used only when the real frame period is unknown (~2 frames at 25fps).
 FRAME_EPSILON = 0.08
+
+
+def frame_epsilon(grid: list[GridFrame]) -> float:
+    """The smallest gap that can still be TWO boundaries rather than one.
+
+    Derived from the media's own frame period, because a fixed 0.08 s constant
+    silently erases a legitimate one-frame shot on 25 fps footage (0.04 s) while
+    being needlessly coarse on 60 fps footage. Two candidates closer together
+    than a single frame cannot be distinct boundaries; anything a frame apart or
+    more is a real shot and must survive.
+    """
+    times = sorted({f.time_seconds for f in grid})
+    if len(times) < 3:
+        return FRAME_EPSILON
+    gaps = sorted(b - a for a, b in pairwise(times) if b > a)
+    if not gaps:
+        return FRAME_EPSILON
+    # The grid is sampled, so the *smallest* observed gap is the frame period.
+    period = gaps[0]
+    if not 0.0 < period < 0.5:
+        return FRAME_EPSILON
+    return max(period * 0.9, 0.005)
 
 
 def _adaptive(video: Path) -> list[float]:
@@ -275,11 +296,12 @@ def resolve_shots(
     becomes a blocking unresolved item, because "we could not tell" and "there
     is no cut here" are different facts and only one of them is safe to render.
     """
+    epsilon = frame_epsilon(grid)
     confirmed: list[tuple[float, str]] = []
-    for t in candidate_boundaries(video):
+    for t in candidate_boundaries(video, min_gap=epsilon):
         # Only a boundary at or past the very first/last frame is meaningless.
         # A real 0.2 s opening title is a shot and must survive.
-        if t <= FRAME_EPSILON or t >= duration - FRAME_EPSILON:
+        if t <= epsilon or t >= duration - epsilon:
             continue
         is_cut, ctype = _verify(
             backend, _near(grid, t, before=True), _near(grid, t, before=False),
@@ -298,14 +320,14 @@ def resolve_shots(
             continue
         snapped = (snap_gradual(backend, grid, t, ctype) if ctype in _GRADUAL
                    else snap_boundary(grid, t))
-        if FRAME_EPSILON < snapped < duration - FRAME_EPSILON:
+        if epsilon < snapped < duration - epsilon:
             confirmed.append((round(snapped, 3), ctype))
 
     confirmed = sorted(set(confirmed))
     # De-duplicate only true duplicates of the SAME boundary (frame resolution).
     deduped: list[tuple[float, str]] = []
     for c in confirmed:
-        if deduped and c[0] - deduped[-1][0] <= FRAME_EPSILON:
+        if deduped and c[0] - deduped[-1][0] < epsilon:
             continue
         deduped.append(c)
 

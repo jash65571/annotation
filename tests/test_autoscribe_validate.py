@@ -8,18 +8,40 @@ from __future__ import annotations
 
 from autoscribe.validate import validate_caption
 
-GOOD = """[Overview]
+#: A caption that actually meets the standard: Scene reconstructs the space,
+#: Style names light direction, shadow quality and colour temperature, and the
+#: concern fields use the canonical capitalisation. The previous fixture — "A
+#: kitchen with a wooden table." / "Natural light." — passed the old validator
+#: and is exactly the shallowness the Aug 2026 evaluator audit failed.
+SCENE = (
+    "A domestic kitchen shot along its length. In the foreground a rectangular "
+    "oak table with turned legs occupies the lower third, its surface scratched "
+    "and unvarnished. In the middle ground C1 stands behind the table, facing "
+    "camera, with open pine shelving on screen-left holding stacked ceramic "
+    "bowls and a steel refrigerator on screen-right. The background is a "
+    "plastered wall with a deep sash window above the counter run, beyond which "
+    "a brick garden wall is visible."
+)
+STYLE = (
+    "Daylight key from the sash window at screen-left rakes across the table, "
+    "with soft overhead fill from a ceiling fixture; shadows are soft-edged and "
+    "shallow. Colour temperature is cool and slightly blue toward the window, "
+    "warming near the shelving. Shallow depth of field, digital capture, gentle "
+    "contrast, no non-standard aspect ratio."
+)
+
+GOOD = f"""[Overview]
 Cast:
 C1: A person in a red jacket. Lower body and shoes are not visible.
 
-Scene: A kitchen with a wooden table.
+Scene: {SCENE}
 
-Style: Natural light, shallow depth of field.
+Style: {STYLE}
 
 Audio: Music plays throughout.
 
-Visual concerns: None.
-Audio concerns: None.
+Visual Concerns: None.
+Audio Concerns: None.
 
 [Shot 1: 0.0s–2.0s]
 Cut: Opening shot.
@@ -46,6 +68,65 @@ def test_legacy_field_names_are_rejected() -> None:
         "Playback Speed:", "Video playback speed:"
     )
     assert "FIELD_NAME_NOT_CANONICAL" in _codes(text)
+
+
+def test_lowercase_concerns_fields_are_rejected() -> None:
+    """The source-of-truth template capitalises both words."""
+    text = GOOD.replace("Visual Concerns:", "Visual concerns:").replace(
+        "Audio Concerns:", "Audio concerns:"
+    )
+    codes = _codes(text)
+    assert "FIELD_NAME_NOT_CANONICAL" in codes
+
+
+def test_shallow_scene_is_rejected() -> None:
+    """The decisive Aug 2026 evaluator finding: scenes read as object lists."""
+    text = GOOD.replace(SCENE, "A kitchen with a wooden table.")
+    codes = _codes(text)
+    assert "SCENE_TOO_SHALLOW" in codes
+    assert "SCENE_NO_SPATIAL_RELATIONSHIPS" in codes
+
+
+def test_scene_without_spatial_relationships_is_rejected() -> None:
+    """Long enough, but still an inventory: no element is placed relative to
+    any other."""
+    inventory = (
+        "The kitchen contains a table, several chairs, a refrigerator, open "
+        "shelving, ceramic bowls, a kettle, a chopping board, two mugs, a "
+        "window, a plastered wall, a ceiling fixture, a counter run, a sink, "
+        "a tap, a bin, a rug, a radiator, a clock and a doorway nearby."
+    )
+    assert "SCENE_NO_SPATIAL_RELATIONSHIPS" in _codes(GOOD.replace(SCENE, inventory))
+
+
+def test_shallow_style_is_rejected() -> None:
+    text = GOOD.replace(STYLE, "Natural light, shallow depth of field.")
+    codes = _codes(text)
+    assert "STYLE_TOO_SHALLOW" in codes
+    assert "STYLE_MISSING_LIGHTING_DETAIL" in codes
+
+
+def test_style_missing_colour_temperature_is_rejected() -> None:
+    partial = (
+        "Key light from the window at screen-left with overhead fill; shadows "
+        "are soft-edged and shallow across the room. Shallow depth of field, "
+        "digital capture, no non-standard aspect ratio at all."
+    )
+    log = validate_caption(GOOD.replace(STYLE, partial))
+    hits = [b for b in log.entries if b.code == "STYLE_MISSING_LIGHTING_DETAIL"]
+    assert hits and "colour temperature" in hits[0].detail
+
+
+def test_no_changes_from_overview_is_allowed_for_a_shot() -> None:
+    """A shot whose space genuinely matches the Overview may say so."""
+    assert "SCENE_TOO_SHALLOW" not in _codes(GOOD)
+
+
+def test_shallow_per_shot_scene_is_rejected() -> None:
+    text = GOOD.replace(
+        "Scene: No changes from overview.", "Scene: A table and some shelves."
+    )
+    assert "SCENE_TOO_SHALLOW" in _codes(text)
 
 
 def test_ghost_character_id_is_caught() -> None:

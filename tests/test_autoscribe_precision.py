@@ -92,6 +92,86 @@ def test_grid_frame_carries_an_evidence_pointer() -> None:
 
 
 # --------------------------------------------------------------------------
+# FFmpeg command construction
+# --------------------------------------------------------------------------
+def test_modern_and_legacy_extract_commands_are_both_well_formed() -> None:
+    """Regression: the legacy fallback was built by splicing a list in place and
+    replaced the wrong two elements, emitting `-fps_mode -vsync 0 0` — a command
+    that fails on every FFmpeg ever built, so old-FFmpeg users got no fallback
+    at all, only a confusing second error."""
+    from autoscribe.frames import _extract_cmd
+
+    modern = _extract_cmd("ffmpeg", Path("in.mp4"), Path("o%06d.png"), [0, 2], 768,
+                          legacy=False)
+    legacy = _extract_cmd("ffmpeg", Path("in.mp4"), Path("o%06d.png"), [0, 2], 768,
+                          legacy=True)
+
+    assert "-fps_mode" in modern and modern[modern.index("-fps_mode") + 1] == "passthrough"
+    assert "-vsync" not in modern
+
+    assert "-vsync" in legacy and legacy[legacy.index("-vsync") + 1] == "0"
+    assert "-fps_mode" not in legacy, "legacy command must not keep the removed flag"
+
+    for cmd in (modern, legacy):
+        assert cmd[-1].endswith(".png")
+        assert cmd[cmd.index("-start_number") + 1] == "0"
+        assert len(cmd) == len(modern), "both variants take the same argument count"
+
+
+# --------------------------------------------------------------------------
+# frame-period boundary resolution
+# --------------------------------------------------------------------------
+def _grid(times: list[float]) -> list[GridFrame]:
+    return [
+        GridFrame(index=i, time_seconds=t, path=Path(f"{i}.png"), source_index=i)
+        for i, t in enumerate(times)
+    ]
+
+
+def test_frame_epsilon_is_derived_from_the_media() -> None:
+    """A fixed 0.08s constant erases a real one-frame shot at 25fps (0.04s)."""
+    at_25fps = cuts.frame_epsilon(_grid([i * 0.04 for i in range(10)]))
+    assert at_25fps < 0.04, "must be below one frame period so 1-frame shots survive"
+    at_60fps = cuts.frame_epsilon(_grid([i / 60 for i in range(20)]))
+    assert at_60fps < at_25fps, "higher frame rate must resolve finer"
+
+
+def test_frame_epsilon_falls_back_when_grid_is_unusable() -> None:
+    assert cuts.frame_epsilon([]) == cuts.FRAME_EPSILON
+    assert cuts.frame_epsilon(_grid([0.0])) == cuts.FRAME_EPSILON
+
+
+def test_one_frame_shot_survives_deduplication_at_25fps() -> None:
+    """Two boundaries one frame apart are two boundaries, not one."""
+    eps = cuts.frame_epsilon(_grid([i * 0.04 for i in range(30)]))
+    confirmed = [(1.00, "Hard cut"), (1.04, "Hard cut")]
+    deduped: list[tuple[float, str]] = []
+    for c in confirmed:
+        if deduped and c[0] - deduped[-1][0] < eps:
+            continue
+        deduped.append(c)
+    assert len(deduped) == 2, "a genuine one-frame shot was erased"
+
+
+# --------------------------------------------------------------------------
+# timestamps snap to frames that exist
+# --------------------------------------------------------------------------
+def test_timestamps_snap_to_real_frames() -> None:
+    from autoscribe.structured import _snap
+
+    frames = [0.0, 0.064, 0.128, 0.192]
+    assert _snap(0.07, frames) == 0.064
+    assert _snap(0.13, frames) == 0.128
+    assert _snap(0.0, frames) == 0.0
+
+
+def test_snap_falls_back_to_rounding_without_a_ledger() -> None:
+    from autoscribe.structured import _snap
+
+    assert _snap(1.2345, []) == 1.2
+
+
+# --------------------------------------------------------------------------
 # audio layers overlap
 # --------------------------------------------------------------------------
 def test_music_and_speech_coexist_in_the_timeline() -> None:
@@ -121,7 +201,7 @@ def _annotation() -> Annotation:
         index=1, cut="Opening shot", start=0.0, end=2.0, shot_type="medium shot",
         camera="Medium, eye-level, handheld",
         camera_movements=[Timed(0.0, 1.0, "Camera pans left")],
-        scene="A kitchen",
+        scene="No changes from overview",
         actions=[Timed(0.0, 1.0, "C1 raises the right hand")],
         playback_speed="regular",
         speed_changes=[Timed(1.0, 2.0, "Footage ramps into slow motion")],
@@ -130,7 +210,23 @@ def _annotation() -> Annotation:
         video_name="clip.mp4", duration=2.0,
         globals=Globals(
             characters=[Entity("C1", "A person in a red jacket")],
-            scene="A kitchen", style="Natural light", audio="Music throughout",
+            scene=(
+                "A domestic kitchen shot along its length. In the foreground a "
+                "rectangular oak table with turned legs occupies the lower third. "
+                "In the middle ground C1 stands behind the table facing camera, "
+                "with open pine shelving on screen-left and a steel refrigerator "
+                "on screen-right. The background is a plastered wall with a deep "
+                "sash window above the counter run, beyond which a brick garden "
+                "wall is visible."
+            ),
+            style=(
+                "Daylight key from the sash window at screen-left with soft "
+                "overhead fill; shadows are soft-edged and shallow. Colour "
+                "temperature is cool toward the window and warmer near the "
+                "shelving. Shallow depth of field, digital capture, no "
+                "non-standard aspect ratio."
+            ),
+            audio="Music throughout",
         ),
         shots=[shot],
     )
@@ -142,6 +238,9 @@ def test_renderer_uses_canonical_field_names() -> None:
     assert "Camera Movements:" in text and "Camera movements:" not in text
     assert "Playback Speed:" in text and "Video playback speed:" not in text
     assert "Speed Changes:" in text
+    # Source-of-truth §26 capitalises both words.
+    assert "Visual Concerns:" in text and "Visual concerns:" not in text
+    assert "Audio Concerns:" in text and "Audio concerns:" not in text
 
 
 def test_renderer_uses_seconds_in_shot_headers() -> None:

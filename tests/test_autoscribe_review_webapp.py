@@ -19,14 +19,22 @@ FRESH = """[Overview]
 Cast:
 C1: A person in a red jacket.
 
-Scene: A kitchen.
+Scene: A domestic kitchen shot along its length. In the foreground a rectangular \
+oak table with turned legs occupies the lower third, its surface unvarnished. In \
+the middle ground C1 stands behind the table facing camera, with open pine \
+shelving on screen-left and a steel refrigerator on screen-right. The background \
+is a plastered wall with a deep sash window above the counter run, beyond which a \
+brick garden wall is visible.
 
-Style: Natural light.
+Style: Daylight key from the sash window at screen-left with soft overhead fill; \
+shadows are soft-edged and shallow. Colour temperature is cool toward the window \
+and warmer near the shelving. Shallow depth of field, digital capture, no \
+non-standard aspect ratio.
 
 Audio: Music throughout.
 
-Visual concerns: None.
-Audio concerns: None.
+Visual Concerns: None.
+Audio Concerns: None.
 
 [Shot 1: 0.0s–2.0s]
 Cut: Opening shot.
@@ -94,6 +102,50 @@ def test_reviewer_output_is_revalidated(monkeypatch: pytest.MonkeyPatch) -> None
     assert "PRONOUN_OUTSIDE_QUOTES" in codes
     assert "TIMESTAMP_OUTSIDE_SHOT" in codes
     assert result["ready"] is False
+
+
+def test_reviewer_receives_frames_when_available(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Source-of-truth §1 ranks the media above every caption. A reviewer given
+    only prose cannot apply that rule at all."""
+    import json
+
+    seen: dict[str, Any] = {}
+
+    class _Recording:
+        def complete(self, content: list[dict[str, Any]], **_k: Any) -> str:
+            seen["types"] = [c.get("type") for c in content]
+            return json.dumps({
+                "verdict": "KEEP", "score": 5, "score_reason": "-",
+                "issues": [], "unresolved": [], "feedback": "-",
+                "final_caption": FRESH,
+            })
+
+    monkeypatch.setattr(review_mod, "OpenAIVisionBackend", lambda *a, **k: _Recording())
+    frame = tmp_path / "f.png"
+    frame.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    result = review_mod.review(FRESH, "seed", frames=[frame])
+
+    assert "image_url" in seen["types"], "frames were not sent to the reviewer"
+    assert not any(b["code"] == "REVIEW_WITHOUT_PICTURE" for b in result["blockers"])
+
+
+def test_review_without_frames_is_flagged(monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+
+    class _Clean:
+        def complete(self, *_a: Any, **_k: Any) -> str:
+            return json.dumps({
+                "verdict": "KEEP", "score": 5, "score_reason": "-",
+                "issues": [], "unresolved": [], "feedback": "-",
+                "final_caption": FRESH,
+            })
+
+    monkeypatch.setattr(review_mod, "OpenAIVisionBackend", lambda *a, **k: _Clean())
+    result = review_mod.review(FRESH, "seed")
+    assert any(b["code"] == "REVIEW_WITHOUT_PICTURE" for b in result["blockers"])
 
 
 def test_review_is_never_ready_even_when_clean(monkeypatch: pytest.MonkeyPatch) -> None:

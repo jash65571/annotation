@@ -112,6 +112,30 @@ def _select_expr(indices: list[int]) -> str:
     return "+".join(f"eq(n\\,{i})" for i in indices)
 
 
+def _extract_cmd(
+    ffmpeg: str, video: Path, pattern: Path, indices: list[int], width: int,
+    *, legacy: bool,
+) -> list[str]:
+    """Build the frame-extraction command.
+
+    ``select`` plus passthrough frame timing emits exactly the chosen source
+    frames, in order, with no duplication or dropping — so output image k is
+    source frame ``indices[k]``. ``-fps_mode passthrough`` is the modern
+    spelling; ``-vsync 0`` is the pre-FFmpeg-5 equivalent, kept only as a
+    fallback because ``-vsync`` was REMOVED in FFmpeg 8.
+
+    Built as a whole command per variant rather than by patching a list in
+    place: the previous in-place splice replaced the wrong two elements and
+    produced `-fps_mode -vsync 0 0`, which fails on every FFmpeg ever built.
+    """
+    timing = ["-vsync", "0"] if legacy else ["-fps_mode", "passthrough"]
+    return [
+        ffmpeg, "-v", "error", "-i", str(video),
+        "-vf", f"select='{_select_expr(indices)}',scale={width}:-2",
+        *timing, "-start_number", "0", str(pattern),
+    ]
+
+
 def extract_grid(
     video: Path,
     out_dir: Path,
@@ -144,17 +168,10 @@ def extract_grid(
     if not indices:
         return []
 
-    # `select` + passthrough frame timing emits exactly the chosen source
-    # frames, in order, with no duplication or dropping — so output image k is
-    # source frame indices[k]. `-fps_mode passthrough` is the modern spelling;
-    # the old `-vsync 0` was REMOVED in FFmpeg 8 and hard-fails on current
-    # builds, so it is only used as a fallback for older ones.
-    cmd = [ffmpeg, "-v", "error", "-i", str(video),
-           "-vf", f"select='{_select_expr(indices)}',scale={width}:-2",
-           "-fps_mode", "passthrough", "-start_number", "0", str(pattern)]
+    cmd = _extract_cmd(ffmpeg, video, pattern, indices, width, legacy=False)
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0 and "fps_mode" in (proc.stderr or ""):
-        cmd[-4:-2] = ["-vsync", "0"]
+        cmd = _extract_cmd(ffmpeg, video, pattern, indices, width, legacy=True)
         proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         raise subprocess.CalledProcessError(

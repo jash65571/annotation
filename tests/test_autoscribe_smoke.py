@@ -104,8 +104,23 @@ class _StubBackend:
             return json.dumps({
                 "characters": [{"id": "C1", "description": "A person in a red jacket."}],
                 "objects": [],
-                "scene": "A plain coloured background.",
-                "style": "Flat colour, no depth of field.",
+                # Written to the 3D-reconstruction standard: the validator now
+                # rejects object inventories, so a stub that emits one would
+                # fail the pipeline for the wrong reason.
+                "scene": (
+                    "A flat colour field fills the frame edge to edge. In the "
+                    "foreground no object intervenes; the middle ground is the "
+                    "unbroken saturated plane itself, with no visible texture or "
+                    "seam; the background is the same plane continuing behind it. "
+                    "No furniture, terrain or structure is present, and no horizon "
+                    "divides the space above or below centre."
+                ),
+                "style": (
+                    "Flat even illumination with no directional key light from any "
+                    "side; shadows are absent entirely across the frame. Colour "
+                    "temperature reads neutral. No depth of field, digital capture, "
+                    "no non-standard aspect ratio."
+                ),
                 "audio": "No measured audio.",
                 "visual_concerns": "None.",
                 "audio_concerns": "None.",
@@ -164,6 +179,32 @@ def test_transcription_failure_becomes_a_blocker_not_silence(
 
     ready, _reason = ann.blockers.readiness()
     assert ready is False
+
+
+def test_empty_transcript_with_audible_audio_blocks(
+    clip: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An ASR that returns EMPTY *without raising* loses speech just as
+    completely as one that raises — and the shot prompt then tells the model
+    there is no dialogue. That path must BLOCK, not merely warn."""
+    from autoscribe.transcribe import Transcript
+
+    stub = _StubBackend()
+    monkeypatch.setattr(structured, "OpenAIVisionBackend", lambda *a, **k: stub)
+    monkeypatch.setattr(cuts, "OpenAIVisionBackend", lambda *a, **k: stub)
+    # Succeeds, returns nothing — the silent-loss path.
+    monkeypatch.setattr(
+        transcribe, "transcribe",
+        lambda *a, **k: Transcript(language="", text="", segments=[]),
+    )
+
+    ann = structured.analyze(clip, tmp_path / "out", hz=10.0)
+
+    blocking = {b.code for b in ann.blockers.blocking}
+    assert "TRANSCRIPTION_FAILED" not in blocking, "ASR did not raise here"
+    assert "NO_TRANSCRIPT_DESPITE_AUDIO" in blocking, (
+        "an empty transcript over audible audio must block, not warn"
+    )
 
 
 def test_evidence_summary_reports_measured_facts(

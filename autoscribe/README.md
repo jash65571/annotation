@@ -104,23 +104,45 @@ Path("clip.manuscript.md").write_text(caption, encoding="utf-8")
    transitions, protected traits. Runs on the draft **and again** after any
    reviewer rewrite.
 
+## Source-of-truth compliance
+AutoScribe targets `references/MANUSCRIPT-II-COMPLETE-SOURCE-OF-TRUTH.md`
+(effective 13 Aug 2026) and the Aug 2026 evaluator feedback. Two of those
+requirements are enforced by machinery, not just prompt text:
+
+- **Descriptive depth** (§6.3/§6.4). The validator rejects a Scene that reads as
+  an object inventory: it requires ~70 words, explicit spatial relationships,
+  and named foreground / middle ground / background. Style must name light
+  source **and direction**, **shadow quality**, and **colour temperature**.
+  "A kitchen with a wooden table." and "Natural light." are blocking failures.
+- **Supported tone** (§10 Rule 4). Speech lines must carry a tone, and that tone
+  comes from `prosody.py` — measured loudness (vs. the clip's own speech
+  median), pitch (autocorrelation f0, vs. the speaker's own norm) and pace
+  (words/second). Any attribute that cannot be measured is `unresolved` and is
+  omitted rather than guessed.
+
 ## Reviewer mode
 Paste an attempter's seed caption (and optional evaluator feedback) to get an
-audit, a 1-5 score, feedback, and a reviewed draft. The reviewer model is given
-the **measured facts** (shot boundaries, audio timeline, unresolved items)
-alongside both captions, and is told the media is truth while both captions are
-leads. Conflicts it cannot settle from measurements are returned as `unresolved`
-rather than guessed. Its rewrite is re-validated before being written to disk.
+audit, a 1-5 score, feedback, and a reviewed draft. The reviewer is given
+**frames from the clip** plus the **measured facts** (shot boundaries, audio
+timeline, unresolved items) alongside both captions, and applies the §1 source
+hierarchy: the media outranks both captions; frames are sampled, so they can
+prove an event happened but not that one did not. Conflicts it cannot settle
+are returned as `unresolved` rather than guessed. Its rewrite is re-validated
+before being written to disk.
 
 ## Known limits (read before trusting output)
 - **No shared evidence layer with the engine.** AutoScribe measures its own
   frames/audio rather than consuming the Manuscript engine's ledger, so its
   claims carry frame/PTS pointers but not the engine's full proof trail.
+- **The reviewer sees sampled frames, not the clip.** It cannot hear the audio
+  and does not receive every frame, so it is a strong comparator — not a
+  substitute for the human watch-through the source of truth requires.
 - **Audio classes are coarse.** Ambience, sound effects and crowd reactions are
   not distinguished; that span is reported as undetermined, not guessed.
 - **Speaker attribution has no diarization.** Speech is attributed
   conservatively and falls back to an off-screen voice C-ID when ambiguous.
-- **Tone is not reported.** The vision model cannot hear the clip.
+- **Prosody is not emotion.** Loudness, pitch and pace are measured; inferring
+  "angry" or "teasing" from them remains a human judgement.
 - **Cost:** ~1 audio + 1 cast + N cut-verify + 1 per-shot vision call per video.
 
 ## Development

@@ -27,6 +27,9 @@ from . import (
 )
 from . import cuts as cuts_mod
 from . import frames as frames_mod
+from . import (
+    prosody as prosody_mod,
+)
 from . import transcribe as tr
 from .blockers import WARNING, BlockerLog
 from .vision import OpenAIVisionBackend, image_content, text_content
@@ -86,6 +89,9 @@ class Annotation:
     blockers: BlockerLog = field(default_factory=BlockerLog)
     #: The measured audio timeline this annotation was built from.
     audio_spans: list[audio_timeline.AudioSpan] = field(default_factory=list)
+    #: Frames spanning the clip, handed to the reviewer pass so it can weigh
+    #: claims against the picture instead of against the other caption's prose.
+    evidence_frames: list[frames_mod.GridFrame] = field(default_factory=list)
 
     def evidence_summary(self) -> str:
         """The measured observations behind this caption, as text.
@@ -189,12 +195,28 @@ _CAST_PROMPT = (
     "tabletop burners are separate). Skip formal IDs for small common props. Only "
     "describe an object's placement in terms you can verify from the frames; do not "
     "overstate fixed positions when the camera moves.\n"
-    "SCENE: STABLE facts only — the setting/space, spatial layout, positions relative "
-    "to camera, lighting, background, decor, each character's initial posture and "
-    "initially held objects. NO actions, NO gestures, NO dialogue or narration quotes, "
-    "NO shot-by-shot progression — every timed event belongs in the shots, never here.\n"
-    "STYLE: lighting, color, depth of field, film look, and aspect ratio (say 'No "
-    "non-standard aspect ratio.' for standard widescreen).\n"
+    "SCENE: STABLE facts only. NO actions, NO gestures, NO dialogue or narration "
+    "quotes, NO shot-by-shot progression — every timed event belongs in the shots.\n"
+    "  THE SCENE TEST: could a reader rebuild this space as a 3D environment from the "
+    "description alone? A LIST OF OBJECTS FAILS THIS TEST. Aim for roughly 70 words "
+    "and cover:\n"
+    "  - SPATIAL RELATIONSHIPS between elements, not just their presence — what sits "
+    "left/right of what, what is in front of or behind what, what rests on what "
+    "(e.g. 'the table stands between the shelving on screen-left and the refrigerator "
+    "on screen-right, with a walkway behind it');\n"
+    "  - FOREGROUND, MIDDLE GROUND and BACKGROUND, each named separately;\n"
+    "  - geometry and materials of terrain, structures, surfaces and built elements "
+    "(shape, construction, texture, what things are made of);\n"
+    "  - the background landscape or far view;\n"
+    "  - any inset or picture-in-picture panel and the room visible inside it;\n"
+    "  - stable positions and initial posture of each character relative to camera, "
+    "and initially held objects.\n"
+    "STYLE: name the LIGHT SOURCES and their DIRECTION (e.g. 'key light from a window "
+    "at screen-left, overhead fill'), the SHADOW QUALITY (hard-edged, soft, diffuse, "
+    "absent), and the COLOR TEMPERATURE (warm/tungsten, neutral, cool/daylight) — a "
+    "general impression such as 'natural light' is NOT sufficient. Also give color and "
+    "contrast, depth of field, visual medium and camera look, grading, and aspect ratio "
+    "(say 'No non-standard aspect ratio.' for standard widescreen).\n"
     "AUDIO: background audio, music, ambient sound ONLY (speech belongs in the shots). "
     "You will be given a MEASURED AUDIO TIMELINE (signal analysis of the real "
     "soundtrack). Treat it as fact: describe exactly the music/ambience/laughter it "
@@ -256,11 +278,17 @@ _SHOT_PROMPT = (
     "person could be the speaker, attribute to the off-screen voice C-ID and say the "
     "speaker is unconfirmed. A person who is dancing is NOT the singer.\n"
     "7a. SPEECH INTEGRITY: every speech line needs the correct C-ID, off-screen status "
-    "when the speaker is not visible ('C1 says off-screen ...'), and the EXACT words — "
-    "preserve fillers, repeats, stutters, false starts, and cutoffs verbatim. The "
-    "timestamp covers the audible words only, never surrounding silence. DO NOT state "
-    "delivery or tone (firm, teasing, urgent, cheerful): tone is an audible property "
-    "and you are given frames and text, not sound. Omit it.\n"
+    "when the speaker is not visible ('C1 says off-screen ...'), a supported audible "
+    "TONE, and the EXACT words — preserve fillers, repeats, stutters, false starts, "
+    "and cutoffs verbatim. The timestamp covers the audible words only, never "
+    "surrounding silence.\n"
+    "7f. TONE COMES FROM THE MEASURED DELIVERY BELOW, NOT FROM THE PICTURE. You cannot "
+    "hear this video, so never infer tone from a facial expression or gesture. Each "
+    "speech run is supplied with measured loudness, pitch and pace; phrase the tone "
+    "from those measurements (e.g. measured loudness=louder, pitch=higher, pace=fast "
+    "supports 'in a raised, quickened tone'). Where a measurement is absent or marked "
+    "unresolved, OMIT that attribute — never substitute a guess. If every attribute is "
+    "unresolved, write the speech line with no tone phrase at all.\n"
     "7e. MID-SENTENCE CUT: when the supplied transcript marks a run as continuing past "
     "this shot, append the tag [mid-sentence cut] to that speech line — the sentence is "
     "genuinely severed by the boundary and the tag is the record of it.\n"
@@ -285,8 +313,15 @@ _SHOT_PROMPT = (
     "- camera_movements: a SEPARATE {{start,end,text}} entry per distinct pan/tilt/zoom/"
     "drift/hold, split into consecutive intervals; note what becomes visible or hidden "
     "(e.g. 'Camera pans left; C2 and part of C3 come into frame.').\n"
-    "- scene: STABLE shot-specific facts only (setting, layout, whole-shot states), or "
-    "'No changes from overview.'. No timed motion, no speech, no narration here.\n"
+    "- scene: STABLE shot-specific facts only. No timed motion, no speech, no "
+    "narration. Write it to the 3D-RECONSTRUCTION standard, roughly 70 words: spatial "
+    "relationships between elements (what is left/right of, in front of, behind, or "
+    "resting on what), foreground / middle ground / background named separately, the "
+    "geometry and materials of surfaces and structures, the background landscape, any "
+    "inset panel and the room inside it, and each character's stable position and "
+    "posture relative to camera. An object list is NOT a scene description. Use 'No "
+    "changes from overview.' ONLY when this shot's space is genuinely identical to the "
+    "Overview scene.\n"
     "- actions: the core — one fine-grained {{start,end,text}} line per REAL distinct "
     "event, timed to its true first and last frame (rule 3b). Break EACH character's "
     "movements into separate lines, one discrete action per line, e.g. 'C2 raises both "
@@ -365,7 +400,10 @@ def _cast_pass(
                 f"a voice is singing and that it is {lang}); the verbatim words belong in "
                 f"the shots, not here. Add a C-ID for the performer only if one is visibly "
                 f"performing vocals (at/holding a microphone); otherwise add an off-screen "
-                f"voice C-ID."
+                f"voice C-ID.\n"
+                f"LANGUAGE DECLARATION (required): the speech is in {lang}. State the "
+                f"language explicitly in the Audio field. A caption whose speech is not "
+                f"in English but never names the language is incomplete."
             )
         else:
             prompt += (
@@ -581,11 +619,26 @@ def _shot_speech(
 _FILLER_RX = re.compile(r"^no\s+(?:speech|dialogue|music|audio|sound)\b", re.IGNORECASE)
 
 
-def _polish(shot: Shot) -> Shot:
+def _snap(t: float, frame_times: list[float]) -> float:
+    """Snap a model-produced timestamp to the nearest frame that actually exists.
+
+    Rounding to 0.1 s produces a number; snapping produces a POINTER. Only the
+    frames the model was shown can support a claim, so every rendered timestamp
+    is pulled back onto one of them — which is what makes the timestamp
+    checkable against the media rather than merely plausible.
+    """
+    if not frame_times:
+        return round(t, 1)
+    return min(frame_times, key=lambda f: abs(f - t))
+
+
+def _polish(shot: Shot, frame_times: list[float] | None = None) -> Shot:
     """Playbook Rule 8 enforced deterministically: terminal punctuation on every
     line, no 'No speech/dialogue/music' filler lines, no exact-duplicate lines,
-    every range clamped inside the shot, and no trailing 'locked static' claim
-    once timed camera movement exists."""
+    every range snapped to a real frame and clamped inside the shot, and no
+    trailing 'locked static' claim once timed camera movement exists."""
+    frames = frame_times or []
+
     def tidy(items: list[Timed]) -> list[Timed]:
         out: list[Timed] = []
         seen: set[tuple[float, float, str]] = set()
@@ -595,8 +648,8 @@ def _polish(shot: Shot) -> Shot:
                 continue
             if text[-1] not in '.!?"’”':  # noqa: RUF001
                 text += "."
-            s = round(max(shot.start, min(t.start, shot.end)), 1)
-            e = round(max(s, min(t.end, shot.end)), 1)
+            s = round(_snap(max(shot.start, min(t.start, shot.end)), frames), 3)
+            e = round(max(s, _snap(min(t.end, shot.end), frames)), 3)
             key = (s, e, text.lower())
             if key in seen:
                 continue
@@ -676,6 +729,7 @@ def _shot_pass(
     cast: str, index: int, cut: str, start: float, end: float,
     transcript: tr.Transcript, spans: list[audio_timeline.AudioSpan],
     blockers: BlockerLog | None = None,
+    prosody: list[prosody_mod.Prosody] | None = None,
 ) -> Shot:
     frames = _shot_frames(grid, start, end, blockers, index)
     prompt = _SHOT_PROMPT.format(cast=cast, start=start, end=end)
@@ -721,6 +775,27 @@ def _shot_pass(
             f"only when the footage makes the speaker unambiguous, otherwise the "
             f"off-screen voice C-ID — never a dancer, never from mouth movement alone."
         )
+        # Measured delivery is what makes a *supported* tone possible (SOT §10
+        # Rule 4). Without it the model either invents tone or omits a required
+        # field; with it, tone is evidence like any other measurement.
+        here = prosody_mod.for_range(prosody or [], start, end)
+        usable = [p for p in here if not p.all_unresolved]
+        if usable:
+            prompt += (
+                "\n\nMEASURED DELIVERY for the speech runs in this shot (signal "
+                "analysis — loudness is relative to this clip's own speech, pitch to "
+                "this speaker's own norm):\n" + prosody_mod.describe(usable) +
+                "\nWrite each speech line's tone from these measurements only. Omit "
+                "any attribute not listed."
+            )
+        elif here and blockers is not None:
+            blockers.add(
+                "TONE_UNRESOLVED",
+                f"Speech in shot {index} could not be measured for loudness, pitch or "
+                f"pace, so its lines carry no supported tone. The source of truth "
+                f"requires one — confirm the delivery by ear.",
+                severity=WARNING, start=start, end=end,
+            )
     if bad:
         lang = _lang_label(transcript)
         ranges = "; ".join(f"({s:.1f}s-{e:.1f}s)" for s, e in bad)
@@ -766,7 +841,7 @@ def _shot_pass(
         actions=actions,
         playback_speed=_norm_speed(data.get("playback_speed", "regular")),
         speed_changes=_clean(_timed_items(data.get("speed_changes", []))),
-    ))
+    ), [f.time_seconds for f in frames])
 
 
 _QUOTE_RX = re.compile(r'"([^"]{8,})"')
@@ -806,6 +881,7 @@ def _contradiction_qc(
     spans: list[audio_timeline.AudioSpan],
     progress: Callable[[str, float], None],
     blockers: BlockerLog | None = None,
+    prosody: list[prosody_mod.Prosody] | None = None,
 ) -> list[Shot]:
     """Catch self-contradictions: a shot whose OWN text describes a transition
     (iris, wipe, dissolve, fade) mid-shot that the boundary pass missed.
@@ -848,9 +924,9 @@ def _contradiction_qc(
         t, cut_type = split_at
         progress(f"qc: splitting shot {shot.index} at {t:.1f}s ({cut_type})", 0.94)
         out.append(_shot_pass(backend, grid, cast, shot.index, shot.cut,
-                              shot.start, t, transcript, spans, blockers))
+                              shot.start, t, transcript, spans, blockers, prosody))
         out.append(_shot_pass(backend, grid, cast, shot.index, cut_type,
-                              t, shot.end, transcript, spans, blockers))
+                              t, shot.end, transcript, spans, blockers, prosody))
     for i, shot in enumerate(out):
         shot.index = i + 1
     return out
@@ -891,16 +967,30 @@ def analyze(
         except Exception as exc:
             blockers.add_exception("AUDIO_ANALYSIS_FAILED", exc)
     if not transcript.has_speech and spans:
-        # Measured audible non-speech with no transcript at all is suspicious
-        # rather than conclusive — say so instead of asserting silence.
+        # An ASR that returns EMPTY without raising is the same failure as one
+        # that raises: speech may exist and be absent from the caption. This is
+        # BLOCKING, because the shot prompt below goes on to tell the model
+        # there is no dialogue — the exact path by which speech disappears.
         audible = [sp for sp in spans if sp.label != "quiet"]
         if audible:
+            covered = sum(sp.end - sp.start for sp in audible)
             blockers.add(
                 "NO_TRANSCRIPT_DESPITE_AUDIO",
-                f"{len(audible)} audible span(s) were measured but the transcript is "
-                f"empty. Any speech in this clip is missing from the caption.",
-                severity=WARNING,
+                f"{len(audible)} audible span(s) totalling {covered:.1f}s were measured "
+                f"but the transcript is empty. Speech may be present and missing from "
+                f"this caption — verify by ear before delivering.",
             )
+
+    # Prosody: the evidence that lets a speech line carry a SUPPORTED tone.
+    prosody: list[prosody_mod.Prosody] = []
+    if wav is not None and transcript.has_speech:
+        speech_ranges = [
+            (sp.start, sp.end) for sp in spans if sp.label == "speech"
+        ]
+        try:
+            prosody = prosody_mod.analyze(wav, transcript, speech_ranges)
+        except Exception as exc:
+            blockers.add_exception("PROSODY_ANALYSIS_FAILED", exc, severity=WARNING)
 
     # Shots FIRST: the cast pass needs the shot structure to keep identities
     # straight across cuts (different shots may show unrelated people).
@@ -916,14 +1006,16 @@ def analyze(
         progress(f"shot {i + 1}/{len(resolved)}", 0.45 + 0.45 * i / len(resolved))
         shots.append(_shot_pass(
             backend, grid, cast_text, i + 1, cut, s, e, transcript, spans, blockers,
+            prosody,
         ))
     progress("qc: contradictions", 0.92)
     shots = _contradiction_qc(
-        backend, grid, cast_text, shots, transcript, spans, progress, blockers,
+        backend, grid, cast_text, shots, transcript, spans, progress, blockers, prosody,
     )
     shots = _dedup_dialogue(shots)
     progress("done", 1.0)
     return Annotation(
         video_name=video.name, duration=duration, globals=g, shots=shots,
         blockers=blockers, audio_spans=spans,
+        evidence_frames=_sample(grid, 0.0, duration, step=max(0.5, duration / 12)),
     )

@@ -20,8 +20,10 @@ from manuscript_reviewer.caption.textcheck import find_quote_spans, pronoun_hits
 from .blockers import WARNING, BlockerLog
 from .cuts import CUT_TYPES
 
-#: Canonical section labels of the live tool's master template.
-REQUIRED_OVERVIEW_FIELDS = ("Cast:", "Scene:", "Style:", "Audio:")
+#: Canonical section labels of the live tool's master template (SOT §26/§27).
+REQUIRED_OVERVIEW_FIELDS = (
+    "Cast:", "Scene:", "Style:", "Audio:", "Visual Concerns:", "Audio Concerns:",
+)
 CANONICAL_SHOT_FIELDS = ("Cut:", "Camera:", "Scene:", "Playback Speed:")
 
 #: Field names AutoScribe used to emit that are NOT the canonical ones.
@@ -29,7 +31,48 @@ LEGACY_FIELDS = {
     "Characters:": "Cast:",
     "Camera movements:": "Camera Movements:",
     "Video playback speed:": "Playback Speed:",
+    "Visual concerns:": "Visual Concerns:",
+    "Audio concerns:": "Audio Concerns:",
 }
+
+#: Evaluator feedback (Aug 2026): per-shot Scenes ran 26-32 words against a
+#: ~72-word norm, and read as object inventories. These are the minimum bars a
+#: description must clear before a human even looks at it.
+SCENE_MIN_WORDS = 45
+SCENE_TARGET_WORDS = 72
+STYLE_MIN_WORDS = 25
+
+#: A scene that reconstructs a space names where things are relative to one
+#: another, not merely that they exist.
+_SPATIAL_TERMS = re.compile(
+    r"\b(left of|right of|screen-left|screen-right|in front of|behind|beside|"
+    r"next to|opposite|above|below|beneath|under|on top of|rests? on|stands? on|"
+    r"between|across from|adjacent|along|toward the camera|away from the camera|"
+    r"foreground|middle ground|midground|background)\b",
+    re.IGNORECASE,
+)
+_DEPTH_PLANES = (
+    re.compile(r"\bforeground\b", re.IGNORECASE),
+    re.compile(r"\b(middle ?ground|midground)\b", re.IGNORECASE),
+    re.compile(r"\bbackground\b", re.IGNORECASE),
+)
+_LIGHT_DIRECTION = re.compile(
+    r"\b(from (?:the )?(?:left|right|above|below|behind|front|window|overhead)|"
+    r"overhead|backlit|backlight|side-?lit|top-?lit|key light|fill light|rim light|"
+    r"under-?lit|frontal)\b",
+    re.IGNORECASE,
+)
+_SHADOW_QUALITY = re.compile(
+    r"\b(shadow|shadows|shadowless|hard-?edged|soft-?edged|diffuse|diffused|"
+    r"high-?contrast|low-?contrast)\b",
+    re.IGNORECASE,
+)
+_COLOR_TEMPERATURE = re.compile(
+    r"\b(warm|cool|tungsten|daylight|neutral|golden|amber|blue-?ish|"
+    r"colou?r temperature|kelvin|\d{4}\s*K)\b",
+    re.IGNORECASE,
+)
+_NO_CHANGES = re.compile(r"^no changes from overview\.?$", re.IGNORECASE)
 
 BLOCKED_PRONOUNS = [
     "he", "she", "they", "him", "her", "them", "his", "hers", "their", "theirs",
@@ -66,6 +109,103 @@ def _quotes_balanced(line: str) -> bool:
     return line.count('"') % 2 == 0
 
 
+def _words(text: str) -> int:
+    return len([w for w in text.split() if any(c.isalnum() for c in w)])
+
+
+def _extract_descriptions(
+    lines: list[str],
+) -> tuple[str, list[tuple[int, str]], str]:
+    """(overview_scene, [(shot_index, scene)], style) from a rendered caption."""
+    overview_scene = ""
+    style = ""
+    shot_scenes: list[tuple[int, str]] = []
+    shot_index = 0
+    for raw in lines:
+        line = raw.strip()
+        header = _SHOT_HEADER.match(line)
+        if header:
+            shot_index = int(header.group(1))
+            continue
+        if line.startswith("Scene:"):
+            body = line[len("Scene:"):].strip()
+            if shot_index == 0:
+                overview_scene = body
+            else:
+                shot_scenes.append((shot_index, body))
+        elif line.startswith("Style:") and not style:
+            style = line[len("Style:"):].strip()
+    return overview_scene, shot_scenes, style
+
+
+def check_scene_depth(
+    scene: str, where: str, log: BlockerLog, *, is_overview: bool
+) -> None:
+    """Enforce the 3D-reconstruction standard on a Scene field.
+
+    The decisive finding of the Aug 2026 evaluator audit was that Scenes read as
+    object inventories at 26-32 words against a ~72-word norm. A validator that
+    passes "A kitchen with a wooden table" enforces nothing.
+    """
+    body = scene.strip()
+    if not body:
+        log.add("SCENE_EMPTY", f"{where} has no Scene description.")
+        return
+    if not is_overview and _NO_CHANGES.match(body):
+        return  # legitimate only when the space is genuinely unchanged
+    count = _words(body)
+    if count < SCENE_MIN_WORDS:
+        log.add(
+            "SCENE_TOO_SHALLOW",
+            f"{where} Scene is {count} words; the standard is about "
+            f"{SCENE_TARGET_WORDS}. It must let a reader rebuild the space as a 3D "
+            f"environment — spatial relationships, geometry, materials, and depth "
+            f"planes — not list objects.",
+        )
+    if not _SPATIAL_TERMS.search(body):
+        log.add(
+            "SCENE_NO_SPATIAL_RELATIONSHIPS",
+            f"{where} Scene names no spatial relationship (left of, behind, resting "
+            f"on, foreground/background...). An object list is not a scene.",
+        )
+    planes = sum(1 for rx in _DEPTH_PLANES if rx.search(body))
+    if planes < 2:
+        log.add(
+            "SCENE_NO_DEPTH_PLANES",
+            f"{where} Scene does not separate foreground / middle ground / "
+            f"background ({planes} of 3 named).",
+            severity=WARNING,
+        )
+
+
+def check_style_depth(style: str, log: BlockerLog) -> None:
+    """Style must name light sources and direction, shadow quality, and colour
+    temperature — 'Natural light.' satisfies none of those."""
+    body = style.strip()
+    if not body:
+        log.add("STYLE_EMPTY", "Overview has no Style description.")
+        return
+    if _words(body) < STYLE_MIN_WORDS:
+        log.add(
+            "STYLE_TOO_SHALLOW",
+            f"Style is {_words(body)} words; it must cover light sources and "
+            f"direction, shadow quality, colour temperature, depth of field, medium "
+            f"and aspect ratio.",
+        )
+    missing = []
+    if not _LIGHT_DIRECTION.search(body):
+        missing.append("light source/direction")
+    if not _SHADOW_QUALITY.search(body):
+        missing.append("shadow quality")
+    if not _COLOR_TEMPERATURE.search(body):
+        missing.append("colour temperature")
+    if missing:
+        log.add(
+            "STYLE_MISSING_LIGHTING_DETAIL",
+            f"Style does not state: {', '.join(missing)}.",
+        )
+
+
 def validate_caption(text: str, blockers: BlockerLog | None = None) -> BlockerLog:
     """Check a rendered caption and return the log of everything wrong with it.
 
@@ -86,6 +226,13 @@ def validate_caption(text: str, blockers: BlockerLog | None = None) -> BlockerLo
     for field in REQUIRED_OVERVIEW_FIELDS:
         if not any(line.startswith(field) for line in lines):
             log.add("OVERVIEW_FIELD_MISSING", f"Overview is missing '{field}'.")
+
+    # Descriptive depth — the decisive gap in the Aug 2026 evaluator audit.
+    overview_scene, shot_scenes, style = _extract_descriptions(lines)
+    check_scene_depth(overview_scene, "Overview", log, is_overview=True)
+    check_style_depth(style, log)
+    for index, scene in shot_scenes:
+        check_scene_depth(scene, f"Shot {index}", log, is_overview=False)
 
     defined_ids = {m.group(1) for line in lines if (m := _ID_DEF.match(line.strip()))}
     referenced_ids: set[str] = set()

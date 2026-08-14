@@ -25,11 +25,12 @@ had been reviewed.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
-from .blockers import BlockerLog
+from .blockers import WARNING, BlockerLog
 from .validate import validate_caption
-from .vision import OpenAIVisionBackend, text_content
+from .vision import OpenAIVisionBackend, image_content, text_content
 
 _REVIEW_PROMPT = (
     "You are a Manuscript-II REVIEWER. You are given:\n"
@@ -43,6 +44,9 @@ _REVIEW_PROMPT = (
     "{feedback_clause}"
     "\nSOURCE HIERARCHY (this is the rule that decides every conflict):\n"
     "- The actual MEDIA is the only truth. NEITHER caption is truth.\n"
+    "- FRAMES from the clip, when supplied below, are the media. They outrank both "
+    "captions on anything visible in them. They are SAMPLED, so they can prove an "
+    "event happened but cannot prove one did not.\n"
     "- MEASURED FACTS (shot boundaries, the audio timeline, word-level transcript "
     "timings) are direct observations of the media and outrank both captions.\n"
     "- For anything NOT covered by a measured fact — what an object is, what a "
@@ -160,8 +164,14 @@ def review(
     evaluator_feedback: str = "",
     evidence: str = "",
     blockers: BlockerLog | None = None,
+    frames: list[Path] | None = None,
 ) -> dict[str, Any]:
     """Run the reviewer pass over a caption and return the reviewed draft.
+
+    ``frames`` are labelled stills spanning the clip. They are what let the
+    reviewer weigh a disputed visual claim against the PICTURE rather than
+    against whichever caption sounds more confident. Without them this pass is
+    only a prose comparator, so their absence is recorded as a blocker.
 
     The result is ALWAYS a draft: ``ready`` is never True, and ``blockers``
     carries everything that must be resolved by a human first.
@@ -179,11 +189,29 @@ def review(
         evidence_block=f"\n=== MEASURED FACTS ===\n{ev}\n" if ev else "",
         feedback_block=f"\n=== EVALUATOR FEEDBACK ===\n{fb}\n" if fb else "",
     )
+    content: list[dict[str, object]] = [text_content(prompt)]
+    if frames:
+        content.append(text_content(
+            "\n=== FRAMES FROM THE ACTUAL VIDEO ===\nThese are stills from the clip "
+            "under review, in order. They outrank BOTH captions on anything visible. "
+            "Use them to settle disputed visual claims; they are sampled, so absence "
+            "from these stills is not proof an event did not happen."
+        ))
+        for path in frames:
+            content.append(image_content(path))
+    else:
+        log.add(
+            "REVIEW_WITHOUT_PICTURE",
+            "The reviewer pass received no frames, so visual disagreements between "
+            "the seed and the fresh caption were settled from text alone.",
+            severity=WARNING,
+        )
+
     data: dict[str, Any] = {}
     last_error = "no response"
     for _ in range(3):
         try:
-            raw = backend.complete([text_content(prompt)], json_mode=True, max_tokens=8000)
+            raw = backend.complete(content, json_mode=True, max_tokens=8000)
         except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"
             continue
