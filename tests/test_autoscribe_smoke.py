@@ -129,7 +129,17 @@ class _StubBackend:
             "shot_type": "medium shot",
             "camera": "Medium, eye-level, static.",
             "camera_movements": [],
-            "scene": "No changes from overview.",
+            # Not "No changes from overview." — every shot saying that leaves the
+            # caption with no shot descriptions at all, which the validator now
+            # rejects. The stub has to meet the same bar as real output.
+            "scene": (
+                "The saturated colour plane fills the frame in this shot. Nothing "
+                "stands in the foreground, the middle ground is the unbroken field "
+                "itself with no seam or texture, and the background continues the "
+                "same plane behind it. No structure, terrain or furniture is "
+                "present anywhere, and no horizon divides the space above or below "
+                "the centre of frame."
+            ),
             "actions": [{"start": 0.0, "end": 0.5, "text": "C1 raises the right hand."}],
             "playback_speed": "regular",
             "speed_changes": [],

@@ -164,14 +164,17 @@ def review(
     evaluator_feedback: str = "",
     evidence: str = "",
     blockers: BlockerLog | None = None,
-    frames: list[Path] | None = None,
+    frames: list[tuple[float, Path]] | None = None,
+    detected_language: str = "",
 ) -> dict[str, Any]:
     """Run the reviewer pass over a caption and return the reviewed draft.
 
-    ``frames`` are labelled stills spanning the clip. They are what let the
-    reviewer weigh a disputed visual claim against the PICTURE rather than
-    against whichever caption sounds more confident. Without them this pass is
-    only a prose comparator, so their absence is recorded as a blocker.
+    ``frames`` are ``(timestamp_seconds, png_path)`` stills spanning the clip.
+    They are what let the reviewer weigh a disputed visual claim against the
+    PICTURE rather than against whichever caption sounds more confident, and
+    the timestamps are what let it check the claim at the right *moment*.
+    Without them this pass is only a prose comparator, so their absence is
+    recorded as a blocker.
 
     The result is ALWAYS a draft: ``ready`` is never True, and ``blockers``
     carries everything that must be resolved by a human first.
@@ -193,12 +196,19 @@ def review(
     if frames:
         content.append(text_content(
             "\n=== FRAMES FROM THE ACTUAL VIDEO ===\nThese are stills from the clip "
-            "under review, in order. They outrank BOTH captions on anything visible. "
-            "Use them to settle disputed visual claims; they are sampled, so absence "
-            "from these stills is not proof an event did not happen."
+            "under review, each labelled with the TIMESTAMP it was taken at. They "
+            "outrank BOTH captions on anything visible. Use the labels to check a "
+            "disputed claim against the right moment — a claim at 4.2s is tested "
+            "against the frames nearest 4.2s, not against the overall impression. "
+            "They are sampled, so absence from these stills is not proof an event "
+            "did not happen."
         ))
-        for path in frames:
-            content.append(image_content(path))
+        # An unlabelled image can settle "is there a red jacket?" but not
+        # "does C1 raise a hand at 4.2s" — which is most of what a caption
+        # review actually disputes.
+        for time_s, frame_path in frames:
+            content.append(text_content(f"t={time_s:.2f}s:"))
+            content.append(image_content(frame_path))
     else:
         log.add(
             "REVIEW_WITHOUT_PICTURE",
@@ -239,7 +249,7 @@ def review(
         final = fresh_caption
 
     # The reviewer's rewrite is re-validated. Nothing reaches a file unchecked.
-    validate_caption(final, log)
+    validate_caption(final, log, detected_language=detected_language)
 
     score = data.get("score")
     unresolved = [str(u) for u in data.get("unresolved", []) if str(u).strip()]

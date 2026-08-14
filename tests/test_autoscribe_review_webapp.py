@@ -126,10 +126,40 @@ def test_reviewer_receives_frames_when_available(
     frame = tmp_path / "f.png"
     frame.write_bytes(b"\x89PNG\r\n\x1a\n")
 
-    result = review_mod.review(FRESH, "seed", frames=[frame])
+    result = review_mod.review(FRESH, "seed", frames=[(4.25, frame)])
 
     assert "image_url" in seen["types"], "frames were not sent to the reviewer"
     assert not any(b["code"] == "REVIEW_WITHOUT_PICTURE" for b in result["blockers"])
+
+
+def test_reviewer_frames_are_labelled_with_timestamps(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unlabelled still can settle 'is there a red jacket?' but not 'does C1
+    raise a hand at 4.2s' — which is most of what a caption review disputes."""
+    import json
+
+    seen: dict[str, Any] = {}
+
+    class _Recording:
+        def complete(self, content: list[dict[str, Any]], **_k: Any) -> str:
+            seen["text"] = " ".join(
+                str(c.get("text", "")) for c in content if c.get("type") == "text"
+            )
+            return json.dumps({
+                "verdict": "KEEP", "score": 5, "score_reason": "-",
+                "issues": [], "unresolved": [], "feedback": "-",
+                "final_caption": FRESH,
+            })
+
+    monkeypatch.setattr(review_mod, "OpenAIVisionBackend", lambda *a, **k: _Recording())
+    frame = tmp_path / "f.png"
+    frame.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    review_mod.review(FRESH, "seed", frames=[(4.25, frame), (9.5, frame)])
+
+    assert "t=4.25s" in seen["text"], "frames carry no timestamp label"
+    assert "t=9.50s" in seen["text"]
 
 
 def test_review_without_frames_is_flagged(monkeypatch: pytest.MonkeyPatch) -> None:

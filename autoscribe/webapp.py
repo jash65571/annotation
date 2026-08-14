@@ -92,12 +92,14 @@ def _run_job(job: str, video: Path, hz: float, seed: dict[str, str] | None = Non
         mode = os.environ.get("AUTOSCRIBE_MODE", "structured")
         blockers = BlockerLog()
         evidence = ""
-        evidence_frames: list[Path] = []
+        evidence_frames: list[tuple[float, Path]] = []
+        language = ""
         if mode == "structured":
             ann = structured.analyze(video, out_dir, hz=hz, progress=progress)
             blockers.extend(ann.blockers)
             evidence = ann.evidence_summary()
-            evidence_frames = [f.path for f in ann.evidence_frames]
+            evidence_frames = ann.labelled_frames()
+            language = ann.detected_language
             md_path = render.write(render.render(ann), out_dir, video.stem)
         else:
             backend = os.environ.get("AUTOSCRIBE_VISION", "openai")
@@ -106,13 +108,14 @@ def _run_job(job: str, video: Path, hz: float, seed: dict[str, str] | None = Non
             )
         fresh = md_path.read_text(encoding="utf-8")
         # The draft is validated before anyone sees it, review pass or not.
-        validate_caption(fresh, blockers)
+        validate_caption(fresh, blockers, detected_language=language)
 
         if seed:
             _set(job, stage="reviewing seed", fraction=0.92)
             result = review_mod.review(
                 fresh, seed["seed"], seed.get("feedback", ""),
                 evidence=evidence, blockers=blockers, frames=evidence_frames,
+                detected_language=language,
             )
             final_path = md_path.with_suffix(".reviewed.md")
             final_path.write_text(result["final_caption"], encoding="utf-8")

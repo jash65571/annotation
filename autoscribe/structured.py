@@ -92,6 +92,13 @@ class Annotation:
     #: Frames spanning the clip, handed to the reviewer pass so it can weigh
     #: claims against the picture instead of against the other caption's prose.
     evidence_frames: list[frames_mod.GridFrame] = field(default_factory=list)
+    #: Detected speech language, so the renderer's Audio field can be checked
+    #: for the required non-English declaration.
+    detected_language: str = ""
+
+    def labelled_frames(self) -> list[tuple[float, Path]]:
+        """(timestamp, path) pairs — a reviewer needs the WHEN, not just the image."""
+        return [(f.time_seconds, f.path) for f in self.evidence_frames]
 
     def evidence_summary(self) -> str:
         """The measured observations behind this caption, as text.
@@ -944,6 +951,9 @@ def analyze(
     grid = frames_mod.extract_grid(video, work / "frames", hz=hz, blockers=blockers)
     if not grid:
         blockers.add("NO_FRAMES", "No frames could be extracted from the video.")
+    # The FULL encoded-frame ledger. Boundary resolution must come from this,
+    # not from the sampled grid, or one-frame shots stay undetectable.
+    ledger = frames_mod.probe_frame_times(video)
     backend = OpenAIVisionBackend()
 
     # Audio is NOT optional. Swallowing these exceptions turned "we could not
@@ -988,7 +998,7 @@ def analyze(
             (sp.start, sp.end) for sp in spans if sp.label == "speech"
         ]
         try:
-            prosody = prosody_mod.analyze(wav, transcript, speech_ranges)
+            prosody = prosody_mod.analyze(wav, transcript, speech_ranges, blockers)
         except Exception as exc:
             blockers.add_exception("PROSODY_ANALYSIS_FAILED", exc, severity=WARNING)
 
@@ -997,6 +1007,7 @@ def analyze(
     progress("shots", 0.3)
     resolved = cuts_mod.resolve_shots(
         backend, video, grid, duration, blockers=blockers, audio_spans=spans,
+        frame_times=ledger,
     )
     progress("cast", 0.4)
     g = _cast_pass(backend, grid, duration, transcript, resolved, spans)
@@ -1018,4 +1029,7 @@ def analyze(
         video_name=video.name, duration=duration, globals=g, shots=shots,
         blockers=blockers, audio_spans=spans,
         evidence_frames=_sample(grid, 0.0, duration, step=max(0.5, duration / 12)),
+        detected_language=(
+            transcript.language if transcript.language_confident else ""
+        ),
     )

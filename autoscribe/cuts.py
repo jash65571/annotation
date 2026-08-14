@@ -53,23 +53,28 @@ CUT_TYPES = ("Opening shot", *PICTURE_CUT_TYPES, *AUDIO_CUT_TYPES)
 FRAME_EPSILON = 0.08
 
 
-def frame_epsilon(grid: list[GridFrame]) -> float:
+def frame_epsilon(frame_times: list[float]) -> float:
     """The smallest gap that can still be TWO boundaries rather than one.
 
-    Derived from the media's own frame period, because a fixed 0.08 s constant
-    silently erases a legitimate one-frame shot on 25 fps footage (0.04 s) while
-    being needlessly coarse on 60 fps footage. Two candidates closer together
-    than a single frame cannot be distinct boundaries; anything a frame apart or
-    more is a real shot and must survive.
+    ``frame_times`` MUST be the full encoded-frame ledger, not the sampled
+    grid. The sampled grid only contains the frames chosen for the vision model
+    (~10 Hz), so its smallest gap reflects the *sampling* rate, not the frame
+    rate: on 25 fps footage sampled at 10 Hz it yields 0.072 s, which still
+    erases the one-frame (0.040 s) shots this function exists to protect.
+
+    Two candidates closer together than a single encoded frame cannot be
+    distinct boundaries; anything a frame apart or more is a real shot.
     """
-    times = sorted({f.time_seconds for f in grid})
+    times = sorted(set(frame_times))
     if len(times) < 3:
         return FRAME_EPSILON
     gaps = sorted(b - a for a, b in pairwise(times) if b > a)
     if not gaps:
         return FRAME_EPSILON
-    # The grid is sampled, so the *smallest* observed gap is the frame period.
-    period = gaps[0]
+    # Use a low percentile rather than the strict minimum so one anomalous
+    # short gap (container jitter, a duplicated timestamp) cannot collapse the
+    # threshold to near zero.
+    period = gaps[max(0, len(gaps) // 20)]
     if not 0.0 < period < 0.5:
         return FRAME_EPSILON
     return max(period * 0.9, 0.005)
@@ -289,6 +294,7 @@ def resolve_shots(
     duration: float,
     blockers: BlockerLog | None = None,
     audio_spans: list[AudioSpan] | None = None,
+    frame_times: list[float] | None = None,
 ) -> list[tuple[float, float, str]]:
     """Return verified shots as (start, end, cut_type). Always >= 1 shot.
 
@@ -296,7 +302,20 @@ def resolve_shots(
     becomes a blocking unresolved item, because "we could not tell" and "there
     is no cut here" are different facts and only one of them is safe to render.
     """
-    epsilon = frame_epsilon(grid)
+    # The full ledger when available; the sampled grid only as a last resort,
+    # and then it is recorded because boundary resolution is degraded.
+    if frame_times:
+        epsilon = frame_epsilon(frame_times)
+    else:
+        epsilon = frame_epsilon([f.time_seconds for f in grid])
+        if blockers is not None:
+            blockers.add(
+                "BOUNDARY_RESOLUTION_DEGRADED",
+                f"The encoded-frame ledger was unavailable, so boundary resolution "
+                f"fell back to the sampled grid ({epsilon:.3f}s). Shots shorter than "
+                f"that cannot be detected.",
+                severity=WARNING,
+            )
     confirmed: list[tuple[float, str]] = []
     for t in candidate_boundaries(video, min_gap=epsilon):
         # Only a boundary at or past the very first/last frame is meaningless.

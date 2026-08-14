@@ -121,29 +121,45 @@ def test_modern_and_legacy_extract_commands_are_both_well_formed() -> None:
 # --------------------------------------------------------------------------
 # frame-period boundary resolution
 # --------------------------------------------------------------------------
-def _grid(times: list[float]) -> list[GridFrame]:
-    return [
-        GridFrame(index=i, time_seconds=t, path=Path(f"{i}.png"), source_index=i)
-        for i, t in enumerate(times)
-    ]
-
-
 def test_frame_epsilon_is_derived_from_the_media() -> None:
     """A fixed 0.08s constant erases a real one-frame shot at 25fps (0.04s)."""
-    at_25fps = cuts.frame_epsilon(_grid([i * 0.04 for i in range(10)]))
+    at_25fps = cuts.frame_epsilon([i * 0.04 for i in range(50)])
     assert at_25fps < 0.04, "must be below one frame period so 1-frame shots survive"
-    at_60fps = cuts.frame_epsilon(_grid([i / 60 for i in range(20)]))
+    at_60fps = cuts.frame_epsilon([i / 60 for i in range(100)])
     assert at_60fps < at_25fps, "higher frame rate must resolve finer"
 
 
-def test_frame_epsilon_falls_back_when_grid_is_unusable() -> None:
+def test_frame_epsilon_uses_the_ledger_not_the_sampled_grid() -> None:
+    """Regression: epsilon was computed from the 10 Hz grid handed to the vision
+    model, so on 25 fps footage it returned 0.072s instead of the true 0.040s —
+    one-frame shots stayed undetectable despite the fix that was meant to save
+    them."""
+    ledger = [i * 0.04 for i in range(100)]
+    sampled = [ledger[i] for i in pick_source_frames(ledger, 3.96, 10.0)]
+
+    from_ledger = cuts.frame_epsilon(ledger)
+    from_grid = cuts.frame_epsilon(sampled)
+
+    assert from_ledger < 0.04
+    assert from_grid > 0.04, "the sampled grid cannot see the real frame period"
+    assert from_ledger < from_grid
+
+
+def test_frame_epsilon_falls_back_when_ledger_is_unusable() -> None:
     assert cuts.frame_epsilon([]) == cuts.FRAME_EPSILON
-    assert cuts.frame_epsilon(_grid([0.0])) == cuts.FRAME_EPSILON
+    assert cuts.frame_epsilon([0.0]) == cuts.FRAME_EPSILON
+
+
+def test_frame_epsilon_survives_one_anomalous_gap() -> None:
+    """A single duplicated/jittered timestamp must not collapse the threshold."""
+    ledger = [i * 0.04 for i in range(60)]
+    ledger.append(ledger[10] + 0.0001)  # container jitter
+    assert cuts.frame_epsilon(sorted(ledger)) > 0.01
 
 
 def test_one_frame_shot_survives_deduplication_at_25fps() -> None:
     """Two boundaries one frame apart are two boundaries, not one."""
-    eps = cuts.frame_epsilon(_grid([i * 0.04 for i in range(30)]))
+    eps = cuts.frame_epsilon([i * 0.04 for i in range(60)])
     confirmed = [(1.00, "Hard cut"), (1.04, "Hard cut")]
     deduped: list[tuple[float, str]] = []
     for c in confirmed:

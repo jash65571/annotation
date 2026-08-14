@@ -29,6 +29,7 @@ import wave
 from dataclasses import dataclass
 from pathlib import Path
 
+from .blockers import WARNING, BlockerLog
 from .transcribe import Transcript
 
 #: Human voiced fundamental frequency, in Hz.
@@ -148,10 +149,27 @@ def analyze(
     wav_path: Path,
     transcript: Transcript,
     spans: list[tuple[float, float]],
+    blockers: BlockerLog | None = None,
 ) -> list[Prosody]:
-    """Measure delivery for each speech span. Never raises on empty input."""
+    """Measure delivery for each speech span. Never raises on empty input.
+
+    All comparisons are against a single clip-wide median because there is no
+    diarization: this module cannot tell who is speaking. With more than one
+    speaker the baseline is a blend of their voices, so a deep voice reads as
+    "lower" and a high one as "higher" purely by contrast. That is recorded as
+    a blocker rather than papered over.
+    """
     if not spans:
         return []
+    if blockers is not None and len(spans) > 1:
+        blockers.add(
+            "PROSODY_NO_DIARIZATION",
+            f"Delivery for {len(spans)} speech spans was measured against one "
+            f"clip-wide baseline; this module cannot identify speakers. If more than "
+            f"one person speaks, the pitch and loudness comparisons are between "
+            f"speakers, not within one. Confirm any tone that depends on them.",
+            severity=WARNING,
+        )
     samples, sr = _read_mono(wav_path)
     if not samples or sr <= 0:
         return [
@@ -193,22 +211,26 @@ def analyze(
             if rms > 0:
                 ratio = rms / median_rms
                 if ratio >= 1.6:
-                    loudness = "louder than the rest of the speech"
+                    loudness = "louder than the clip's overall speech level"
                 elif ratio <= 0.6:
-                    loudness = "quieter than the rest of the speech"
+                    loudness = "quieter than the clip's overall speech level"
                 else:
-                    loudness = "level with the rest of the speech"
+                    loudness = "level with the clip's overall speech level"
 
         f0 = raw_f0.get((s, e))
         pitch = UNRESOLVED
         if f0 and median_f0 > 0:
             ratio = f0 / median_f0
+            # NOT "this speaker's norm": there is no diarization here, so the
+            # median pools every speech span in the clip regardless of who is
+            # talking. With two speakers the baseline sits between their
+            # voices and each one's pitch is read against the other's.
             if ratio >= 1.15:
-                pitch = "higher than this speaker's norm"
+                pitch = "higher than the clip's overall speech pitch"
             elif ratio <= 0.87:
-                pitch = "lower than this speaker's norm"
+                pitch = "lower than the clip's overall speech pitch"
             else:
-                pitch = "at this speaker's norm"
+                pitch = "at the clip's overall speech pitch"
 
         pace = UNRESOLVED
         wps: float | None = None

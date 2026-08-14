@@ -129,6 +129,37 @@ def test_missing_audio_yields_unresolved_not_a_crash(tmp_path: Path) -> None:
     assert out and out[0].all_unresolved
 
 
+def test_prosody_does_not_claim_per_speaker_norms(tmp_path: Path) -> None:
+    """There is no diarization here: the median pools every speech span in the
+    clip. Calling that "this speaker's norm" asserts speaker identity the module
+    cannot establish — with two voices, each is measured against the other."""
+    wav = _write_wav(tmp_path / "h.wav", [(1.0, 120, 0.8), (1.0, 240, 0.8)])
+    out = prosody.analyze(wav, _transcript([]), [(0.0, 1.0), (1.0, 2.0)])
+    for p in out:
+        assert "speaker's norm" not in p.pitch
+        assert "speaker's norm" not in p.loudness
+        if p.pitch != prosody.UNRESOLVED:
+            assert "clip's overall" in p.pitch
+
+
+def test_multiple_spans_record_the_diarization_caveat(tmp_path: Path) -> None:
+    from autoscribe.blockers import BlockerLog
+
+    wav = _write_wav(tmp_path / "i.wav", [(1.0, 120, 0.8), (1.0, 240, 0.8)])
+    log = BlockerLog()
+    prosody.analyze(wav, _transcript([]), [(0.0, 1.0), (1.0, 2.0)], log)
+    assert any(b.code == "PROSODY_NO_DIARIZATION" for b in log.entries)
+
+
+def test_single_span_needs_no_diarization_caveat(tmp_path: Path) -> None:
+    from autoscribe.blockers import BlockerLog
+
+    wav = _write_wav(tmp_path / "j.wav", [(1.0, 150, 0.8)])
+    log = BlockerLog()
+    prosody.analyze(wav, _transcript([]), [(0.0, 1.0)], log)
+    assert not any(b.code == "PROSODY_NO_DIARIZATION" for b in log.entries)
+
+
 def test_prompt_requires_tone_from_measurement_not_from_frames() -> None:
     """Regression: tone was banned outright, violating source-of-truth §10."""
     from autoscribe.structured import _SHOT_PROMPT

@@ -15,7 +15,11 @@ from __future__ import annotations
 
 import re
 
-from manuscript_reviewer.caption.textcheck import find_quote_spans, pronoun_hits
+from manuscript_reviewer.caption.textcheck import (
+    find_quote_spans,
+    pronoun_hits,
+    strip_quotes,
+)
 
 from .blockers import WARNING, BlockerLog
 from .cuts import CUT_TYPES
@@ -74,6 +78,25 @@ _COLOR_TEMPERATURE = re.compile(
 )
 _NO_CHANGES = re.compile(r"^no changes from overview\.?$", re.IGNORECASE)
 
+#: A line that reports speech. Source of truth §10 Rule 4 requires each to carry
+#: a supported audible tone.
+_SPEECH_VERB = re.compile(
+    r"\b(says?|said|sings?|shouts?|whispers?|asks?|replies|replied|narrates?|"
+    r"calls? out|mutters?|yells?|screams?|chants?)\b",
+    re.IGNORECASE,
+)
+#: The canonical delivery phrasing ("in a questioning tone", "in a low, strained
+#: tone") plus the other supported ways a delivery attribute can appear.
+_DELIVERY = re.compile(
+    r"\bin an? [^,\"]{2,60}\b(tone|voice|delivery|pitch|register)\b"
+    r"|\b(tone|pitch|pace|delivery)\b"
+    r"|\b(quietly|loudly|softly|firmly|urgently|calmly|slowly|quickly|rapidly|"
+    r"hesitantly|flatly|sharply|wearily|breathlessly)\b",
+    re.IGNORECASE,
+)
+#: English is the default caption language; anything else must be declared.
+_ENGLISH = re.compile(r"^\s*english\s*$", re.IGNORECASE)
+
 BLOCKED_PRONOUNS = [
     "he", "she", "they", "him", "her", "them", "his", "hers", "their", "theirs",
 ]
@@ -115,10 +138,11 @@ def _words(text: str) -> int:
 
 def _extract_descriptions(
     lines: list[str],
-) -> tuple[str, list[tuple[int, str]], str]:
-    """(overview_scene, [(shot_index, scene)], style) from a rendered caption."""
+) -> tuple[str, list[tuple[int, str]], str, str]:
+    """(overview_scene, [(shot_index, scene)], style, audio) from a caption."""
     overview_scene = ""
     style = ""
+    audio = ""
     shot_scenes: list[tuple[int, str]] = []
     shot_index = 0
     for raw in lines:
@@ -135,7 +159,9 @@ def _extract_descriptions(
                 shot_scenes.append((shot_index, body))
         elif line.startswith("Style:") and not style:
             style = line[len("Style:"):].strip()
-    return overview_scene, shot_scenes, style
+        elif line.startswith("Audio:") and not audio:
+            audio = line[len("Audio:"):].strip()
+    return overview_scene, shot_scenes, style, audio
 
 
 def check_scene_depth(
@@ -152,7 +178,18 @@ def check_scene_depth(
         log.add("SCENE_EMPTY", f"{where} has no Scene description.")
         return
     if not is_overview and _NO_CHANGES.match(body):
-        return  # legitimate only when the space is genuinely unchanged
+        # Legitimate ONLY when the space is genuinely identical. It is also a
+        # complete bypass of every depth check below, which is exactly how the
+        # evaluator's decisive Scene failure could return — so each use has to
+        # be confirmed rather than accepted silently.
+        log.add(
+            "SCENE_UNCHANGED_UNCONFIRMED",
+            f"{where} Scene says only 'No changes from overview.', which skips all "
+            f"depth requirements. Confirm this shot's space is genuinely identical "
+            f"to the Overview; if anything differs, describe it.",
+            severity=WARNING,
+        )
+        return
     count = _words(body)
     if count < SCENE_MIN_WORDS:
         log.add(
@@ -206,7 +243,57 @@ def check_style_depth(style: str, log: BlockerLog) -> None:
         )
 
 
-def validate_caption(text: str, blockers: BlockerLog | None = None) -> BlockerLog:
+def check_language_declared(
+    audio_field: str, detected_language: str, log: BlockerLog
+) -> None:
+    """Non-English speech must be named in the Audio field.
+
+    Missed case from the Aug 2026 evaluator audit: Tagalog lines ("Diba? Diba?",
+    "Arte-arte siya!") went out with no language declared anywhere. Requiring it
+    in the prompt is not enforcement — the rendered caption is checked here.
+    """
+    language = detected_language.strip()
+    if not language or _ENGLISH.match(language):
+        return
+    if language.lower() not in audio_field.lower():
+        log.add(
+            "LANGUAGE_NOT_DECLARED",
+            f"Speech was detected as {language} but the Audio field never names the "
+            f"language. Non-English speech must be declared.",
+        )
+
+
+def check_speech_delivery(lines: list[str], log: BlockerLog) -> None:
+    """Every speech line needs a supported audible tone (SOT §10 Rule 4).
+
+    A line such as `C1 says off-screen, "Hola."` previously passed with zero
+    findings, which is the exact omission the evaluator feedback failed.
+    """
+    for lineno, raw in enumerate(lines, start=1):
+        line = raw.strip()
+        timed = _TIMED_LINE.match(line)
+        if not timed:
+            continue
+        body = timed.group(3)
+        if not _SPEECH_VERB.search(body) or not find_quote_spans(body):
+            continue
+        # Check outside the quoted words: the delivery describes the speech,
+        # it is not part of it.
+        outside = strip_quotes(body)
+        if not _DELIVERY.search(outside):
+            log.add(
+                "SPEECH_NO_DELIVERY",
+                f"Line {lineno} reports speech with no delivery attribute (tone, "
+                f"pitch or pace). The standard requires a supported audible tone — "
+                f"confirm the delivery by ear and add it: {body[:60]!r}",
+            )
+
+
+def validate_caption(
+    text: str,
+    blockers: BlockerLog | None = None,
+    detected_language: str = "",
+) -> BlockerLog:
     """Check a rendered caption and return the log of everything wrong with it.
 
     Every finding is BLOCKING unless it is genuinely stylistic — this gate
@@ -228,11 +315,21 @@ def validate_caption(text: str, blockers: BlockerLog | None = None) -> BlockerLo
             log.add("OVERVIEW_FIELD_MISSING", f"Overview is missing '{field}'.")
 
     # Descriptive depth — the decisive gap in the Aug 2026 evaluator audit.
-    overview_scene, shot_scenes, style = _extract_descriptions(lines)
+    overview_scene, shot_scenes, style, audio = _extract_descriptions(lines)
     check_scene_depth(overview_scene, "Overview", log, is_overview=True)
     check_style_depth(style, log)
     for index, scene in shot_scenes:
         check_scene_depth(scene, f"Shot {index}", log, is_overview=False)
+    unchanged = [i for i, s in shot_scenes if _NO_CHANGES.match(s.strip())]
+    if len(shot_scenes) > 1 and len(unchanged) == len(shot_scenes):
+        log.add(
+            "ALL_SCENES_UNCHANGED",
+            f"All {len(shot_scenes)} shots say only 'No changes from overview.', so "
+            f"no shot carries a description. Separate shots differ by definition — "
+            f"describe what each one shows.",
+        )
+    check_language_declared(audio, detected_language, log)
+    check_speech_delivery(lines, log)
 
     defined_ids = {m.group(1) for line in lines if (m := _ID_DEF.match(line.strip()))}
     referenced_ids: set[str] = set()

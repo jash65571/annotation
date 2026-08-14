@@ -129,6 +129,95 @@ def test_shallow_per_shot_scene_is_rejected() -> None:
     assert "SCENE_TOO_SHALLOW" in _codes(text)
 
 
+def test_no_changes_bypass_is_flagged_for_confirmation() -> None:
+    """It skips every depth check, so it cannot pass silently."""
+    log = validate_caption(GOOD)
+    assert any(b.code == "SCENE_UNCHANGED_UNCONFIRMED" for b in log.entries)
+
+
+def test_all_shots_unchanged_is_blocking() -> None:
+    """Separate shots differ by definition; if every one says 'no changes',
+    the caption carries no shot description at all — the evaluator's decisive
+    Scene failure, reachable straight through the bypass."""
+    two_shots = GOOD + """
+[Shot 2: 2.0s–4.0s]
+Cut: Hard cut.
+Camera: Close-up, eye-level, static.
+Scene: No changes from overview.
+Action & Audio:
+(2.0s–3.0s) C1 turns toward screen-left.
+Playback Speed: regular.
+"""
+    assert "ALL_SCENES_UNCHANGED" in _codes(two_shots)
+
+
+# --------------------------------------------------------------------------
+# speech delivery (source of truth §10 Rule 4)
+# --------------------------------------------------------------------------
+def _with_speech(line: str) -> str:
+    return GOOD.replace("(1.0s–2.0s) C1 lowers the right hand.", line)
+
+
+def test_speech_without_delivery_is_rejected() -> None:
+    """Exactly the reported gap: `C1 says off-screen, "Hola."` returned zero
+    findings while the standard requires a supported audible tone."""
+    text = _with_speech('(1.0s–2.0s) C1 says off-screen, "Hola."')
+    assert "SPEECH_NO_DELIVERY" in _codes(text)
+
+
+def test_speech_with_canonical_tone_phrase_passes() -> None:
+    text = _with_speech(
+        '(1.0s–2.0s) C1 says off-screen in a questioning tone, "Hola."'
+    )
+    assert "SPEECH_NO_DELIVERY" not in _codes(text)
+
+
+def test_speech_with_adverbial_delivery_passes() -> None:
+    text = _with_speech('(1.0s–2.0s) C1 says off-screen quietly, "Hola."')
+    assert "SPEECH_NO_DELIVERY" not in _codes(text)
+
+
+def test_delivery_word_inside_the_quote_does_not_count() -> None:
+    """The delivery describes the speech; it is not part of the words."""
+    text = _with_speech('(1.0s–2.0s) C1 says off-screen, "watch your tone."')
+    assert "SPEECH_NO_DELIVERY" in _codes(text)
+
+
+def test_non_speech_line_needs_no_delivery() -> None:
+    text = _with_speech("(1.0s–2.0s) A door slams somewhere off-screen.")
+    assert "SPEECH_NO_DELIVERY" not in _codes(text)
+
+
+# --------------------------------------------------------------------------
+# language declaration
+# --------------------------------------------------------------------------
+def test_non_english_speech_must_declare_the_language() -> None:
+    """Missed case from the evaluator audit: Tagalog lines shipped with no
+    language named anywhere."""
+    log = validate_caption(GOOD, detected_language="tagalog")
+    assert any(b.code == "LANGUAGE_NOT_DECLARED" for b in log.blocking)
+
+
+def test_declared_language_satisfies_the_check() -> None:
+    text = GOOD.replace(
+        "Audio: Music plays throughout.",
+        "Audio: Music plays throughout. The speech is in Tagalog.",
+    )
+    log = validate_caption(text, detected_language="tagalog")
+    assert not any(b.code == "LANGUAGE_NOT_DECLARED" for b in log.entries)
+
+
+def test_english_needs_no_declaration() -> None:
+    log = validate_caption(GOOD, detected_language="english")
+    assert not any(b.code == "LANGUAGE_NOT_DECLARED" for b in log.entries)
+
+
+def test_unknown_language_is_not_demanded() -> None:
+    """An unconfident detection must not force a fabricated declaration."""
+    log = validate_caption(GOOD, detected_language="")
+    assert not any(b.code == "LANGUAGE_NOT_DECLARED" for b in log.entries)
+
+
 def test_ghost_character_id_is_caught() -> None:
     text = GOOD.replace("(1.0s–2.0s) C1 lowers", "(1.0s–2.0s) C4 lowers")
     assert "GHOST_ID" in _codes(text)
