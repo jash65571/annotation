@@ -37,6 +37,7 @@ VALIDATOR = ANALYSIS / "manuscript_audio_validator.json"
 VIDEO_IDENTITY = ANALYSIS / "video_identity.json"
 ASR_CONSENSUS = ANALYSIS / "asr_consensus_evidence.json"
 SPEAKER_FACE_MAPPING = ANALYSIS / "speaker_mapping_evidence.json"
+SOUND_FUSION = ANALYSIS / "sound_fusion_evidence.json"
 CONTEXT = ROOT / "task_context.json"
 SPEAKER_MAP = ROOT / "speaker_map.json"
 
@@ -779,6 +780,145 @@ def build_sound_events(sound):
     }
 
 
+def _normalize_tier(tier):
+    if tier in (STRONG, MEDIUM, WEAK, CONFLICT, UNKNOWN):
+        return tier
+    return UNKNOWN
+
+
+def build_fusion_sound_events(sound_fusion):
+    """Wrap Phase 3C fused sound evidence (PANNs+CLAP human-nonverbal /
+    object-SFX candidates) into shared-schema findings.
+
+    Never turns a candidate into an automatic Manuscript event. WEAK /
+    CONFLICT / UNKNOWN stay out of UI suggestions (enforced in
+    build_ui_suggestions). Overlap is never asserted as masking here.
+    """
+    sound_fusion = sound_fusion or {}
+    candidates = sound_fusion.get("sound_events", {}).get("candidates", [])
+    status = sound_fusion.get("status", "unavailable")
+    findings = []
+
+    if status != "complete":
+        findings.append(
+            finding(
+                "Sound / music / ambience fusion did not run.",
+                UNKNOWN,
+                [f"sound_fusion status: {status}"]
+                + ([sound_fusion["error"]] if sound_fusion.get("error") else []),
+                "No PANNs/CLAP sound evidence available; apply the same "
+                "listening discipline as before Phase 3C.",
+            )
+        )
+        return {
+            "status": status,
+            "candidates": [],
+            "findings": findings,
+            "policy": "Fails soft: base packet is unaffected when 3C cannot "
+                      "run.",
+        }
+
+    for c in candidates:
+        tier = _normalize_tier(c.get("tier"))
+        findings.append(
+            finding(
+                f"{c['semantic_label']}: {tier} sound evidence.",
+                tier,
+                c.get("evidence", []),
+                c.get("reviewer_action", "Confirm by listening."),
+                window=(c["start"], c["end"]),
+            )
+        )
+
+    return {
+        "status": status,
+        "candidates": candidates,
+        "findings": findings,
+        "policy": "PANNs/CLAP fusion is evidence, not a decision. WEAK / "
+                  "CONFLICT / UNKNOWN never reach UI suggestions.",
+    }
+
+
+def build_music(sound_fusion):
+    """Wrap Phase 3C fused music evidence into shared-schema findings.
+
+    Music is deliberately conservative: one PANNs score, one CLAP score, or
+    rhythmicity alone is never enough. WEAK music must say DO NOT CREATE
+    MUSIC EVENT WITHOUT LISTENING.
+    """
+    sound_fusion = sound_fusion or {}
+    music = sound_fusion.get("music", {})
+    regions = music.get("regions", [])
+    overall = _normalize_tier(music.get("overall_confidence"))
+    findings = []
+
+    for r in regions:
+        tier = _normalize_tier(r.get("tier"))
+        findings.append(
+            finding(
+                f"Music: {tier} evidence.",
+                tier,
+                r.get("evidence", []),
+                r.get("reviewer_action",
+                      "DO NOT CREATE MUSIC EVENT WITHOUT LISTENING"),
+                window=(r["start"], r["end"]),
+            )
+        )
+
+    if not regions:
+        findings.append(
+            finding(
+                "No supported music candidate.",
+                UNKNOWN,
+                ["panns music scores", "clap music prompts"],
+                "No music event unless you hear music. Silence is not "
+                "evidence of music.",
+            )
+        )
+
+    return {
+        "regions": regions,
+        "overall_confidence": overall,
+        "findings": findings,
+        "policy": "One model score, one CLAP score, or rhythmicity alone is "
+                  "never enough. Only MEDIUM+ may reach UI suggestions.",
+    }
+
+
+def build_ambience(sound_fusion):
+    """Wrap Phase 3C fused ambience evidence into shared-schema findings.
+
+    Enforces the semantic-vs-UI-source split: outdoor environmental sound
+    never maps to a named indoor category, and only genuine room tone maps
+    to Room ambience.
+    """
+    sound_fusion = sound_fusion or {}
+    ambience = sound_fusion.get("ambience", {})
+    candidates = ambience.get("candidates", [])
+    findings = []
+
+    for c in candidates:
+        tier = _normalize_tier(c.get("tier"))
+        label = c.get("semantic_candidate") or c.get("semantic_label")
+        findings.append(
+            finding(
+                f"Ambience: {label} ({tier}).",
+                tier,
+                c.get("evidence", []),
+                "Confirm by listening. Do not force a named indoor category "
+                "unless the media is genuinely indoors.",
+                window=(c["start"], c["end"]),
+            )
+        )
+
+    return {
+        "candidates": candidates,
+        "findings": findings,
+        "policy": "Semantic class and UI source are separate. Outdoor "
+                  "environmental sound never becomes Room ambience.",
+    }
+
+
 def build_object_status(context, sound):
     objects = context.get("objects", [])
 
@@ -931,7 +1071,7 @@ def build_clip_boundaries(evidence, coverage):
 # UI suggestions (spec 46): sparse, MEDIUM-or-better only
 # ---------------------------------------------------------------------------
 
-def build_ui_suggestions(evidence):
+def build_ui_suggestions(evidence, sound_fusion=None):
     profiles = evidence.get("character_voice_profiles", {})
 
     characters = {}
@@ -978,12 +1118,60 @@ def build_ui_suggestions(evidence):
         if fields:
             characters[character] = fields
 
+    # Phase 3C: sparse Sound/Music suggestions. Only MEDIUM+ may appear;
+    # WEAK / CONFLICT / UNKNOWN are deliberately excluded. These are live-UI
+    # suggestions, not automatic events, and never produce Caption Sentence
+    # or Final Audio Text.
+    sounds = []
+    music = []
+
+    if sound_fusion and sound_fusion.get("status") == "complete":
+        def _sound_suggestion(c):
+            return {
+                "event_type": "Sound",
+                "source": c.get("ui_source_candidate") or "Unidentified sound",
+                "recorded_level": c.get("recorded_level_candidate"),
+                "mix_role": c.get("mix_role_candidate"),
+                "description": c.get("description_candidate"),
+                "relationship": (
+                    " ".join(c.get("relationship_candidates", [])) or None
+                ),
+                "confidence": c["tier"],
+                "evidence_ids": [c.get("id", c.get("semantic_label"))],
+            }
+
+        for c in sound_fusion.get("sound_events", {}).get("candidates", []):
+            if c.get("tier") in (STRONG, MEDIUM):
+                sounds.append(_sound_suggestion(c))
+
+        for c in sound_fusion.get("ambience", {}).get("candidates", []):
+            if c.get("tier") in (STRONG, MEDIUM):
+                sounds.append(_sound_suggestion(c))
+
+        for r in sound_fusion.get("music", {}).get("regions", []):
+            if r.get("tier") not in (STRONG, MEDIUM):
+                continue
+            music.append({
+                "event_type": "Music",
+                "source": "Music",
+                "recorded_level": r.get("recorded_level_candidate"),
+                "mix_role": r.get("mix_role_candidate"),
+                "description": "Music",
+                "relationship": None,
+                "confidence": r["tier"],
+                "evidence_ids": [r.get("id", "music")],
+            })
+
     return {
         "characters": characters,
+        "sounds": sounds,
+        "music": music,
         "policy": [
             "Only fields with MEDIUM+ evidence appear here.",
             "Blank fields are deliberate: pitch, speaking level, clarity, "
             "tone, texture, mix role, and confidence need human listening.",
+            "Sound suggestions are never automatic events and never produce "
+            "Caption Sentence or Final Audio Text.",
             "These are suggestions to confirm in the live UI, not decisions.",
         ],
     }
@@ -1042,6 +1230,7 @@ def build_packet():
     vad = load(VAD, {})
     asr_consensus = load(ASR_CONSENSUS, {"status": "unavailable"})
     speaker_face_mapping = load(SPEAKER_FACE_MAPPING, {"status": "unavailable"})
+    sound_fusion = load(SOUND_FUSION, {"status": "unavailable"})
 
     coverage = build_coverage(evidence, diarization, vad)
 
@@ -1063,7 +1252,10 @@ def build_packet():
             evidence, coverage, diarization, speaker_map
         ),
         "voice_profiles": evidence.get("character_voice_profiles", {}),
-        "sound_events": build_sound_events(sound),
+        "sound_events": build_fusion_sound_events(sound_fusion),
+        "music": build_music(sound_fusion),
+        "ambience": build_ambience(sound_fusion),
+        "sound_events_ast": build_sound_events(sound),
         "object_sound_status": build_object_status(context, sound),
         "recording_defects": build_recording_defects(defects),
         "overlap_masking": build_overlap_masking(masking),
@@ -1072,8 +1264,8 @@ def build_packet():
         "review_queue": queue,
         "validator_predictions": validator,
         "not_yet_implemented": [
-            "ambience_classification (indoor/outdoor/traffic/ocean)",
-            "object_sound_attribution",
+            "object_sound_attribution (no object-interaction tracker yet; "
+            "conservative fallback stays Unidentified sound)",
             "visual contact sheets for ambiguous speaker windows",
         ],
         "separate_tools": {
@@ -1266,6 +1458,79 @@ def build_review_me(sections, evidence):
                 f"cluster {', '.join(region['diarized_speakers'])}"
             )
 
+    # Phase 3C: sound / music / ambience (compact, no raw PANNs/CLAP dump).
+    sound_sec = sections.get("sound_events", {})
+    music_sec = sections.get("music", {})
+    ambience_sec = sections.get("ambience", {})
+
+    sound_candidates = sound_sec.get("candidates", [])
+    music_regions = music_sec.get("regions", [])
+    ambience_candidates = ambience_sec.get("candidates", [])
+
+    if sound_candidates or music_regions or ambience_candidates:
+        add()
+        add("## SOUND EVENTS")
+
+        strong = [c for c in sound_candidates if c["tier"] == STRONG]
+        needs = [c for c in sound_candidates if c["tier"] in (MEDIUM, CONFLICT)]
+
+        if strong:
+            add()
+            add("### STRONG")
+            for c in strong:
+                add(f"- {c['semantic_label']} is strongly supported.")
+
+        if needs:
+            add()
+            add("### NEEDS REVIEW")
+            for c in needs:
+                add(f"- {c['semantic_label']} is a candidate; confirm by listening.")
+
+        add()
+        add("## MUSIC")
+        if music_regions:
+            for r in music_regions:
+                if r["tier"] in (STRONG, MEDIUM):
+                    add(f"- {r['tier']} music candidate; confirm by listening.")
+                else:
+                    add(
+                        "- Music evidence is not strong enough to auto-create. "
+                        "DO NOT CREATE MUSIC EVENT WITHOUT LISTENING."
+                    )
+        else:
+            add("- No supported music candidate.")
+
+        add()
+        add("## AMBIENCE")
+        if ambience_candidates:
+            for c in ambience_candidates:
+                label = c.get("semantic_candidate") or c.get("semantic_label")
+                add(f"- {label} ({c['tier']}).")
+        else:
+            add("- No ambience candidate.")
+
+        weak_sound = [
+            c for c in sound_candidates + ambience_candidates
+            if c["tier"] in (WEAK, UNKNOWN)
+        ]
+        weak_music = [
+            r for r in music_regions
+            if r["tier"] in (WEAK, CONFLICT, UNKNOWN)
+        ]
+        if weak_sound or weak_music:
+            add()
+            add("## DO NOT AUTO-ASSERT")
+            for c in weak_sound:
+                add(
+                    f"- {c['semantic_label']} is weak/unknown; "
+                    "do not auto-create an event."
+                )
+            for r in weak_music:
+                add(
+                    "- Music evidence is weak/conflicting; "
+                    "DO NOT CREATE MUSIC EVENT WITHOUT LISTENING."
+                )
+
     add()
     return "\n".join(lines) + "\n"
 
@@ -1279,6 +1544,7 @@ def main():
         )
 
     sections, evidence = build_packet()
+    sound_fusion = load(SOUND_FUSION, {"status": "unavailable"})
 
     ANALYSIS.mkdir(parents=True, exist_ok=True)
 
@@ -1288,7 +1554,7 @@ def main():
     review_me = build_review_me(sections, evidence)
     REVIEW_ME.write_text(review_me, encoding="utf-8")
 
-    ui = build_ui_suggestions(evidence)
+    ui = build_ui_suggestions(evidence, sound_fusion)
 
     with UI_SUGGESTIONS.open("w", encoding="utf-8") as f:
         json.dump(ui, f, indent=2, ensure_ascii=False)

@@ -12,6 +12,7 @@ from manuscript_audio_task_identity import write_video_identity
 from manuscript_audio_asr_consensus import write_asr_consensus_evidence
 from manuscript_audio_face_worker import write_face_track_evidence
 from manuscript_audio_speaker_mapping import write_speaker_mapping_evidence
+from manuscript_audio_sound_events import write_sound_fusion_evidence
 from manuscript_audio_report import main as generate_review_report
 from manuscript_audio_validator import main as run_audio_validator
 from manuscript_audio_master import main as generate_master_packet
@@ -38,6 +39,8 @@ VISION_PYTHON = ROOT / ".venv-vision" / "Scripts" / "python.exe"
 FACE_WORKER = ROOT / "manuscript_audio_face_worker.py"
 FACE_TRACK_EVIDENCE = ROOT / "analysis" / "face_track_evidence.json"
 SPEAKER_MAPPING_EVIDENCE = ROOT / "analysis" / "speaker_mapping_evidence.json"
+AUDIO_EVENTS_PYTHON = ROOT / ".venv-audio-events" / "Scripts" / "python.exe"
+SOUND_FUSION_EVIDENCE = ROOT / "analysis" / "sound_fusion_evidence.json"
 VIDEO_PATH = None
 def run(cmd):
     subprocess.run(cmd, cwd=ROOT, check=True)
@@ -307,6 +310,39 @@ def run_face_and_speaker_mapping():
                     "face_to_character_candidates": [],
                 },
                 f, indent=2,
+            )
+
+
+def run_sound_events():
+    print("\n=== PHASE 1.7: SOUND / MUSIC / AMBIENCE EVIDENCE ===\n")
+
+    # 3C is optional evidence. A missing .venv-audio-events, missing worker,
+    # model-load failure, inference failure, or malformed output must never
+    # break the rest of the pipeline. The orchestrator already fails soft
+    # internally; this outer guard catches any unexpected exception so the
+    # base packet still generates.
+    try:
+        write_sound_fusion_evidence()
+    except Exception as exc:  # noqa: BLE001 -- fail soft (design rule 4)
+        print(f"SOUND FUSION: SKIPPED | {type(exc).__name__}: {exc}")
+        SOUND_FUSION_EVIDENCE.parent.mkdir(parents=True, exist_ok=True)
+        with SOUND_FUSION_EVIDENCE.open("w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "schema_version": 1,
+                    "status": "unavailable",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "worker": {"status": "unavailable", "panns": {}, "clap": {}, "runtime": {}},
+                    "sound_events": {"candidates": []},
+                    "music": {"regions": [], "overall_confidence": "UNKNOWN", "findings": []},
+                    "ambience": {"candidates": [], "findings": []},
+                    "source_attribution": {"character_candidates": [], "object_candidates": []},
+                    "masking_evidence": {"candidates": []},
+                    "review_windows": [],
+                    "findings": [],
+                },
+                f,
+                indent=2,
             )
 
 
@@ -703,6 +739,7 @@ def main():
     run_optional_evidence()
     run_asr_consensus()
     run_face_and_speaker_mapping()
+    run_sound_events()
 
     enrich_evidence_with_shots(
         EVIDENCE,

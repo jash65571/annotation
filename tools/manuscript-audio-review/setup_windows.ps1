@@ -109,7 +109,11 @@ $ReviewScripts = @(
     "manuscript_audio_masking.py",
     "manuscript_audio_task_identity.py",
     "manuscript_audio_report.py",
-    "manuscript_audio_validator.py"
+    "manuscript_audio_validator.py",
+    "manuscript_audio_sound_vocabulary.py",
+    "manuscript_audio_sound_fusion.py",
+    "manuscript_audio_sound_events.py",
+    "manuscript_audio_sound_events_worker.py"
 )
 
 foreach ($Script in $ReviewScripts) {
@@ -139,6 +143,25 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "Manuscript V2 scripts: PASS"
+
+Write-Host ""
+Write-Host "[7/7] Audio-events environment (Phase 3C, OPTIONAL)..."
+Write-Host "      This installs torch (CPU), PANNs, and CLAP. It is best-effort:"
+Write-Host "      a failure here does NOT block the core review stack."
+$AudioSetup = Join-Path $Root "setup_audio_events_windows.ps1"
+if (Test-Path $AudioSetup) {
+    try {
+        & $AudioSetup
+    } catch {
+        Write-Host "WARNING: Phase 3C audio-events setup did not complete." -ForegroundColor Yellow
+        Write-Host "  $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "  Sound/music/ambience evidence will be unavailable; the rest of the" -ForegroundColor Yellow
+        Write-Host "  pipeline still runs normally. Re-run setup_audio_events_windows.ps1" -ForegroundColor Yellow
+        Write-Host "  directly to retry (strict mode)." -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "SKIPPED | setup_audio_events_windows.ps1 not found (optional)." -ForegroundColor Yellow
+}
 
 Write-Host ""
 Write-Host "========================================"

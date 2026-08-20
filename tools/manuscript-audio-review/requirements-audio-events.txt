@@ -1,0 +1,27 @@
+# Phase 3C audio-events environment (PANNs + CLAP).
+#
+# Tested on this machine (Windows 10/11, Python 3.11, CPU-only):
+#   torch 2.8.0 +cpu wheel
+#   transformers 4.57.6
+#   soundfile 0.14.0
+#   numpy 2.4.2
+#   panns-inference 0.1.1
+#
+# IMPORTANT:
+# - torch MUST come from the PyTorch CPU index, not the default PyPI index.
+#   The default PyPI Windows wheel bundles CUDA (~2.5 GB) and torch 2.13.x
+#   ships license files whose path length exceeds the Windows MAX_PATH limit
+#   at this repo's depth, which aborts the install. torch 2.8.0+cpu installs
+#   cleanly here. setup_audio_events_windows.ps1 installs torch first from:
+#       https://download.pytorch.org/whl/cpu
+# - panns-inference pulls librosa/numba/scipy as transitive deps (numba 0.67
+#   is numpy-2 compatible). Those are resolved by pip, not pinned here.
+# - panns-inference also needs two runtime files that its own `wget` cannot
+#   fetch on Windows. The setup script downloads them into ~/panns_data/:
+#       class_labels_indices.csv
+#       Cnn14_mAP=0.431.pth   (~327 MB)
+torch==2.8.0
+transformers==4.57.6
+soundfile==0.14.0
+numpy==2.4.2
+panns-inference==0.1.1
