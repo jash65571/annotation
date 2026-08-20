@@ -129,7 +129,11 @@ torch==2.13.0
 transformers==5.15.1
 ```
 
-They are installed from `requirements-review.txt`.
+They are installed from `requirements-review.txt`. `silero-vad==5.1.2` is
+installed separately, best-effort, by `setup_windows.ps1`: it is the optional
+independent speech-presence fallback for untranscribed-speech detection when
+diarization is skipped. If it fails to install, the pipeline still runs and
+coverage falls back to diarization (or is honestly reported as UNKNOWN).
 
 ## WhisperX environment
 
@@ -265,3 +269,71 @@ Put the video in this folder and run:
 
 ```powershell
 .\review_manuscript_audio.ps1 ".\video.mp4"
+```
+
+## Version 2.1 — consolidated review packet + companion tools
+
+Version 2.1 adds one consolidated packet so you no longer reconcile a dozen
+JSON files by hand, plus three companion tools.
+
+### One packet to read
+
+The pipeline now ends with a master aggregator (`manuscript_audio_master.py`,
+Phase 7). It reads every per-stage evidence file and writes:
+
+```text
+analysis\manuscript_audio_review_packet.json   # master: all sections + ranked findings
+analysis\REVIEW_ME.md                          # human-readable summary
+analysis\manuscript_audio_ui_suggestions.json  # sparse, MEDIUM+ UI field suggestions
+```
+
+Every conclusion carries one shared confidence tier — STRONG / MEDIUM / WEAK /
+CONFLICT / UNKNOWN — plus the signals it came from. `REVIEW_ME.md` groups
+findings into "STRONG (safe defaults)", "NEEDS REVIEW", and "DO NOT
+AUTO-ASSERT". UI suggestions stay sparse on purpose: a field appears only with
+MEDIUM+ evidence; pitch, tone, clarity, texture, and speaking level are left
+blank for human listening.
+
+### Untranscribed-speech detection
+
+The aggregator diffs an independent speech-presence signal against the ASR
+segments. Where speech exists but ASR produced no words, it emits
+`UNTRANSCRIBED_SPEECH` with a coverage ratio, so late or dropped speech is
+never silently lost. The signal is diarization turns when available, otherwise
+Silero VAD (`manuscript_audio_vad.py`, added to `requirements-review.txt`). If
+neither is available, coverage is honestly reported as UNKNOWN.
+
+### Task-seed parser
+
+```powershell
+.\.venv-review\Scripts\python.exe manuscript_audio_seed.py .\seed.txt
+```
+
+Parses the pasted live task into `task_context.json` (C#/O# ids + descriptions,
+locked shot boundaries) and records the original cast/object baseline under
+`seed_meta`. The live locked task then drives audio review.
+
+### Pasted-back QA (predict the blockers)
+
+A separate surface for after you fill the live UI. Paste the filled event
+fields + generated caption / Final Audio Text into a state JSON and run:
+
+```powershell
+.\.venv-review\Scripts\python.exe manuscript_audio_qa.py .\state.json
+```
+
+It predicts export blockers before Handshake: `STRUCTURED_FIELD_MISSING` (prose
+claims "moderate recorded level" while the field is blank), a Not-observed
+character used as a Speech source, a silent object used as a sound source,
+deletion of original cast, numeric timestamps or past tense in Final Audio
+Text, and dialogue missing from the final prose.
+
+### Regression lock
+
+`test_regression_clip.py` locks the reference applause clip's ground truth and
+every discipline rule (weak music stays weak, overlap is not masking, defects
+stay UNKNOWN, late speech is recovered). Run it any time — no video, no models:
+
+```powershell
+.\.venv-review\Scripts\python.exe test_regression_clip.py
+```

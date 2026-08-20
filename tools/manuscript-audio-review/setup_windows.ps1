@@ -53,6 +53,15 @@ if ($LASTEXITCODE -ne 0) { throw "Failed to upgrade pip in .venv-review." }
 & $ReviewPython -m pip install -r $ReviewRequirements
 if ($LASTEXITCODE -ne 0) { throw "Failed to install reviewer requirements." }
 
+# Silero VAD is an OPTIONAL fallback (independent speech-presence when
+# diarization is skipped). Install it best-effort so a failure here can never
+# break the core review stack above. If it is missing, the pipeline still runs
+# and coverage falls back to diarization / UNKNOWN.
+& $ReviewPython -m pip install "silero-vad==5.1.2"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "WARNING: silero-vad not installed; VAD fallback disabled (optional)." -ForegroundColor Yellow
+}
+
 Write-Host ""
 Write-Host "[4/6] Creating WhisperX environment..."
 if (-not (Test-Path $WhisperXVenv)) {

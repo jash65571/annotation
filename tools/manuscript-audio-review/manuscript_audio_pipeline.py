@@ -11,6 +11,7 @@ from manuscript_audio_optional import run_optional_evidence
 from manuscript_audio_task_identity import write_video_identity
 from manuscript_audio_report import main as generate_review_report
 from manuscript_audio_validator import main as run_audio_validator
+from manuscript_audio_master import main as generate_master_packet
 ROOT = Path(__file__).resolve().parent
 
 ANALYZER = ROOT / "manuscript_audio_review.py"
@@ -607,6 +608,12 @@ def main():
 
     validator_result = run_audio_validator()
 
+    print(
+        "\n=== PHASE 7: CONSOLIDATED REVIEW PACKET ===\n"
+    )
+
+    generate_master_packet()
+
     print()
     print("===================================")
     print(" PIPELINE EXECUTION: PASS")
@@ -615,6 +622,9 @@ def main():
     print("Review queue:", QUEUE)
     print("Review clips:", CLIP_DIR)
     print("Manifest:", MANIFEST)
+    print("Master packet:", ROOT / "analysis" / "manuscript_audio_review_packet.json")
+    print("Human summary:", ROOT / "analysis" / "REVIEW_ME.md")
+    print("UI suggestions:", ROOT / "analysis" / "manuscript_audio_ui_suggestions.json")
 
 
 if __name__ == "__main__":

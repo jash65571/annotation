@@ -66,6 +66,12 @@ SOUND_EVIDENCE = (
     / "sound_event_evidence.json"
 )
 
+VAD_REGIONS = (
+    ROOT
+    / "analysis"
+    / "vad_speech_regions.json"
+)
+
 AUDIO = (
     ROOT
     / "analysis"
@@ -86,6 +92,7 @@ def remove_stale_optional_outputs():
         DIARIZED_TRANSCRIPT,
         GENERATED_SPEAKER_MAP,
         SOUND_EVIDENCE,
+        VAD_REGIONS,
     ]
 
     for path in paths:
@@ -228,6 +235,25 @@ def run_sound_layer():
 
 
 
+def run_vad_layer():
+    print(
+        "\n=== VAD SPEECH-PRESENCE FALLBACK ===\n"
+    )
+
+    if not AUDIO.exists():
+        print(
+            "VAD SPEECH REGIONS: SKIPPED | analysis WAV missing"
+        )
+        return
+
+    try:
+        from manuscript_audio_vad import write_vad_regions
+
+        write_vad_regions(AUDIO)
+    except Exception as exc:
+        print("VAD SPEECH REGIONS: WARNING |", exc)
+
+
 def run_quality_layers():
     print(
         "\n=== RECORDING / MASKING EVIDENCE ===\n"
@@ -261,6 +287,7 @@ def run_optional_evidence():
     remove_stale_optional_outputs()
 
     run_diarization_layer()
+    run_vad_layer()
     run_sound_layer()
     run_quality_layers()
     print()
