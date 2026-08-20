@@ -1,0 +1,5 @@
+numpy==2.4.6
+opensmile==2.6.0
+soundfile==0.14.0
+torch==2.13.0
+transformers==5.15.1
