@@ -61,3 +61,10 @@ models/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Per-task reviewer context
+task_context.json
+speaker_map.json
+speaker_cluster_map.json
+speaker_map.generated.json
+*.test-backup.json

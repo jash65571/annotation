@@ -235,3 +235,33 @@ This pipeline is an evidence helper, not annotation authority.
 - Emotion output does not decide final tone.
 - Pitch changes do not identify speakers.
 - Actual clip audio remains the factual source of truth.
+
+## Version 2 Audio Reviewer
+
+Version 2 adds a much stronger Manuscript II audio-review workflow.
+
+### What Version 2 does
+
+- Runs WhisperX large-v3 transcription.
+- Creates word-level timing evidence.
+- Checks speech across shot boundaries.
+- Merges duplicate transcript-review regions.
+- Runs optional speaker diarization.
+- Flags suspicious speaker clusters.
+- Supports human-confirmed speaker-to-character mapping.
+- Builds Character Voice evidence.
+- Detects possible non-speech sounds.
+- Checks sound continuity across shots.
+- Checks possible clipping, echo, and wind noise.
+- Separates ordinary overlap from possible masking.
+- Creates targeted WAV clips for manual listening.
+- Creates a readable Manuscript reviewer report.
+- Runs a final validator preflight.
+- Protects against old task data being reused on a new video.
+
+### Normal use
+
+Put the video in this folder and run:
+
+```powershell
+.\review_manuscript_audio.ps1 ".\video.mp4"
