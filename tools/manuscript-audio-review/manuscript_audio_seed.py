@@ -51,17 +51,35 @@ import sys
 ROOT = Path(__file__).resolve().parent
 CONTEXT = ROOT / "task_context.json"
 
-# "C1:", "O2 -", "@C3)" ... a definition line binds an id to a description.
+# "C1:", "O2 -", "@C3)" ... an inline definition line binds an id to a
+# description on the same line.
 _DEF_RE = re.compile(
     r"^\s*@?(?P<id>[CO]\d+)\s*[:\-)–—]\s*(?P<desc>.*\S)?",
     re.IGNORECASE,
 )
 
-# "Shot 1: 0.0 - 4.0" / "Shot 2 4.00–10.50"
+# A bare id on its own line: "C1", "@O2". The live UI dump puts the description
+# on the following line, so this is handled separately from _DEF_RE.
+_ID_ONLY_RE = re.compile(r"^\s*@?(?P<id>[CO]\d+)\s*$", re.IGNORECASE)
+
+# Inline shot with plain seconds: "Shot 1: 0.0 - 4.0" / "Shot 2 4.00–10.50".
 _SHOT_RE = re.compile(
     r"^\s*shot\s*(?P<num>\d+)\s*[:\-)]?\s*"
     r"(?P<start>\d+(?:\.\d+)?)\s*[\-–—to]+\s*(?P<end>\d+(?:\.\d+)?)",
     re.IGNORECASE,
+)
+
+# Live UI shot header: "Shot 1of 3", "Shot 2 of 3". Times arrive on a later
+# timecode line, not here.
+_SHOT_HEADER_RE = re.compile(
+    r"^\s*shot\s*(?P<num>\d+)\s*of\s*\d+\s*$",
+    re.IGNORECASE,
+)
+
+# A timecode range line: "00:00:00.0–00:00:10.1" (HH:MM:SS.s, any dash).
+_TIMECODE_RANGE_RE = re.compile(
+    r"^\s*(?P<start>\d{1,2}:\d{2}:\d{2}(?:\.\d+)?)\s*[\-–—]\s*"
+    r"(?P<end>\d{1,2}:\d{2}:\d{2}(?:\.\d+)?)\s*$",
 )
 
 # "Shots: 3" declared-count line.
@@ -69,6 +87,20 @@ _SHOT_COUNT_RE = re.compile(
     r"^\s*(?:number\s+of\s+)?shots?\s*[:=]\s*(?P<count>\d+)\s*$",
     re.IGNORECASE,
 )
+
+# Lines that are never a valid entity description (live UI noise / labels).
+_DESC_NOISE = re.compile(
+    r"^\s*(add\b|select\b|describe\b|tone\b|pitch\b|speaking level\b|"
+    r"recorded level\b|mix role\b|clarity\b|speed\b|delivery\b|source\b|"
+    r"transcription\b|voice\b|relationship\b|quick add\b|caption\b|"
+    r"regenerate\b|make (sound|speech)\b|off-screen\b|None\.?\s*$|\d+\s*$)",
+    re.IGNORECASE,
+)
+
+
+def _timecode_to_seconds(value):
+    hours, minutes, seconds = value.split(":")
+    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
 
 
 def parse_seed_text(text):
@@ -79,9 +111,43 @@ def parse_seed_text(text):
     declared_shot_count = None
 
     seen_ids = {}
+    lines = text.splitlines()
 
-    for line_no, raw in enumerate(text.splitlines(), start=1):
+    # Shot boundary that separates the Cast section from the event section:
+    # entity definitions before the first shot header are the real cast, the
+    # bare ids after it are just event sources (already captured above).
+    first_shot_line = None
+    for i, raw in enumerate(lines):
+        if _SHOT_HEADER_RE.match(raw.strip()) or _SHOT_RE.match(raw.strip()):
+            first_shot_line = i
+            break
+
+    pending_shot = None  # a shot header awaiting its timecode line
+
+    def add_entity(entity_id, description, line_no):
+        entity_id = entity_id.upper()
+
+        if entity_id in seen_ids:
+            issues.append(
+                f"line {line_no}: duplicate definition of {entity_id}; "
+                "keeping the first"
+            )
+            return
+
+        seen_ids[entity_id] = line_no
+        record = {
+            "id": entity_id,
+            "description": description.strip(),
+            "original": True,
+        }
+        (characters if entity_id.startswith("C") else objects).append(record)
+
+        if not description.strip():
+            issues.append(f"line {line_no}: {entity_id} has no description")
+
+    for line_no, raw in enumerate(lines, start=1):
         line = raw.strip()
+        index = line_no - 1
 
         if not line:
             continue
@@ -91,54 +157,68 @@ def parse_seed_text(text):
             declared_shot_count = int(shot_count.group("count"))
             continue
 
+        # Inline shot with plain seconds.
         shot = _SHOT_RE.match(line)
         if shot:
             start = float(shot.group("start"))
             end = float(shot.group("end"))
-
             if end <= start:
                 issues.append(
                     f"line {line_no}: shot {shot.group('num')} has "
-                    f"end <= start ({start} -> {end}); skipped"
+                    f"end <= start; skipped"
                 )
-                continue
-
-            shots.append({
-                "shot": int(shot.group("num")),
-                "start": round(start, 3),
-                "end": round(end, 3),
-            })
+            else:
+                shots.append({
+                    "shot": int(shot.group("num")),
+                    "start": round(start, 3),
+                    "end": round(end, 3),
+                })
             continue
 
+        # Live UI shot header -> remember it; the next timecode line has times.
+        header = _SHOT_HEADER_RE.match(line)
+        if header:
+            pending_shot = int(header.group("num"))
+            continue
+
+        timecode = _TIMECODE_RANGE_RE.match(line)
+        if timecode and pending_shot is not None:
+            start = _timecode_to_seconds(timecode.group("start"))
+            end = _timecode_to_seconds(timecode.group("end"))
+            if end > start:
+                shots.append({
+                    "shot": pending_shot,
+                    "start": round(start, 3),
+                    "end": round(end, 3),
+                })
+            pending_shot = None
+            continue
+
+        # Inline "C1: description".
         definition = _DEF_RE.match(line)
-        if definition:
-            entity_id = definition.group("id").upper()
-            description = (definition.group("desc") or "").strip()
+        if definition and definition.group("desc"):
+            add_entity(
+                definition.group("id"),
+                definition.group("desc"),
+                line_no,
+            )
+            continue
 
-            if entity_id in seen_ids:
-                issues.append(
-                    f"line {line_no}: duplicate definition of {entity_id}; "
-                    "keeping the first"
-                )
-                continue
-
-            seen_ids[entity_id] = line_no
-
-            record = {
-                "id": entity_id,
-                "description": description,
-                "original": True,
-            }
-
-            if entity_id.startswith("C"):
-                characters.append(record)
-            else:
-                objects.append(record)
-
-            if not description:
-                issues.append(
-                    f"line {line_no}: {entity_id} has no description"
-                )
+        # Bare id on its own line (live UI): description is the next real line.
+        # Only trust these in the Cast section (before the first shot).
+        id_only = _ID_ONLY_RE.match(line)
+        if id_only and (first_shot_line is None or index < first_shot_line):
+            description = ""
+            for follow in lines[index + 1:]:
+                candidate = follow.strip()
+                if not candidate:
+                    continue
+                if _ID_ONLY_RE.match(candidate) or _DESC_NOISE.match(candidate):
+                    break
+                description = candidate
+                break
+            add_entity(id_only.group("id"), description, line_no)
+            continue
 
     characters.sort(key=lambda r: int(r["id"][1:]))
     objects.sort(key=lambda r: int(r["id"][1:]))
@@ -176,9 +256,23 @@ def write_task_context(parsed, context_path=CONTEXT, preserve_sha=True):
 
     result = dict(parsed)
 
-    # Preserve an already-bound video fingerprint so the identity guards keep
-    # working; the seed itself carries no fingerprint.
-    if preserve_sha and context_path.exists():
+    # Bind the task to the CURRENT video. Prefer the fingerprint that the
+    # pipeline wrote for the analyzed video (video_identity.json); only fall
+    # back to an existing task_context fingerprint. This prevents a stale
+    # fingerprint from a previous clip from lingering on a new video.
+    identity_path = context_path.parent / "analysis" / "video_identity.json"
+    current_sha = None
+
+    if identity_path.exists():
+        try:
+            with identity_path.open("r", encoding="utf-8-sig") as f:
+                current_sha = json.load(f).get("video_sha256")
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    if current_sha:
+        result["video_sha256"] = current_sha
+    elif preserve_sha and context_path.exists():
         try:
             with context_path.open("r", encoding="utf-8-sig") as f:
                 existing = json.load(f)

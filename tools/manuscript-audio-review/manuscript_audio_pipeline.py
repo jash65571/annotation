@@ -9,6 +9,9 @@ from manuscript_audio_ui import enrich_evidence_with_ui_candidates
 from manuscript_audio_voice import enrich_evidence_with_voice_profiles
 from manuscript_audio_optional import run_optional_evidence
 from manuscript_audio_task_identity import write_video_identity
+from manuscript_audio_asr_consensus import write_asr_consensus_evidence
+from manuscript_audio_face_worker import write_face_track_evidence
+from manuscript_audio_speaker_mapping import write_speaker_mapping_evidence
 from manuscript_audio_report import main as generate_review_report
 from manuscript_audio_validator import main as run_audio_validator
 from manuscript_audio_master import main as generate_master_packet
@@ -27,6 +30,15 @@ CONTEXT = ROOT / "task_context.json"
 SPEAKER_MAP = ROOT / "speaker_map.json"
 WHISPERX_JSON = ROOT / "output" / "VIDEO.json"
 VIDEO_IDENTITY = ROOT / "analysis" / "video_identity.json"
+ASR_CONSENSUS = ROOT / "analysis" / "asr_consensus_evidence.json"
+DIARIZATION_EVIDENCE = ROOT / "analysis" / "diarization_evidence.json"
+VAD_EVIDENCE = ROOT / "analysis" / "vad_speech_regions.json"
+WHISPERX_PYTHON = ROOT / ".venv-whisperx" / "Scripts" / "python.exe"
+VISION_PYTHON = ROOT / ".venv-vision" / "Scripts" / "python.exe"
+FACE_WORKER = ROOT / "manuscript_audio_face_worker.py"
+FACE_TRACK_EVIDENCE = ROOT / "analysis" / "face_track_evidence.json"
+SPEAKER_MAPPING_EVIDENCE = ROOT / "analysis" / "speaker_mapping_evidence.json"
+VIDEO_PATH = None
 def run(cmd):
     subprocess.run(cmd, cwd=ROOT, check=True)
 
@@ -38,6 +50,9 @@ def preprocess_source_video():
         video = Path(sys.argv[1]).expanduser().resolve()
     else:
         video = ROOT / "VIDEO.mp4"
+
+    global VIDEO_PATH
+    VIDEO_PATH = video
 
     output_dir = ROOT / "output"
     analysis_dir = ROOT / "analysis"
@@ -186,6 +201,113 @@ def run_analyzer():
         raise FileNotFoundError(
             f"Evidence file missing after analyzer run: {EVIDENCE}"
         )
+
+
+def run_asr_consensus():
+    print("\n=== PHASE 1.5: ASR CONSENSUS (SECONDARY MODEL) ===\n")
+
+    with EVIDENCE.open("r", encoding="utf-8") as f:
+        evidence = json.load(f)
+
+    duration = evidence.get("media", {}).get("duration_sec")
+
+    independent_speech_regions = []
+
+    if DIARIZATION_EVIDENCE.exists():
+        with DIARIZATION_EVIDENCE.open("r", encoding="utf-8-sig") as f:
+            diarization = json.load(f)
+        if diarization.get("status") == "complete":
+            independent_speech_regions = [
+                (t["start"], t["end"]) for t in diarization.get("turns", [])
+            ]
+
+    if not independent_speech_regions and VAD_EVIDENCE.exists():
+        with VAD_EVIDENCE.open("r", encoding="utf-8-sig") as f:
+            vad = json.load(f)
+        if vad.get("status") == "complete":
+            independent_speech_regions = [
+                (r["start"], r["end"]) for r in vad.get("regions", [])
+            ]
+
+    try:
+        write_asr_consensus_evidence(
+            WHISPERX_JSON,
+            AUDIO,
+            WHISPERX_PYTHON,
+            ASR_CONSENSUS,
+            duration_sec=duration,
+            independent_speech_regions=independent_speech_regions,
+        )
+    except Exception as exc:  # noqa: BLE001 -- fail soft (design rule 4)
+        print(f"ASR CONSENSUS: SKIPPED | {type(exc).__name__}: {exc}")
+        ASR_CONSENSUS.parent.mkdir(parents=True, exist_ok=True)
+        with ASR_CONSENSUS.open("w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "status": "failed",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "coverage": None,
+                    "word_consensus": [],
+                    "conflicts": [],
+                    "rerun_windows": [],
+                },
+                f,
+                indent=2,
+            )
+
+
+def run_face_and_speaker_mapping():
+    print("\n=== PHASE 1.6: FACE TRACKING / ACTIVE-SPEAKER MAPPING ===\n")
+
+    if VISION_PYTHON.exists() and FACE_WORKER.exists():
+        try:
+            run([
+                str(VISION_PYTHON),
+                str(FACE_WORKER),
+                str(VIDEO_PATH),
+                str(FACE_TRACK_EVIDENCE),
+                "--fps",
+                "5",
+            ])
+        except subprocess.CalledProcessError as exc:
+            print(f"FACE TRACKING: SKIPPED | subprocess failed: {exc}")
+            FACE_TRACK_EVIDENCE.parent.mkdir(parents=True, exist_ok=True)
+            with FACE_TRACK_EVIDENCE.open("w", encoding="utf-8") as f:
+                json.dump(
+                    {"status": "failed", "error": str(exc), "face_tracks": []},
+                    f, indent=2,
+                )
+    else:
+        print("FACE TRACKING: SKIPPED | .venv-vision not found (run setup)")
+        FACE_TRACK_EVIDENCE.parent.mkdir(parents=True, exist_ok=True)
+        with FACE_TRACK_EVIDENCE.open("w", encoding="utf-8") as f:
+            json.dump(
+                {"status": "unavailable", "error": "vision environment missing",
+                 "face_tracks": []},
+                f, indent=2,
+            )
+
+    try:
+        write_speaker_mapping_evidence(
+            diarization_path=DIARIZATION_EVIDENCE,
+            vad_path=VAD_EVIDENCE,
+            face_tracks_path=FACE_TRACK_EVIDENCE,
+            output_path=SPEAKER_MAPPING_EVIDENCE,
+        )
+    except Exception as exc:  # noqa: BLE001 -- fail soft (design rule 4)
+        print(f"SPEAKER/FACE MAPPING: SKIPPED | {type(exc).__name__}: {exc}")
+        with SPEAKER_MAPPING_EVIDENCE.open("w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "status": "failed",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "face_tracks": [],
+                    "active_speaker_windows": [],
+                    "cluster_to_face_candidates": [],
+                    "face_to_character_candidates": [],
+                },
+                f, indent=2,
+            )
 
 
 def clamp(value, low, high):
@@ -579,6 +701,8 @@ def main():
     run_analyzer()
 
     run_optional_evidence()
+    run_asr_consensus()
+    run_face_and_speaker_mapping()
 
     enrich_evidence_with_shots(
         EVIDENCE,

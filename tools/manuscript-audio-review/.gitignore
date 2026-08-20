@@ -1,6 +1,7 @@
 # Local Python environments
 .venv-review/
 .venv-whisperx/
+.venv-vision/
 venv/
 
 # Generated pipeline output

@@ -35,6 +35,8 @@ QUEUE = ANALYSIS / "audio_review_queue.json"
 VAD = ANALYSIS / "vad_speech_regions.json"
 VALIDATOR = ANALYSIS / "manuscript_audio_validator.json"
 VIDEO_IDENTITY = ANALYSIS / "video_identity.json"
+ASR_CONSENSUS = ANALYSIS / "asr_consensus_evidence.json"
+SPEAKER_FACE_MAPPING = ANALYSIS / "speaker_mapping_evidence.json"
 CONTEXT = ROOT / "task_context.json"
 SPEAKER_MAP = ROOT / "speaker_map.json"
 
@@ -435,6 +437,299 @@ def build_character_mapping(evidence, coverage, diarization, speaker_map):
     }
 
 
+def build_asr_consensus(asr_consensus):
+    """Wrap the Phase 3A secondary-ASR comparison into shared-schema findings.
+
+    Never turns disagreement into a transcript edit -- it only tells the
+    reviewer which windows a second independent model does not corroborate.
+    """
+    findings = []
+
+    status = asr_consensus.get("status", "unavailable")
+
+    if status != "complete":
+        findings.append(
+            finding(
+                "Secondary ASR pass did not run; transcript was not "
+                "cross-checked by a second model.",
+                UNKNOWN,
+                [f"asr_consensus status: {status}"]
+                + ([asr_consensus["error"]] if asr_consensus.get("error") else []),
+                "Apply the same listening discipline as before Phase 3A; "
+                "no cross-model corroboration is available.",
+            )
+        )
+        return {
+            "coverage": None,
+            "word_consensus": [],
+            "conflicts": [],
+            "rerun_windows": [],
+            "findings": findings,
+            "policy": "Fails soft: base packet is unaffected when the "
+                      "secondary model cannot run.",
+        }
+
+    coverage = asr_consensus.get("coverage", {}) or {}
+
+    for c in asr_consensus.get("conflicts", []):
+        findings.append(
+            finding(
+                f"Two ASR models disagree: primary heard "
+                f"\"{c['primary_word']}\", secondary heard "
+                f"\"{c['secondary_word']}\".",
+                CONFLICT,
+                [
+                    f"primary score: {c.get('primary_score')}",
+                    f"secondary score: {c.get('secondary_score')}",
+                ],
+                "Listen and decide the word manually; do not average or "
+                "pick one model automatically.",
+                window=(c["start"], c["end"]),
+            )
+        )
+
+    for a, b in merge_intervals(
+        (w["start"], w["end"])
+        for w in asr_consensus.get("secondary_only_words", [])
+    ):
+        length = b - a
+        tier = STRONG if length >= 0.6 else MEDIUM
+        findings.append(
+            finding(
+                "Secondary ASR model recovered speech the primary "
+                "transcript missed entirely.",
+                tier,
+                ["secondary model produced words; primary produced none"],
+                "Listen and transcribe manually. Do not trust primary-only "
+                "coverage as complete.",
+                window=(a, b),
+            )
+        )
+
+    for rerun in asr_consensus.get("reruns_executed", []):
+        if not rerun.get("recovered_text"):
+            continue
+        findings.append(
+            finding(
+                "Targeted rerun over a flagged window produced additional "
+                f"text: \"{rerun['recovered_text']}\".",
+                MEDIUM,
+                [f"rerun reason(s): {', '.join(rerun.get('reasons', []))}"],
+                "Confirm by listening before adding this to the transcript.",
+                window=tuple(rerun["window"]),
+            )
+        )
+
+    # Advisory-only signals (3A.1-4/5): never above MEDIUM, always a
+    # listening cue, never a transcript edit or a name correction.
+    for risk in asr_consensus.get("hallucination_risk_words", []):
+        tier = MEDIUM if risk["tier"] == "MEDIUM" else WEAK
+        findings.append(
+            finding(
+                f"Possible ASR hallucination: \"{risk['word']}\" "
+                f"(advisory score {risk['score']}).",
+                tier,
+                risk["reasons"],
+                "Advisory only. Listen before deciding whether this word "
+                "was actually spoken.",
+                window=(risk["start"], risk["end"]),
+            )
+        )
+
+    for risk in asr_consensus.get("proper_noun_risk_words", []):
+        findings.append(
+            finding(
+                f"\"{risk['word']}\" may be a name/proper noun worth "
+                "double-checking.",
+                WEAK,
+                risk["reasons"],
+                "Do not auto-correct the spelling; confirm by listening "
+                "and/or against the locked task cast.",
+                window=(risk["start"], risk["end"]),
+            )
+        )
+
+    if asr_consensus.get("reruns_skipped_count", 0) > 0:
+        findings.append(
+            finding(
+                f"{asr_consensus['reruns_skipped_count']} rerun window(s) "
+                "were identified but not executed (rerun cap reached).",
+                UNKNOWN,
+                ["rerun_windows list is complete; reruns_executed is capped"],
+                "Review the remaining rerun_windows manually if time allows.",
+            )
+        )
+
+    agreement = coverage.get("model_agreement_pct")
+
+    if agreement is not None:
+        tier = STRONG if agreement >= 0.85 else MEDIUM if agreement >= 0.6 else WEAK
+        findings.append(
+            finding(
+                f"Model agreement on matched words: {agreement:.0%}.",
+                tier,
+                [
+                    f"primary words: {asr_consensus.get('primary_word_count')}",
+                    f"secondary words: {asr_consensus.get('secondary_word_count')}",
+                ],
+                "High agreement supports the transcript; it does not "
+                "replace listening to flagged windows.",
+            )
+        )
+
+    return {
+        "coverage": coverage,
+        "word_consensus": asr_consensus.get("word_consensus", []),
+        "secondary_only_words": asr_consensus.get("secondary_only_words", []),
+        "conflicts": asr_consensus.get("conflicts", []),
+        "rerun_windows": asr_consensus.get("rerun_windows", []),
+        "reruns_executed": asr_consensus.get("reruns_executed", []),
+        "hallucination_risk_words": asr_consensus.get("hallucination_risk_words", []),
+        "proper_noun_risk_words": asr_consensus.get("proper_noun_risk_words", []),
+        "secondary_model": asr_consensus.get("secondary_model"),
+        "findings": findings,
+        "policy": "Cross-model comparison is evidence, not a transcript "
+                  "edit. Never auto-insert [uncertain]/[unintelligible]/"
+                  "[inaudible].",
+    }
+
+
+def build_speaker_face_mapping(mapping):
+    """Wrap Phase 3B face-track / active-speaker evidence into shared-schema
+    findings. Never turns a face track or diarization cluster into a
+    character (C#) identity -- only ever a labeled candidate for the
+    reviewer to confirm by watching.
+    """
+    findings = []
+
+    status = mapping.get("status", "unavailable") if mapping else "unavailable"
+
+    if status != "complete":
+        findings.append(
+            finding(
+                "Face tracking / active-speaker mapping did not run.",
+                UNKNOWN,
+                [f"speaker_mapping status: {status}"],
+                "No visual speaker evidence available; rely on diarization "
+                "clusters and audio-only listening.",
+            )
+        )
+        return {
+            "face_tracks": [],
+            "active_speaker_windows": [],
+            "cluster_to_face_candidates": [],
+            "face_to_character_candidates": [],
+            "findings": findings,
+            "policy": "Fails soft: base packet is unaffected when face "
+                      "tracking cannot run.",
+        }
+
+    if mapping.get("face_worker_status") != "complete":
+        findings.append(
+            finding(
+                "Face detection did not complete "
+                f"(status: {mapping.get('face_worker_status')}).",
+                UNKNOWN,
+                ["face worker did not produce usable tracks"],
+                "Treat every speech window as possibly off-screen.",
+            )
+        )
+    elif not mapping.get("face_tracks"):
+        findings.append(
+            finding(
+                "No face was detected anywhere in the sampled frames.",
+                UNKNOWN,
+                ["face_tracks: empty"],
+                "All speech in this clip is likely off-screen narration, "
+                "or faces are too small/occluded to detect. Confirm by "
+                "watching before assuming a visible speaker exists.",
+            )
+        )
+
+    for window in mapping.get("active_speaker_windows", []):
+        tier = window["tier"]
+
+        if tier == UNKNOWN:
+            findings.append(
+                finding(
+                    "No visible face during this speech window.",
+                    UNKNOWN,
+                    [window["reason"]],
+                    window["action"],
+                    window=(window["start"], window["end"]),
+                )
+            )
+        elif tier == CONFLICT:
+            candidate_ids = ", ".join(c["face_id"] for c in window["candidates"])
+            findings.append(
+                finding(
+                    f"Multiple visible faces ({candidate_ids}) show similar "
+                    "mouth motion during this speech window.",
+                    CONFLICT,
+                    [
+                        f"{c['face_id']}: motion={c['motion_score']}, "
+                        f"visibility={c['visibility_ratio']}"
+                        for c in window["candidates"]
+                    ],
+                    window["action"],
+                    window=(window["start"], window["end"]),
+                )
+            )
+        elif window["candidates"]:
+            top = max(window["candidates"], key=lambda c: c["motion_score"])
+            findings.append(
+                finding(
+                    f"{top['face_id']} is the best visible active-speaker "
+                    "candidate for this window (mouth-motion evidence "
+                    "only).",
+                    tier,
+                    [
+                        f"motion_score={top['motion_score']}",
+                        f"visibility_ratio={top['visibility_ratio']}",
+                        "signal: mouth-aspect-ratio motion, not verified "
+                        "audiovisual sync",
+                    ],
+                    window["action"],
+                    window=(window["start"], window["end"]),
+                )
+            )
+
+    for candidate in mapping.get("cluster_to_face_candidates", []):
+        findings.append(
+            finding(
+                f"{candidate['speaker_cluster']} co-occurs with "
+                f"{candidate['face_id']}'s mouth motion in "
+                f"{candidate['supporting_windows']} window(s) "
+                f"({candidate['consistency_ratio']:.0%} consistency).",
+                candidate["tier"],
+                [f"consistency_ratio: {candidate['consistency_ratio']}"],
+                candidate["action"],
+            )
+        )
+
+    for candidate in mapping.get("face_to_character_candidates", []):
+        findings.append(
+            finding(
+                f"{candidate['face_id']} is human-confirmed as "
+                f"{candidate['character']}.",
+                candidate["tier"],
+                ["face_character_map.json: human-confirmed"],
+                candidate["action"],
+            )
+        )
+
+    return {
+        "face_tracks": mapping.get("face_tracks", []),
+        "active_speaker_windows": mapping.get("active_speaker_windows", []),
+        "cluster_to_face_candidates": mapping.get("cluster_to_face_candidates", []),
+        "face_to_character_candidates": mapping.get("face_to_character_candidates", []),
+        "findings": findings,
+        "policy": "Face-track ids (F#) and diarization clusters (SPEAKER_XX) "
+                  "never become a character (C#) identity without human "
+                  "confirmation. Mouth-motion evidence never exceeds MEDIUM.",
+    }
+
+
 def build_sound_events(sound):
     candidates = sound.get(
         "shot_assigned_candidates",
@@ -745,6 +1040,8 @@ def build_packet():
     context = load(CONTEXT, {})
     speaker_map = load(SPEAKER_MAP, {})
     vad = load(VAD, {})
+    asr_consensus = load(ASR_CONSENSUS, {"status": "unavailable"})
+    speaker_face_mapping = load(SPEAKER_FACE_MAPPING, {"status": "unavailable"})
 
     coverage = build_coverage(evidence, diarization, vad)
 
@@ -757,6 +1054,8 @@ def build_packet():
             "note": "Live locked task wins over machine shot detection.",
         },
         "coverage_gaps": coverage,
+        "asr_consensus": build_asr_consensus(asr_consensus),
+        "speaker_face_mapping": build_speaker_face_mapping(speaker_face_mapping),
         "speaker_clusters": build_speaker_clusters(
             diarization, diarization_qc
         ),
@@ -773,10 +1072,9 @@ def build_packet():
         "review_queue": queue,
         "validator_predictions": validator,
         "not_yet_implemented": [
-            "asr_consensus (second ASR model / word agreement)",
-            "active_speaker_detection (lip/audio sync, needs video frames)",
             "ambience_classification (indoor/outdoor/traffic/ocean)",
             "object_sound_attribution",
+            "visual contact sheets for ambiguous speaker windows",
         ],
         "separate_tools": {
             "pasted_back_qa": "manuscript_audio_qa.py (field-vs-prose, cast "
@@ -863,6 +1161,99 @@ def build_review_me(sections, evidence):
         "DO NOT AUTO-ASSERT — weak / unknown",
         [f for f in ranked if f["tier"] in (WEAK, UNKNOWN)],
     )
+
+    # ASR consensus (Phase 3A): separate STRONG / NEEDS LISTENING /
+    # COVERAGE GAPS / CONFLICTING WORDS per spec 3A-I.
+    asr = sections.get("asr_consensus", {})
+    asr_coverage = asr.get("coverage") or {}
+
+    if asr_coverage:
+        add()
+        add("## ASR CONSENSUS (secondary model cross-check)")
+        add(
+            f"Model agreement on matched words: "
+            f"{asr_coverage.get('model_agreement_pct')}. "
+            f"Word disagreements: {asr_coverage.get('word_disagreement_count')}. "
+            f"Recovered gap (speech secondary caught, primary missed): "
+            f"{asr_coverage.get('uncovered_speech_duration_sec')}s "
+            f"(longest single region "
+            f"{asr_coverage.get('longest_uncovered_region_sec')}s)."
+        )
+
+        strong_words = [
+            w for w in asr.get("word_consensus", [])
+            if w["state"] == "confirmed"
+        ]
+        if strong_words:
+            add()
+            add(
+                f"**STRONG TRANSCRIPT**: {len(strong_words)} word(s) "
+                "confirmed by both models."
+            )
+
+        listen_words = [
+            w for w in asr.get("word_consensus", [])
+            if w.get("needs_listen")
+        ]
+        if listen_words:
+            add()
+            add(f"**NEEDS LISTENING**: {len(listen_words)} word(s) flagged.")
+            for w in listen_words[:15]:
+                add(
+                    f"- {w['start']}-{w['end']}s \"{w['word']}\" "
+                    f"[{w['state']}]"
+                )
+            if len(listen_words) > 15:
+                add(f"- ... and {len(listen_words) - 15} more")
+
+        gaps = asr.get("secondary_only_words", [])
+        if gaps:
+            add()
+            add("**ASR COVERAGE GAPS** (secondary-only speech, primary missed it):")
+            for a, b in merge_intervals((g["start"], g["end"]) for g in gaps):
+                add(f"- {round(a, 3)}-{round(b, 3)}s")
+
+        conflicts = asr.get("conflicts", [])
+        if conflicts:
+            add()
+            add("**CONFLICTING WORDS**:")
+            for c in conflicts:
+                add(
+                    f"- {c['start']}-{c['end']}s: primary "
+                    f"\"{c['primary_word']}\" vs secondary "
+                    f"\"{c['secondary_word']}\""
+                )
+    elif asr.get("findings"):
+        add()
+        add("## ASR CONSENSUS (secondary model cross-check)")
+        add("Secondary ASR did not run this session; see findings above.")
+
+    # Face tracking / active-speaker mapping (Phase 3B).
+    speaker_mapping = sections.get("speaker_face_mapping", {})
+    active_windows = speaker_mapping.get("active_speaker_windows", [])
+
+    if active_windows:
+        add()
+        add("## VISIBLE SPEAKER CANDIDATES (mouth-motion evidence only)")
+        add(
+            f"{len(speaker_mapping.get('face_tracks', []))} face track(s) "
+            "detected. Mouth-motion evidence is capped at MEDIUM -- it is "
+            "not a verified audiovisual sync score. Confirm by watching."
+        )
+        for w in active_windows:
+            if w["tier"] == UNKNOWN:
+                continue
+            top = (
+                max(w["candidates"], key=lambda c: c["motion_score"])
+                if w["candidates"] else None
+            )
+            label = top["face_id"] if top else "?"
+            add(f"- **{w['tier']}** [{w['start']}-{w['end']}s]: {label} ({w['reason']})")
+
+        off_screen = [w for w in active_windows if w["tier"] == UNKNOWN]
+        if off_screen:
+            add()
+            add(f"{len(off_screen)} speech window(s) had no visible face candidate.")
 
     # Untranscribed speech gets its own explicit callout.
     if coverage.get("untranscribed_regions"):
