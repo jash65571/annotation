@@ -1,0 +1,63 @@
+# Local Python environments
+.venv-review/
+.venv-whisperx/
+venv/
+
+# Generated pipeline output
+analysis/
+output/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Task video
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.webm
+*.m4v
+
+# Task and generated audio
+*.wav
+*.mp3
+*.m4a
+*.aac
+*.flac
+*.ogg
+
+# Model and cache files
+.cache/
+huggingface/
+models/
+*.bin
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+
+# Local development copies
+*.backup.py
+*.candidate.py
+*.checkpoint.py
+*.checkpoint.ps1
+*.tmp
+*.temp
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Editor and Windows noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
