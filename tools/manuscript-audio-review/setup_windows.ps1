@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ReviewVenv = Join-Path $Root ".venv-review"
@@ -77,15 +77,59 @@ Write-Host "[5/6] Verifying environments..."
 & $ReviewPython -c "import numpy, opensmile, soundfile, torch, transformers; print('Review environment: PASS'); print('numpy:', numpy.__version__); print('opensmile:', opensmile.__version__); print('soundfile:', soundfile.__version__); print('torch:', torch.__version__); print('transformers:', transformers.__version__)"
 if ($LASTEXITCODE -ne 0) { throw "Review environment verification failed." }
 
-& $WhisperXPython -c "import whisperx; print('WhisperX import: PASS')"
+& $WhisperXPython -c "import whisperx; from whisperx.diarize import DiarizationPipeline, assign_word_speakers; print('WhisperX import: PASS'); print('WhisperX diarization API: PASS')"
 if ($LASTEXITCODE -ne 0) { throw "WhisperX import verification failed." }
 & $WhisperXPython -m whisperx --version
 if ($LASTEXITCODE -ne 0) { throw "WhisperX CLI verification failed." }
 
 Write-Host ""
-Write-Host "[6/6] Checking Manuscript scripts..."
-& $ReviewPython -m py_compile (Join-Path $Root "manuscript_audio_review.py") (Join-Path $Root "manuscript_audio_pipeline.py")
-if ($LASTEXITCODE -ne 0) { throw "Python script syntax validation failed." }
+Write-Host "[6/6] Checking Manuscript V2 scripts..."
+
+$ReviewScripts = @(
+    "manuscript_audio_review.py",
+    "manuscript_audio_pipeline.py",
+    "manuscript_audio_shots.py",
+    "manuscript_audio_queue.py",
+    "manuscript_audio_ui.py",
+    "manuscript_audio_voice.py",
+    "manuscript_audio_sounds.py",
+    "manuscript_audio_optional.py",
+    "manuscript_audio_speaker_mapping.py",
+    "manuscript_audio_diarization_qc.py",
+    "manuscript_audio_defects.py",
+    "manuscript_audio_masking.py",
+    "manuscript_audio_task_identity.py",
+    "manuscript_audio_report.py",
+    "manuscript_audio_validator.py"
+)
+
+foreach ($Script in $ReviewScripts) {
+    $ScriptPath = Join-Path $Root $Script
+
+    if (-not (Test-Path $ScriptPath)) {
+        throw "Required V2 file missing: $Script"
+    }
+
+    & $ReviewPython -m py_compile $ScriptPath
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Python syntax check failed: $Script"
+    }
+}
+
+$DiarizeScript = Join-Path $Root "manuscript_audio_diarize.py"
+
+if (-not (Test-Path $DiarizeScript)) {
+    throw "Required V2 file missing: manuscript_audio_diarize.py"
+}
+
+& $WhisperXPython -m py_compile $DiarizeScript
+
+if ($LASTEXITCODE -ne 0) {
+    throw "Diarization script syntax check failed."
+}
+
+Write-Host "Manuscript V2 scripts: PASS"
 
 Write-Host ""
 Write-Host "========================================"
@@ -101,3 +145,6 @@ Write-Host "Run a video with:"
 Write-Host '  .\review_manuscript_audio.ps1 "C:\path\to\VIDEO.mp4"'
 Write-Host ""
 Write-Host "The first WhisperX run may download model files."
+
+
+

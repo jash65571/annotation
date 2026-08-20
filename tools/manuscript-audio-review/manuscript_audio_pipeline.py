@@ -1,19 +1,31 @@
-from pathlib import Path
+﻿from pathlib import Path
 import json
 import subprocess
 import sys
 
-
+from manuscript_audio_shots import enrich_evidence_with_shots
+from manuscript_audio_queue import merge_transcript_review_windows
+from manuscript_audio_ui import enrich_evidence_with_ui_candidates
+from manuscript_audio_voice import enrich_evidence_with_voice_profiles
+from manuscript_audio_optional import run_optional_evidence
+from manuscript_audio_task_identity import write_video_identity
+from manuscript_audio_report import main as generate_review_report
+from manuscript_audio_validator import main as run_audio_validator
 ROOT = Path(__file__).resolve().parent
 
 ANALYZER = ROOT / "manuscript_audio_review.py"
 EVIDENCE = ROOT / "analysis" / "manuscript_audio_evidence.json"
 QUEUE = ROOT / "analysis" / "audio_review_queue.json"
+DIARIZATION_QC = ROOT / "analysis" / "diarization_cluster_review.json"
+DEFECT_EVIDENCE = ROOT / "analysis" / "recording_defect_evidence.json"
+MASKING_EVIDENCE = ROOT / "analysis" / "masking_overlap_evidence.json"
 AUDIO = ROOT / "analysis" / "audio.wav"
 CLIP_DIR = ROOT / "analysis" / "review_clips"
 MANIFEST = CLIP_DIR / "review_clips_manifest.json"
-
-
+CONTEXT = ROOT / "task_context.json"
+SPEAKER_MAP = ROOT / "speaker_map.json"
+WHISPERX_JSON = ROOT / "output" / "VIDEO.json"
+VIDEO_IDENTITY = ROOT / "analysis" / "video_identity.json"
 def run(cmd):
     subprocess.run(cmd, cwd=ROOT, check=True)
 
@@ -51,7 +63,16 @@ def preprocess_source_video():
     output_dir.mkdir(parents=True, exist_ok=True)
     analysis_dir.mkdir(parents=True, exist_ok=True)
 
+    identity = write_video_identity(
+        video,
+        VIDEO_IDENTITY,
+    )
+
     print("Source video:", video)
+    print(
+        "Video fingerprint:",
+        identity["video_sha256"][:12] + "...",
+    )
     print("WhisperX Python:", whisperx_python)
 
     run(
@@ -218,6 +239,52 @@ def build_review_queue():
             ),
         })
 
+    # Flag speech that crosses a Manuscript shot boundary.
+    # Internal timestamps are evidence only and never enter Final Audio Text.
+    seen_boundaries = set()
+
+    for shot in evidence.get("shot_audio_evidence", []):
+        candidates = []
+
+        if shot.get("speech_crosses_into_shot"):
+            candidates.append(
+                (
+                    float(shot["start"]),
+                    f"Speech crosses into Shot {shot['shot']} "
+                    "from the previous shot."
+                )
+            )
+
+        if shot.get("speech_crosses_out_of_shot"):
+            candidates.append(
+                (
+                    float(shot["end"]),
+                    f"Speech continues out of Shot {shot['shot']} "
+                    "into the next shot."
+                )
+            )
+
+        for center, description in candidates:
+            key = round(center, 3)
+
+            if key in seen_boundaries:
+                continue
+
+            seen_boundaries.add(key)
+
+            windows.append({
+                "priority": "high",
+                "type": "shot_boundary_speech_check",
+                "start": round(
+                    clamp(center - 0.75, 0.0, duration),
+                    3,
+                ),
+                "end": round(
+                    clamp(center + 0.75, 0.0, duration),
+                    3,
+                ),
+                "description": description,
+            })
     for segment in evidence.get("review_synthesis", []):
         if "emotion_model_ambiguous" not in segment.get(
             "manual_review_reasons",
@@ -236,13 +303,144 @@ def build_review_queue():
             ),
         })
 
-    priority_rank = {"high": 0, "medium": 1, "normal": 2}
-    windows.sort(
-        key=lambda item: (
-            float(item["start"]),
-            priority_rank.get(item["priority"], 9),
-            item["type"],
-        )
+    # Add suspicious diarization-cluster regions.
+    # These are listening cues only, never automatic C# assignments.
+    if DIARIZATION_QC.exists():
+        with DIARIZATION_QC.open(
+            "r",
+            encoding="utf-8-sig",
+        ) as f:
+            diarization_qc = json.load(f)
+
+        for item in diarization_qc.get(
+            "review_windows",
+            [],
+        ):
+            start = clamp(
+                float(item["start"]),
+                0.0,
+                duration,
+            )
+
+            end = clamp(
+                float(item["end"]),
+                0.0,
+                duration,
+            )
+
+            if end <= start:
+                continue
+
+            windows.append({
+                "priority": item.get(
+                    "priority",
+                    "high",
+                ),
+                "type":
+                    "diarization_cluster_check",
+                "start": round(start, 3),
+                "end": round(end, 3),
+                "description": item.get(
+                    "description",
+                    "Verify suspicious diarization cluster.",
+                ),
+                "speaker_cluster":
+                    item.get(
+                        "speaker_cluster"
+                    ),
+            })
+    # Recording-defect review cues.
+    if DEFECT_EVIDENCE.exists():
+        with DEFECT_EVIDENCE.open(
+            "r",
+            encoding="utf-8-sig",
+        ) as f:
+            recording_defects = json.load(f)
+
+        for item in recording_defects.get(
+            "review_windows",
+            [],
+        ):
+            windows.append({
+                "priority": item.get(
+                    "priority",
+                    "medium",
+                ),
+                "type":
+                    "recording_defect_check",
+                "start": round(
+                    clamp(
+                        float(item["start"]),
+                        0.0,
+                        duration,
+                    ),
+                    3,
+                ),
+                "end": round(
+                    clamp(
+                        float(item["end"]),
+                        0.0,
+                        duration,
+                    ),
+                    3,
+                ),
+                "description":
+                    item.get(
+                        "description",
+                        "Verify possible recording defect.",
+                    ),
+                "defect":
+                    item.get("defect"),
+            })
+
+    # Overlap/intelligibility review cues.
+    if MASKING_EVIDENCE.exists():
+        with MASKING_EVIDENCE.open(
+            "r",
+            encoding="utf-8-sig",
+        ) as f:
+            masking = json.load(f)
+
+        for item in masking.get(
+            "review_windows",
+            [],
+        ):
+            windows.append({
+                "priority": item.get(
+                    "priority",
+                    "high",
+                ),
+                "type":
+                    "overlap_intelligibility_check",
+                "start": round(
+                    clamp(
+                        float(item["start"]),
+                        0.0,
+                        duration,
+                    ),
+                    3,
+                ),
+                "end": round(
+                    clamp(
+                        float(item["end"]),
+                        0.0,
+                        duration,
+                    ),
+                    3,
+                ),
+                "description":
+                    item.get(
+                        "description",
+                        "Verify whether overlap reduces intelligibility.",
+                    ),
+                "word":
+                    item.get("word"),
+                "segment":
+                    item.get("segment"),
+            })
+    windows = merge_transcript_review_windows(
+        windows,
+        max_gap_sec=0.25,
     )
 
     QUEUE.parent.mkdir(parents=True, exist_ok=True)
@@ -378,13 +576,40 @@ def main():
 
     preprocess_source_video()
     run_analyzer()
+
+    run_optional_evidence()
+
+    enrich_evidence_with_shots(
+        EVIDENCE,
+        WHISPERX_JSON,
+        CONTEXT,
+    )
+    enrich_evidence_with_ui_candidates(
+        EVIDENCE,
+    )
+    enrich_evidence_with_voice_profiles(
+        EVIDENCE,
+        SPEAKER_MAP,
+    )
     windows = build_review_queue()
     records = create_review_clips(windows)
     validate_review_clips(records)
 
+    print(
+        "\n=== PHASE 5: REVIEW REPORT ===\n"
+    )
+
+    generate_review_report()
+
+    print(
+        "\n=== PHASE 6: VALIDATOR PREFLIGHT ===\n"
+    )
+
+    validator_result = run_audio_validator()
+
     print()
     print("===================================")
-    print(" PIPELINE STATUS: PASS")
+    print(" PIPELINE EXECUTION: PASS")
     print("===================================")
     print("Evidence:", EVIDENCE)
     print("Review queue:", QUEUE)
@@ -394,3 +619,19 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
