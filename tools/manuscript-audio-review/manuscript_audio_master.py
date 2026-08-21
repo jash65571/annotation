@@ -18,6 +18,7 @@ without either analysis virtual environment.
 
 from pathlib import Path
 import json
+import re
 
 
 ROOT = Path(__file__).resolve().parent
@@ -156,11 +157,22 @@ def build_media(evidence, identity):
     # Surface what the current analyzer captures, and honestly mark the
     # identity/integrity fields the spec wants but the pipeline does not
     # yet extract, so nothing looks silently "covered".
+    #
+    # 3.5: sample rates are now explicit. `analysis_sample_rate` is the
+    # resampled 16 kHz WAV the pipeline actually analyzed; `source_sample_rate`
+    # is the ORIGINAL video's audio rate (probed from the source by ffprobe).
+    # The two must never be conflated.
     present = {
         "video_name": identity.get("video_name"),
         "video_sha256": identity.get("video_sha256"),
         "duration_sec": media.get("duration_sec"),
-        "sample_rate": media.get("sample_rate"),
+        "analysis_sample_rate": (
+            media.get("analysis_sample_rate")
+            or media.get("sample_rate")
+        ),
+        "source_sample_rate": identity.get("source_sample_rate"),
+        "audio_channels": identity.get("audio_channels"),
+        "audio_codec": identity.get("audio_codec"),
     }
 
     not_yet = [
@@ -169,8 +181,6 @@ def build_media(evidence, identity):
             "resolution",
             "fps",
             "frame_count",
-            "audio_channels",
-            "audio_codec",
         )
         if key not in media
     ]
@@ -438,13 +448,20 @@ def build_character_mapping(evidence, coverage, diarization, speaker_map):
     }
 
 
-def build_asr_consensus(asr_consensus):
+def build_asr_consensus(asr_consensus, independent_speech_regions=None):
     """Wrap the Phase 3A secondary-ASR comparison into shared-schema findings.
 
     Never turns disagreement into a transcript edit -- it only tells the
     reviewer which windows a second independent model does not corroborate.
+
+    3.5: targeted reruns are demoted to *hypotheses*, never recovered truth.
+    A rerun that conflicts with surrounding evidence (no independent speech
+    signal, or content that disagrees with the primary transcript in the
+    same window) is marked CONFLICT and requires listening.
     """
     findings = []
+
+    independent_speech_regions = independent_speech_regions or []
 
     status = asr_consensus.get("status", "unavailable")
 
@@ -507,16 +524,78 @@ def build_asr_consensus(asr_consensus):
             )
         )
 
+    # 3.5: reruns are hypotheses, not recovered truth. If a rerun suggests
+    # words where no independent speech signal exists AND the primary
+    # transcript has no words, or its content disagrees with the primary
+    # words in the same window, it CONFLICTS with surrounding evidence and
+    # must be listened to before it can be trusted at all.
     for rerun in asr_consensus.get("reruns_executed", []):
         if not rerun.get("recovered_text"):
             continue
+
+        start, end = rerun["window"]
+
+        corroborated_by_speech = any(
+            min(float(end), float(r_end)) - max(float(start), float(r_start)) > 0.05
+            for r_start, r_end in independent_speech_regions
+        )
+
+        primary_words_in_window = [
+            w for w in asr_consensus.get("word_consensus", [])
+            if min(float(end), float(w.get("end", end))) - max(float(start), float(w.get("start", start))) > 0.05
+        ]
+
+        conflicts = not corroborated_by_speech and not primary_words_in_window
+
+        if primary_words_in_window:
+            rerun_tokens = {
+                re.sub(r"[^\w']", "", t.lower())
+                for t in rerun["recovered_text"].split()
+                if re.sub(r"[^\w']", "", t.lower())
+            }
+            primary_tokens = {
+                re.sub(r"[^\w']", "", str(w.get("word", "")).lower())
+                for w in primary_words_in_window
+            }
+            primary_tokens.discard("")
+            if primary_tokens:
+                overlap = len(rerun_tokens & primary_tokens) / len(primary_tokens)
+                if overlap < 0.5:
+                    conflicts = True
+
+        tier = CONFLICT if conflicts else MEDIUM
+        evidence_lines = [
+            f"rerun reason(s): {', '.join(rerun.get('reasons', []))}"
+        ]
+
+        if not corroborated_by_speech and not primary_words_in_window:
+            evidence_lines.append(
+                "no independent VAD/diarization speech signal overlaps this "
+                "window and the primary transcript has no words here"
+            )
+        elif conflicts:
+            evidence_lines.append(
+                "rerun content disagrees with the primary transcript in "
+                "the same window"
+            )
+
+        action = (
+            "Hypothesis only, not recovered truth. It conflicts with "
+            "surrounding evidence; do NOT add it to the transcript without "
+            "listening."
+            if conflicts
+            else "Hypothesis only, not recovered truth. Confirm by listening "
+                 "before adding this to the transcript."
+        )
+
         findings.append(
             finding(
-                "Targeted rerun over a flagged window produced additional "
-                f"text: \"{rerun['recovered_text']}\".",
-                MEDIUM,
-                [f"rerun reason(s): {', '.join(rerun.get('reasons', []))}"],
-                "Confirm by listening before adding this to the transcript.",
+                "Targeted rerun hypothesis: a rerun pass suggested "
+                f"\"{rerun['recovered_text']}\" in a window the primary "
+                "transcript left empty.",
+                tier,
+                evidence_lines,
+                action,
                 window=tuple(rerun["window"]),
             )
         )
@@ -786,6 +865,33 @@ def _normalize_tier(tier):
     return UNKNOWN
 
 
+def build_transients(sound_fusion):
+    """Wrap Phase 3.5 transient/SFX detector evidence into shared-schema
+    findings. A strong unexplained transient is a high-priority listening
+    window -- evidence a Sound event exists even when no model can name it.
+    It never becomes an automatic Manuscript event.
+    """
+    sound_fusion = sound_fusion or {}
+    transients = sound_fusion.get("transients", {}) or {}
+    events = transients.get("events", []) or []
+    findings = [dict(f) for f in (transients.get("findings") or [])]
+
+    return {
+        "status": (
+            transients.get("status")
+            if transients.get("status") in ("complete", "failed", "unavailable")
+            else ("complete" if events else "unavailable")
+        ),
+        "events": events,
+        "findings": findings,
+        "policy": (
+            "Transients are acoustic evidence, not names. Strong unexplained "
+            "transients become high-priority review windows; they never "
+            "auto-create a Sound event."
+        ),
+    }
+
+
 def build_fusion_sound_events(sound_fusion):
     """Wrap Phase 3C fused sound evidence (PANNs+CLAP human-nonverbal /
     object-SFX candidates) into shared-schema findings.
@@ -975,42 +1081,63 @@ def build_recording_defects(defects):
 
 
 def build_overlap_masking(masking):
+    """3.5 stricter masking: a masking-style finding only exists when a
+    low-confidence word really overlaps ANOTHER source -- a supported
+    non-speech sound or another speaker. A plain diarization overlap with no
+    word evidence, or a low-confidence word with no overlapping source, is
+    not a masking warning: it is just "Low-confidence speech: re-listen",
+    which the review queue already handles.
+    """
     regions = masking.get("speaker_overlap_regions", [])
     risks = masking.get("low_confidence_word_overlap_risks", [])
 
     findings = []
 
-    for region in regions:
-        findings.append(
-            finding(
-                "Speaker overlap "
-                f"{region['start']}-{region['end']}s "
-                f"({', '.join(region.get('speakers', []))}).",
-                MEDIUM,
-                [f"diarization overlap: {region.get('duration_sec')}s"],
-                "Overlap is not masking. Listen: does intelligibility "
-                "actually drop?",
-                window=(region["start"], region["end"]),
-            )
-        )
-
     for risk in risks:
-        findings.append(
-            finding(
-                f"Low-confidence word \"{risk.get('word')}\" sits inside a "
-                "speaker overlap.",
-                MEDIUM,
-                risk.get("risk_reasons", []),
-                "Possible masking. Confirm by listening before using masking "
-                "language.",
-                window=(risk.get("start"), risk.get("end")),
+        reasons = list(risk.get("risk_reasons", []))
+
+        if risk.get("sound_overlap_candidates"):
+            labels = ", ".join(
+                str(c.get("label", "?"))
+                for c in risk["sound_overlap_candidates"]
             )
-        )
+            findings.append(
+                finding(
+                    f"Possible masking: low-confidence word "
+                    f"\"{risk.get('word')}\" overlaps a supported "
+                    f"non-speech sound ({labels}).",
+                    MEDIUM,
+                    reasons,
+                    "Another source is actually present over this word. "
+                    "Listen: call it masking only if intelligibility really "
+                    "drops.",
+                    window=(risk.get("start"), risk.get("end")),
+                )
+            )
+        elif risk.get("speaker_overlap_regions"):
+            findings.append(
+                finding(
+                    f"Possible masking: low-confidence word "
+                    f"\"{risk.get('word')}\" sits inside a speaker overlap.",
+                    MEDIUM,
+                    reasons,
+                    "Another speaker is present over this word. Listen: "
+                    "call it masking only if intelligibility really drops.",
+                    window=(risk.get("start"), risk.get("end")),
+                )
+            )
+        # No real overlapping source -> not a masking candidate. The word
+        # stays a plain low-confidence-speech listening item.
 
     return {
         "overlap_regions": regions,
+        "word_risks": risks,
         "findings": findings,
-        "policy": "overlap != masking until intelligibility loss is heard.",
+        "policy": (
+            "Masking requires a real overlapping source AND intelligibility "
+            "loss. Plain low-confidence speech or overlap alone is never a "
+            "masking warning."
+        ),
     }
 
 
@@ -1181,8 +1308,29 @@ def build_ui_suggestions(evidence, sound_fusion=None):
 # Assembly
 # ---------------------------------------------------------------------------
 
-def collect_all_findings(sections):
+def shot_for_window(start, end, shots):
+    """Best-overlap locked shot for a window, or None (3.5: every finding
+    carries its shot when the seed defines one)."""
+    best = None
+    best_overlap = 0.0
+
+    for shot in shots:
+        shot_start = float(shot.get("start", 0.0))
+        shot_end = float(shot.get("end", 0.0))
+        overlap = max(
+            0.0,
+            min(float(end), shot_end) - max(float(start), shot_start),
+        )
+        if overlap > best_overlap:
+            best_overlap = overlap
+            best = shot.get("shot")
+
+    return best
+
+
+def collect_all_findings(sections, context_shots=None):
     all_findings = []
+    context_shots = context_shots or []
 
     for name, section in sections.items():
         if not isinstance(section, dict):
@@ -1190,13 +1338,127 @@ def collect_all_findings(sections):
 
         for key in ("findings", "sound_findings", "music_findings"):
             for f in section.get(key, []):
-                all_findings.append({"section": name, **f})
+                item = {"section": name, **f}
+                if item.get("window") and context_shots:
+                    item["shot"] = shot_for_window(
+                        item["window"][0], item["window"][1], context_shots
+                    )
+                else:
+                    item["shot"] = None
+                all_findings.append(item)
 
     all_findings.sort(key=lambda f: TIER_ORDER.get(f["tier"], 9))
     return all_findings
 
 
-def build_confidence_summary(all_findings):
+GROUP_TOLERANCE_SEC = 0.5
+# Windows longer than this are range-level findings (whole-clip music,
+# long untranscribed regions), not localized events -- they must never
+# absorb every nearby finding into one giant cluster.
+MAX_GROUP_WINDOW_SEC = 4.0
+
+
+def _cluster_windows(windowed):
+    """Cluster findings whose windows overlap or are within
+    GROUP_TOLERANCE_SEC. One questionable word padded by different stages
+    (ASR conflict, hallucination risk, masking check) lands in ONE cluster
+    instead of five separate findings (3.5 dedup). Findings spanning more
+    than MAX_GROUP_WINDOW_SEC are kept standalone -- a whole-clip music
+    candidate is a global condition, not a localized event."""
+    clusters = []
+    standalone = []
+
+    for f in sorted(windowed, key=lambda f: (f["window"][0], f["window"][1])):
+        span = f["window"][1] - f["window"][0]
+        if span > MAX_GROUP_WINDOW_SEC:
+            standalone.append(f)
+            continue
+
+        if clusters and f["window"][0] <= clusters[-1]["end"] + GROUP_TOLERANCE_SEC:
+            merged_end = max(clusters[-1]["end"], f["window"][1])
+            # Cap the merged span so adjacent-but-distinct moments do not
+            # chain-merge into one giant cluster across the whole clip.
+            if merged_end - clusters[-1]["start"] <= MAX_GROUP_WINDOW_SEC:
+                clusters[-1]["end"] = merged_end
+                clusters[-1]["items"].append(f)
+                continue
+        clusters.append({
+            "start": f["window"][0],
+            "end": f["window"][1],
+            "items": [f],
+        })
+
+    return clusters, standalone
+
+
+def deduplicate_findings(all_findings):
+    """Group findings by time window so one questionable moment does not
+    create five repetitive review items. Each cluster keeps its highest-tier
+    signal as the headline and lists the individual signals as sub-items;
+    the full raw list stays in the packet for provenance.
+    """
+    windowed = [f for f in all_findings if f.get("window")]
+    windowless = [f for f in all_findings if not f.get("window")]
+
+    grouped = []
+
+    clusters, standalone = _cluster_windows(windowed)
+    grouped.extend(standalone)
+
+    for cluster in clusters:
+        items = sorted(
+            cluster["items"],
+            key=lambda f: (TIER_ORDER.get(f["tier"], 9), f["window"]),
+        )
+
+        if len(items) == 1:
+            grouped.append(items[0])
+            continue
+
+        top = items[0]
+        merged = dict(top)
+        merged["claim"] = (
+            f"{len(items)} related signals in one window "
+            f"({', '.join(sorted({i['section'] for i in items}))})."
+        )
+        merged["window"] = [
+            round(cluster["start"], 3),
+            round(cluster["end"], 3),
+        ]
+        merged["grouped"] = True
+        merged["action"] = (
+            "Resolve these signals together by listening once; do not treat "
+            "them as separate issues."
+        )
+
+        # Collapse identical claims inside the cluster (e.g. five
+        # "secondary-only gap" signals become one item with x5) so the
+        # grouped item does not re-introduce the repetition it exists to
+        # remove. Different claims (per-word conflicts etc.) stay distinct.
+        collapsed = []
+        claim_index = {}
+        for i in items:
+            key = (i["section"], i["claim"])
+            if key in claim_index:
+                collapsed[claim_index[key]]["count"] += 1
+                continue
+            claim_index[key] = len(collapsed)
+            collapsed.append({
+                "tier": i["tier"],
+                "section": i["section"],
+                "claim": i["claim"],
+                "action": i.get("action"),
+                "count": 1,
+            })
+        merged["items"] = collapsed
+        grouped.append(merged)
+
+    grouped.extend(windowless)
+    grouped.sort(key=lambda f: TIER_ORDER.get(f["tier"], 9))
+    return grouped
+
+
+def build_confidence_summary(all_findings, raw_count=None):
     counts = {STRONG: 0, MEDIUM: 0, WEAK: 0, CONFLICT: 0, UNKNOWN: 0}
 
     for f in all_findings:
@@ -1210,6 +1472,7 @@ def build_confidence_summary(all_findings):
 
     return {
         "total_findings": len(all_findings),
+        "raw_finding_count": raw_count if raw_count is not None else len(all_findings),
         "by_tier": counts,
         "human_review_finding_count": len(needs_human),
     }
@@ -1234,6 +1497,21 @@ def build_packet():
 
     coverage = build_coverage(evidence, diarization, vad)
 
+    # Same precedence as build_coverage: diarization turns when complete,
+    # else VAD regions. Used to judge whether a rerun hypothesis has any
+    # independent speech corroboration.
+    independent_speech_regions = []
+    if diarization and diarization.get("status") == "complete":
+        independent_speech_regions = [
+            (float(t["start"]), float(t["end"]))
+            for t in diarization.get("turns", [])
+        ]
+    elif vad and vad.get("status") == "complete":
+        independent_speech_regions = [
+            (float(r["start"]), float(r["end"]))
+            for r in vad.get("regions", [])
+        ]
+
     sections = {
         "media": build_media(evidence, identity),
         "locked_task_structure": {
@@ -1243,7 +1521,9 @@ def build_packet():
             "note": "Live locked task wins over machine shot detection.",
         },
         "coverage_gaps": coverage,
-        "asr_consensus": build_asr_consensus(asr_consensus),
+        "asr_consensus": build_asr_consensus(
+            asr_consensus, independent_speech_regions
+        ),
         "speaker_face_mapping": build_speaker_face_mapping(speaker_face_mapping),
         "speaker_clusters": build_speaker_clusters(
             diarization, diarization_qc
@@ -1255,6 +1535,7 @@ def build_packet():
         "sound_events": build_fusion_sound_events(sound_fusion),
         "music": build_music(sound_fusion),
         "ambience": build_ambience(sound_fusion),
+        "transients": build_transients(sound_fusion),
         "sound_events_ast": build_sound_events(sound),
         "object_sound_status": build_object_status(context, sound),
         "recording_defects": build_recording_defects(defects),
@@ -1275,9 +1556,20 @@ def build_packet():
         },
     }
 
-    all_findings = collect_all_findings(sections)
-    sections["confidence_summary"] = build_confidence_summary(all_findings)
-    sections["ranked_findings"] = all_findings
+    all_findings = collect_all_findings(
+        sections, context_shots=context.get("shots", [])
+    )
+
+    # 3.5: deduplicate by time window so one questionable moment does not
+    # generate five repetitive review items. The raw list stays in the
+    # packet for full provenance; the ranked list is what a human reads.
+    deduped_findings = deduplicate_findings(all_findings)
+
+    sections["confidence_summary"] = build_confidence_summary(
+        deduped_findings, raw_count=len(all_findings)
+    )
+    sections["ranked_findings"] = deduped_findings
+    sections["raw_findings"] = all_findings
 
     return sections, evidence
 
@@ -1304,12 +1596,21 @@ def build_review_me(sections, evidence):
 
     # Headline
     counts = summary["by_tier"]
-    add(
-        f"**{summary['total_findings']} findings** — "
-        f"{counts[STRONG]} strong, {counts[MEDIUM]} medium, "
-        f"{counts[WEAK]} weak, {counts[CONFLICT]} conflict, "
-        f"{counts[UNKNOWN]} unknown."
-    )
+    if summary.get("raw_finding_count") and summary["raw_finding_count"] != summary["total_findings"]:
+        add(
+            f"**{summary['total_findings']} review items** "
+            f"(grouped from {summary['raw_finding_count']} raw signals) — "
+            f"{counts[STRONG]} strong, {counts[MEDIUM]} medium, "
+            f"{counts[WEAK]} weak, {counts[CONFLICT]} conflict, "
+            f"{counts[UNKNOWN]} unknown."
+        )
+    else:
+        add(
+            f"**{summary['total_findings']} findings** — "
+            f"{counts[STRONG]} strong, {counts[MEDIUM]} medium, "
+            f"{counts[WEAK]} weak, {counts[CONFLICT]} conflict, "
+            f"{counts[UNKNOWN]} unknown."
+        )
 
     if coverage.get("coverage_ratio") is not None:
         add(
@@ -1323,6 +1624,19 @@ def build_review_me(sections, evidence):
         f"{media.get('duration_sec')}s, "
         f"{len(sections['locked_task_structure']['shots'])} locked shot(s)."
     )
+
+    # 3.5: report BOTH sample rates -- the resampled analysis WAV rate and
+    # the original source rate -- and never present the 16 kHz analysis rate
+    # as the source's.
+    analysis_rate = media.get("analysis_sample_rate")
+    source_rate = media.get("source_sample_rate")
+    if analysis_rate is not None:
+        rates = f"Analysis sample rate: {analysis_rate} Hz"
+        if source_rate is not None and source_rate != analysis_rate:
+            rates += f" (source audio: {source_rate} Hz)"
+        elif source_rate is not None:
+            rates += " (matches source)"
+        add(rates)
     if sections["media"]["not_yet_extracted"]:
         add(
             "Not yet extracted: "
@@ -1339,8 +1653,17 @@ def build_review_me(sections, evidence):
             window = ""
             if f.get("window"):
                 window = f" [{f['window'][0]}-{f['window'][1]}s]"
+                if f.get("shot"):
+                    window += f", Shot {f['shot']}"
             add(f"- **{f['tier']}**{window}: {f['claim']}")
-            add(f"    - {f['action']}")
+            if f.get("grouped"):
+                for item in f["items"]:
+                    count = f" x{item['count']}" if item.get("count", 1) > 1 else ""
+                    add(f"    - [{item['section']}]{count} {item['claim']}")
+                    if item.get("action"):
+                        add(f"        - {item['action']}")
+            else:
+                add(f"    - {f['action']}")
 
     ranked = sections["ranked_findings"]
 
@@ -1529,6 +1852,32 @@ def build_review_me(sections, evidence):
                 add(
                     "- Music evidence is weak/conflicting; "
                     "DO NOT CREATE MUSIC EVENT WITHOUT LISTENING."
+                )
+
+    # Phase 3.5: unnamed transient / SFX evidence (RMS, spectral flux,
+    # onset, energy change, crest factor). Strong unexplained transients are
+    # high-priority listening windows even though no model can name them.
+    transients = sections.get("transients", {})
+    transient_events = transients.get("events", [])
+
+    if transient_events:
+        add()
+        add("## UNNAMED TRANSIENTS (listen + identify)")
+        for t in transient_events:
+            shot = f", Shot {t['shot']}" if t.get("shot") else ""
+            if t.get("unexplained"):
+                strength = "strong " if t["tier"] == STRONG else ""
+                add(
+                    f"- **{t['tier']}** [{t['start']}-{t['end']}s{shot}]: "
+                    f"{strength}unidentified transient; no named sound "
+                    "explains it. Listen and identify."
+                )
+            else:
+                add(
+                    f"- **{t['tier']}** [{t['start']}-{t['end']}s{shot}]: "
+                    "transient coincides with "
+                    + ", ".join(t.get("explained_by", []))
+                    + "."
                 )
 
     add()

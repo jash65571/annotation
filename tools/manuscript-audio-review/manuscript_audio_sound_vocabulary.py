@@ -34,7 +34,12 @@ CANDIDATE_CLASSES = {
     ),
     OBJECT_SFX: (
         "impact", "metallic_impact", "metallic_click", "click", "beep",
-        "electronic_tone", "hiss", "spray", "footsteps", "door",
+        "electronic_tone", "hiss", "spray", "footsteps",
+        # 3.5: door classes are NEVER collapsed into one generic "door". A
+        # physical door open/close, an electronic doorbell chime, a latch
+        # click, and a knock are different acoustic sources (O1 can be the
+        # physical door while the chime is a different source).
+        "door_open_close", "doorbell_chime", "door_latch_click", "door_knock",
         "handling_noise",
     ),
     MUSIC: (
@@ -139,8 +144,22 @@ RAW_LABEL_MAP = (
     ("spray", OBJECT_SFX, "spray"),
     ("footstep", OBJECT_SFX, "footsteps"),
     ("walk,", OBJECT_SFX, "footsteps"),
-    ("door", OBJECT_SFX, "door"),
-    ("slam", OBJECT_SFX, "door"),
+    # 3.5 door split: specific substrings first so "doorbell" never falls
+    # through to the generic door mapping.
+    ("doorbell", OBJECT_SFX, "doorbell_chime"),
+    ("bell", OBJECT_SFX, "doorbell_chime"),
+    ("door open", OBJECT_SFX, "door_open_close"),
+    ("opening door", OBJECT_SFX, "door_open_close"),
+    ("door close", OBJECT_SFX, "door_open_close"),
+    ("closing door", OBJECT_SFX, "door_open_close"),
+    ("door slam", OBJECT_SFX, "door_open_close"),
+    ("slamming", OBJECT_SFX, "door_open_close"),
+    ("slam", OBJECT_SFX, "door_open_close"),
+    ("door latch", OBJECT_SFX, "door_latch_click"),
+    ("latch", OBJECT_SFX, "door_latch_click"),
+    ("doorknob", OBJECT_SFX, "door_latch_click"),
+    ("knock", OBJECT_SFX, "door_knock"),
+    ("door", OBJECT_SFX, "door_open_close"),
     ("rustle", OBJECT_SFX, "handling_noise"),
     ("rustling", OBJECT_SFX, "handling_noise"),
 )
@@ -171,7 +190,7 @@ def map_raw_label(raw_label):
 # comparable across runs.
 # ---------------------------------------------------------------------------
 
-CLAP_PROMPT_SET_VERSION = "3c-prompts-v1"
+CLAP_PROMPT_SET_VERSION = "3c-prompts-v2"
 
 CLAP_PROMPTS = (
     {"prompt": "people clapping", "group": HUMAN_NONVERBAL, "candidate_class": "clapping"},
@@ -193,7 +212,13 @@ CLAP_PROMPTS = (
     {"prompt": "a quiet indoor room tone", "group": AMBIENCE, "candidate_class": "room_ambience"},
     {"prompt": "a metallic click or clink", "group": OBJECT_SFX, "candidate_class": "metallic_click"},
     {"prompt": "footsteps", "group": OBJECT_SFX, "candidate_class": "footsteps"},
-    {"prompt": "a door opening or closing", "group": OBJECT_SFX, "candidate_class": "door"},
+    # 3.5: door classes are split -- the physical door open/close, the
+    # electronic doorbell chime, a latch click, and a knock are separate
+    # candidate classes, never one generic "door".
+    {"prompt": "a door opening or closing", "group": OBJECT_SFX, "candidate_class": "door_open_close"},
+    {"prompt": "a doorbell chime ringing", "group": OBJECT_SFX, "candidate_class": "doorbell_chime"},
+    {"prompt": "a door latch clicking", "group": OBJECT_SFX, "candidate_class": "door_latch_click"},
+    {"prompt": "someone knocking on a door", "group": OBJECT_SFX, "candidate_class": "door_knock"},
     {"prompt": "background music", "group": MUSIC, "candidate_class": "background_music"},
     {"prompt": "instrumental music", "group": MUSIC, "candidate_class": "instrumental_music"},
     {"prompt": "singing with music", "group": MUSIC, "candidate_class": "singing_vocals_in_music"},

@@ -88,6 +88,32 @@ If local scripts are already allowed, the shorter form also works:
 
 Video filenames may contain spaces.
 
+### Auto-ingest the locked task seed (Phase 3.5)
+
+Pass a **seed file** as the second argument and the pipeline parses the real
+Manuscript task (C# cast, O# objects, locked shot ranges) into
+`task_context.json` **before** analysis. Every stage then becomes shot-aware:
+ASR words, sound candidates, transients, masking checks, review windows, and
+speaker evidence all carry `shot: N`.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File ".\review_manuscript_audio.ps1" "C:\path\to\your\video.mp4" "C:\path\to\seed.txt"
+```
+
+Accepted seed forms (same parser as `manuscript_audio_seed.py`):
+
+```text
+C1: a man in a red shirt
+O2 - a wooden chair
+Shot 1: 0.0 - 4.0
+Shot 2 4.00-10.50
+```
+
+If no seed is passed, an existing `task_context.json` bound to the current
+video is reused; otherwise the pipeline runs shot-less (every finding stays
+`shot: null`) and `task_context.json` can be written later and the pipeline
+re-run.
+
 A successful run ends with:
 
 ```text
@@ -116,6 +142,33 @@ analysis\review_clips\review_clips_manifest.json
 `audio_review_queue.json` identifies regions that deserve closer listening.
 
 `review_clips` contains short WAV files around those flagged regions.
+
+Phase 3.5 hardening (see `3B_VERIFICATION.md` for the earlier phases):
+
+- **Sequence-aware ASR matching** -- the same lexical word heard by both
+  ASR models a few hundred ms apart counts as agreement (normalized text +
+  center-time tolerance), instead of being misread as a coverage gap or a
+  weak unrelated word.
+- **Targeted reruns are hypotheses** -- rerun output reads as "Targeted rerun
+  hypothesis", never recovered truth, and is marked `CONFLICT` when it
+  disagrees with surrounding evidence (no independent speech signal, or
+  content that contradicts the primary transcript).
+- **Transient/SFX detector** -- an independent detector (short-time RMS,
+  spectral flux, onset strength, broadband energy change, crest factor)
+  turns strong unexplained transients into high-priority review windows
+  even when no model can name the sound.
+- **Split door classes** -- `doorbell_chime`, `door_open_close`,
+  `door_latch_click`, and `door_knock` are separate candidate classes; the
+  physical door and the electronic chime are never collapsed.
+- **Stricter masking** -- a masking warning requires a real overlapping
+  source AND intelligibility loss. Anything else is just
+  "Low-confidence speech: re-listen".
+- **Deduplicated review report** -- findings are grouped by time window, so
+  one questionable word no longer generates five repetitive review items.
+- **Music mix_role left blank** -- recorded level may be estimated, but the
+  mix role (e.g. `Foreground`) is never auto-filled for human review.
+- **Honest media metadata** -- both `source_sample_rate` (original video)
+  and `analysis_sample_rate` (the resampled 16 kHz WAV) are reported.
 
 ## Reviewer environment
 

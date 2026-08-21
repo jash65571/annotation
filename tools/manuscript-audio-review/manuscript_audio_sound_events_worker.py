@@ -25,6 +25,7 @@ Usage:
 
 import argparse
 import json
+import math
 import sys
 import time
 from pathlib import Path
@@ -35,6 +36,13 @@ from manuscript_audio_sound_vocabulary import CLAP_PROMPTS, CLAP_PROMPT_SET_VERS
 PANNS_MODEL_NAME = "Cnn14"
 PANNS_CHECKPOINT = "Cnn14_mAP=0.431.pth"  # panns_inference default checkpoint
 CLAP_MODEL_NAME = "laion/clap-htsat-unfused"
+
+# 3.5: the transient/SFX detector is independent of the model windows and
+# uses its OWN finer resolution -- transients are short events (a punch,
+# a slam) that a 1.5s model window blurs. 0.75s windows / 0.25s hop
+# localize them tightly for review clips.
+TRANSIENT_WINDOW_SEC = 0.75
+TRANSIENT_HOP_SEC = 0.25
 
 
 def _rms_dbfs(samples):
@@ -177,6 +185,87 @@ def _run_clap(audio, sample_rate, windows, device):
     }
 
 
+def _transient_feature_windows(audio, sample_rate, window_sec, hop_sec):
+    """3.5 transient/SFX detector features (numpy only -- no librosa).
+
+    Per sliding window, computes the five independent low-level signals the
+    models cannot name: short-time RMS (dBFS), crest factor (peak/RMS),
+    spectral flux (mean positive spectral delta across 20ms frames),
+    onset strength (mean positive energy-envelope delta), and broadband
+    energy change (window RMS vs the clip's median RMS). The raw features
+    are merged into events by manuscript_audio_sound_fusion.build_transient_events
+    (pure stdlib, unit-testable without numpy).
+    """
+    import numpy as np
+
+    x = np.asarray(audio, dtype="float64")
+    n = len(x)
+    win = max(1, int(window_sec * sample_rate))
+    hop = max(1, int(hop_sec * sample_rate))
+    frame_size = max(1, int(0.02 * sample_rate))
+    frame_hop = max(1, frame_size // 2)
+
+    if n < win:
+        return []
+
+    starts = list(range(0, n - win + 1, hop))
+
+    # First pass: window RMS values so broadband energy change can be
+    # measured against the clip baseline (median), not an arbitrary floor.
+    rms_values = []
+    for start in starts:
+        seg = x[start:start + win]
+        rms = float(np.sqrt(np.mean(seg ** 2)))
+        rms_values.append(rms)
+
+    median_rms = float(np.median(rms_values)) if rms_values else 0.0
+
+    window = np.hanning(frame_size)
+    features = []
+
+    for start in starts:
+        seg = x[start:start + win]
+        rms = float(np.sqrt(np.mean(seg ** 2)))
+        peak = float(np.max(np.abs(seg)))
+
+        mags = []
+        energies = []
+        i = 0
+        while i + frame_size <= win:
+            frame = seg[i:i + frame_size] * window
+            mags.append(np.abs(np.fft.rfft(frame)))
+            energies.append(float(np.mean(frame ** 2)))
+            i += frame_hop
+
+        if len(mags) >= 2:
+            mag_array = np.array(mags)
+            diff = np.maximum(0.0, mag_array[1:] - mag_array[:-1])
+            flux = float(np.sqrt(np.sum(diff ** 2))) / (len(mags) - 1)
+            onset = float(np.mean(np.maximum(0.0, np.diff(energies))))
+        else:
+            flux = 0.0
+            onset = 0.0
+
+        rms_db = _rms_dbfs(seg)
+        crest = (peak / rms) if rms > 1e-12 else 0.0
+        baseline_db = (
+            20.0 * math.log10(median_rms) if median_rms > 0 else -120.0
+        )
+        energy_change_db = rms_db - baseline_db
+
+        features.append({
+            "start": round(start / sample_rate, 3),
+            "end": round((start + win) / sample_rate, 3),
+            "rms_db": rms_db,
+            "crest_factor": round(crest, 3),
+            "spectral_flux": round(flux, 6),
+            "onset_strength": round(onset, 8),
+            "energy_change_db": round(energy_change_db, 2),
+        })
+
+    return features
+
+
 def write_sound_events_raw_evidence(
     audio_path, output_path, window_sec=1.5, hop_sec=0.5, top_k=8,
 ):
@@ -236,8 +325,29 @@ def write_sound_events_raw_evidence(
                 clap_runtime = round(time.time() - clap_started, 2)
                 clap_status = "failed"
 
+            # 3.5: independent transient/SFX detector (numpy only). It runs
+            # even when both models fail, so a strong unnamed punch/impact
+            # still becomes a high-priority review window.
+            transient_started = time.time()
+            try:
+                transient_features = _transient_feature_windows(
+                    audio, sample_rate, TRANSIENT_WINDOW_SEC, TRANSIENT_HOP_SEC
+                )
+                transient_runtime = round(time.time() - transient_started, 2)
+                transient_status = "complete"
+            except Exception as exc:  # noqa: BLE001 -- fail soft per model
+                transient_features = []
+                transient_runtime = round(time.time() - transient_started, 2)
+                transient_status = "failed"
+
+            # 3.5: the worker is complete if ANY evidence source produced
+            # output -- including the transient/SFX detector when both
+            # models fail, so an unnamed punch still becomes a review window.
             overall_status = (
-                "complete" if panns_status == "complete" or clap_status == "complete"
+                "complete"
+                if panns_status == "complete"
+                or clap_status == "complete"
+                or transient_status == "complete"
                 else "failed"
             )
 
@@ -248,11 +358,17 @@ def write_sound_events_raw_evidence(
                 "media": {"duration_sec": round(duration_sec, 3), "sample_rate": sample_rate},
                 "panns_status": panns_status,
                 "clap_status": clap_status,
+                "transient_status": transient_status,
                 "panns_windows": panns_windows,
                 "clap_windows": clap_windows,
+                "transient_feature_windows": transient_features,
                 "provenance": {
                     "panns": {**panns_provenance, "runtime_sec": panns_runtime},
                     "clap": {**clap_provenance, "runtime_sec": clap_runtime},
+                    "transient": {
+                        "detector": "short_time_rms+spectral_flux+onset+energy_change+crest",
+                        "runtime_sec": transient_runtime,
+                    },
                 },
             }
 

@@ -1,6 +1,9 @@
 param(
     [Parameter(Position=0)]
-    [string]$Video = "VIDEO.mp4"
+    [string]$Video = "VIDEO.mp4",
+
+    [Parameter(Position=1)]
+    [string]$Seed = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -27,14 +30,37 @@ if (-not (Test-Path $Video)) {
     throw "Video not found: $Video"
 }
 
+if ($Seed -ne "") {
+    if (-not [System.IO.Path]::IsPathRooted($Seed)) {
+        $Seed = Join-Path $Root $Seed
+    }
+
+    $Seed = [System.IO.Path]::GetFullPath($Seed)
+
+    if (-not (Test-Path $Seed)) {
+        throw "Task seed not found: $Seed"
+    }
+}
+
 Write-Host ""
 Write-Host "==================================="
 Write-Host " MANUSCRIPT II AUDIO REVIEW"
 Write-Host "==================================="
 Write-Host "Video: $Video"
+
+if ($Seed -ne "") {
+    Write-Host "Seed:  $Seed (locked task auto-ingested before analysis)"
+}
+
 Write-Host ""
 
-& $Python $Pipeline $Video
+$PipelineArgs = @($Video)
+
+if ($Seed -ne "") {
+    $PipelineArgs += $Seed
+}
+
+& $Python $Pipeline @PipelineArgs
 
 if ($LASTEXITCODE -ne 0) {
     throw "Manuscript audio pipeline failed with exit code $LASTEXITCODE."

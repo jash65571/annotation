@@ -48,11 +48,28 @@ WORKER = ROOT / "manuscript_audio_asr_worker.py"
 SECONDARY_MODEL = "large-v3-turbo"
 LOW_CONFIDENCE_SCORE = 0.5
 UNRECOVERABLE_SCORE = 0.15
-OVERLAP_MATCH_THRESHOLD = 0.3
 MAX_AUTO_RERUNS = 6
 RERUN_PADDING_SEC = 0.4
 WORKER_READY_TIMEOUT_SEC = 180
 WORKER_REQUEST_TIMEOUT_SEC = 180
+
+# 3.5 hardening: cross-model matching is sequence-aware, not strict
+# overlap-only. The same lexical word can drift by a few hundred ms between
+# models, so a word pair is aligned when the normalized text matches and the
+# center-times are within tolerance, even if the raw intervals do not touch.
+# MATCH_CENTER_TOLERANCE_SEC is the primary 300-400ms window the audit asked
+# for; MATCH_CENTER_DRIFT_SEC allows a wider (but still bounded) match for
+# identical text so a single drifted word is not misread as a coverage gap.
+MATCH_CENTER_TOLERANCE_SEC = 0.35
+MATCH_CENTER_DRIFT_SEC = 0.9
+MATCH_SAME_TEXT_SCORE = 3.0
+MATCH_SAME_TEXT_DRIFTED_SCORE = 1.0
+MATCH_DIFF_TEXT_PENALTY = -0.5
+MATCH_FAR_PENALTY = -2.0
+# Two gaps (-1.6) must always beat one far/apart match (-2.0) so unrelated
+# words are never stretched into an alignment; a real match is still
+# strongly preferred over gapping.
+ALIGN_GAP_PENALTY = -0.8
 
 # 3A.1: merge rerun candidates within this gap into one inference call.
 MERGE_GAP_SEC = 0.5
@@ -339,8 +356,104 @@ def merge_intervals(intervals, join_gap=0.15):
 
 
 # ---------------------------------------------------------------------------
-# Word-level consensus
+# Word-level consensus (3.5: sequence-aware alignment)
 # ---------------------------------------------------------------------------
+
+def _word_center(w):
+    return (float(w["start"]) + float(w["end"])) / 2.0
+
+
+def _pair_score(pw, sw):
+    """Score aligning primary word pw with secondary word sw.
+
+    Same normalized text within the 300-400ms center tolerance is the best
+    match (drift-tolerant). Identical text that drifted further still beats a
+    gap, so one misaligned word is not misread as a coverage gap. Different
+    text with close center times is a genuine model disagreement (conflict
+    candidate). Everything else is strongly discouraged so the alignment does
+    not stretch across unrelated words.
+    """
+    norm_p = normalize_word(pw["word"])
+    norm_s = normalize_word(sw["word"])
+    center_dist = abs(_word_center(pw) - _word_center(sw))
+
+    if norm_p and norm_p == norm_s:
+        if center_dist <= MATCH_CENTER_TOLERANCE_SEC:
+            return MATCH_SAME_TEXT_SCORE
+        if center_dist <= MATCH_CENTER_DRIFT_SEC:
+            return MATCH_SAME_TEXT_DRIFTED_SCORE
+        return MATCH_FAR_PENALTY
+
+    if center_dist <= MATCH_CENTER_TOLERANCE_SEC:
+        return MATCH_DIFF_TEXT_PENALTY
+
+    return MATCH_FAR_PENALTY
+
+
+def _align_word_sequences(primary_words, secondary_words):
+    """Needleman-Wunsch global alignment over normalized text, scored by
+    center-time distance. Returns (aligned_pairs, primary_gapped,
+    secondary_gapped) where aligned_pairs is a list of (p_index, s_index)
+    tuples. Sequence context makes the match robust to both timing drift and
+    small insertions/deletions between the two models (3.5 hardening).
+    """
+    n = len(primary_words)
+    m = len(secondary_words)
+
+    if n == 0 or m == 0:
+        return [], set(range(n)), set(range(m))
+
+    # DP table with traceback. Row-major; dp[i][j] is the best score for
+    # prefix primary[:i] vs secondary[:j].
+    dp = [[0.0] * (m + 1) for _ in range(n + 1)]
+    trace = [[0] * (m + 1) for _ in range(n + 1)]  # 1=diag, 2=up(gap p), 3=left(gap s)
+
+    for i in range(1, n + 1):
+        dp[i][0] = ALIGN_GAP_PENALTY * i
+        trace[i][0] = 2
+    for j in range(1, m + 1):
+        dp[0][j] = ALIGN_GAP_PENALTY * j
+        trace[0][j] = 3
+
+    for i in range(1, n + 1):
+        pw = primary_words[i - 1]
+        for j in range(1, m + 1):
+            sw = secondary_words[j - 1]
+            diag = dp[i - 1][j - 1] + _pair_score(pw, sw)
+            up = dp[i - 1][j] + ALIGN_GAP_PENALTY
+            left = dp[i][j - 1] + ALIGN_GAP_PENALTY
+
+            if diag >= up and diag >= left:
+                dp[i][j] = diag
+                trace[i][j] = 1
+            elif up >= left:
+                dp[i][j] = up
+                trace[i][j] = 2
+            else:
+                dp[i][j] = left
+                trace[i][j] = 3
+
+    aligned = []
+    primary_gapped = set()
+    secondary_gapped = set()
+    i, j = n, m
+
+    while i > 0 or j > 0:
+        if i > 0 and j > 0 and trace[i][j] == 1:
+            aligned.append((i - 1, j - 1))
+            i -= 1
+            j -= 1
+        elif i > 0 and trace[i][j] == 2:
+            primary_gapped.add(i - 1)
+            i -= 1
+        else:
+            if j > 0:
+                secondary_gapped.add(j - 1)
+            j -= 1
+
+    aligned.reverse()
+    return aligned, primary_gapped, secondary_gapped
+
 
 def build_word_consensus(primary_words, secondary_words):
     """Classify each primary word by whether the secondary pass agrees.
@@ -349,66 +462,38 @@ def build_word_consensus(primary_words, secondary_words):
     missing_from_one_model / unrecoverable. `needs_listen` is a derived flag,
     not a separate bucket, so every word still gets exactly one state.
 
+    3.5 hardening: matching is a global sequence alignment (normalized-text
+    equality + center-time distance), so the same word heard by both models
+    a few hundred ms apart counts as agreement instead of two unrelated weak
+    words (the `Go!` regression) and tiny drift no longer fabricates
+    coverage gaps.
+
     Also returns secondary_only_words: words the secondary model produced
-    with no overlapping primary word at all. This is the mechanism that
-    catches the exact regression this phase exists for -- primary ASR
-    stopping early while speech continues.
+    with no aligned primary word at all. This is the mechanism that catches
+    the exact regression this phase exists for -- primary ASR stopping early
+    while speech continues.
     """
-    used_secondary = set()
+    aligned, primary_gapped, secondary_gapped = _align_word_sequences(
+        primary_words, secondary_words
+    )
+
     consensus = []
 
-    for pw in primary_words:
-        best_index = None
-        best_overlap = 0.0
+    for i, pw in enumerate(primary_words):
+        primary_score = pw["score"] if pw["score"] is not None else 1.0
 
-        for i, sw in enumerate(secondary_words):
-            if sw["end"] < pw["start"] - 1.0:
-                continue
-            if sw["start"] > pw["end"] + 1.0:
-                break
+        matched = next(
+            (j for pi, j in aligned if pi == i),
+            None,
+        )
 
-            ratio = overlap_ratio(pw["start"], pw["end"], sw["start"], sw["end"])
-
-            if ratio > best_overlap:
-                best_overlap = ratio
-                best_index = i
-
-        if best_index is not None and best_overlap >= OVERLAP_MATCH_THRESHOLD:
-            sw = secondary_words[best_index]
-            used_secondary.add(best_index)
-            same_text = normalize_word(pw["word"]) == normalize_word(sw["word"])
-            primary_score = pw["score"] if pw["score"] is not None else 1.0
-
-            if same_text:
-                state = (
-                    "confirmed"
-                    if primary_score >= LOW_CONFIDENCE_SCORE
-                    else "probable"
-                )
-            else:
-                state = "conflicting"
-
-            entry = {
-                "word": pw["word"],
-                "start": pw["start"],
-                "end": pw["end"],
-                "segment": pw.get("segment"),
-                "primary_score": pw["score"],
-                "state": state,
-                "secondary_word": sw["word"],
-                "secondary_score": sw["score"],
-                "overlap_ratio": round(best_overlap, 3),
-                "needs_listen": state in ("conflicting", "probable"),
-            }
-        else:
-            primary_score = pw["score"] if pw["score"] is not None else 1.0
+        if matched is None:
             state = (
                 "unrecoverable"
                 if primary_score < UNRECOVERABLE_SCORE
                 else "missing_from_one_model"
             )
-
-            entry = {
+            consensus.append({
                 "word": pw["word"],
                 "start": pw["start"],
                 "end": pw["end"],
@@ -418,9 +503,42 @@ def build_word_consensus(primary_words, secondary_words):
                 "secondary_word": None,
                 "secondary_score": None,
                 "overlap_ratio": 0.0,
+                "center_distance_sec": None,
                 "missing_from": "secondary",
                 "needs_listen": True,
-            }
+            })
+            continue
+
+        sw = secondary_words[matched]
+        same_text = normalize_word(pw["word"]) == normalize_word(sw["word"])
+
+        if same_text:
+            state = (
+                "confirmed"
+                if primary_score >= LOW_CONFIDENCE_SCORE
+                else "probable"
+            )
+        else:
+            state = "conflicting"
+
+        entry = {
+            "word": pw["word"],
+            "start": pw["start"],
+            "end": pw["end"],
+            "segment": pw.get("segment"),
+            "primary_score": pw["score"],
+            "state": state,
+            "secondary_word": sw["word"],
+            "secondary_score": sw["score"],
+            "overlap_ratio": round(
+                overlap_ratio(pw["start"], pw["end"], sw["start"], sw["end"]),
+                3,
+            ),
+            "center_distance_sec": round(
+                abs(_word_center(pw) - _word_center(sw)), 3
+            ),
+            "needs_listen": state in ("conflicting", "probable"),
+        }
 
         consensus.append(entry)
 
@@ -434,8 +552,8 @@ def build_word_consensus(primary_words, secondary_words):
             "missing_from": "primary",
             "needs_listen": True,
         }
-        for i, sw in enumerate(secondary_words)
-        if i not in used_secondary
+        for j, sw in enumerate(secondary_words)
+        if j in secondary_gapped
     ]
 
     return consensus, secondary_only_words

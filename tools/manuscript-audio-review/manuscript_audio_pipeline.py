@@ -9,6 +9,7 @@ from manuscript_audio_ui import enrich_evidence_with_ui_candidates
 from manuscript_audio_voice import enrich_evidence_with_voice_profiles
 from manuscript_audio_optional import run_optional_evidence
 from manuscript_audio_task_identity import write_video_identity
+from manuscript_audio_seed import parse_seed_text, write_task_context
 from manuscript_audio_asr_consensus import write_asr_consensus_evidence
 from manuscript_audio_face_worker import write_face_track_evidence
 from manuscript_audio_speaker_mapping import write_speaker_mapping_evidence
@@ -42,17 +43,102 @@ SPEAKER_MAPPING_EVIDENCE = ROOT / "analysis" / "speaker_mapping_evidence.json"
 AUDIO_EVENTS_PYTHON = ROOT / ".venv-audio-events" / "Scripts" / "python.exe"
 SOUND_FUSION_EVIDENCE = ROOT / "analysis" / "sound_fusion_evidence.json"
 VIDEO_PATH = None
+
 def run(cmd):
     subprocess.run(cmd, cwd=ROOT, check=True)
 
 
-def preprocess_source_video():
+def probe_source_audio(video_path):
+    """Best-effort ffprobe of the ORIGINAL video's audio stream. Returns
+    {"source_sample_rate", "audio_channels", "audio_codec"} or {} when
+    ffprobe cannot read the stream. Never raises -- the master must still
+    generate when this is unavailable.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "a:0",
+                "-show_entries",
+                "stream=sample_rate,channels,codec_name",
+                "-of",
+                "json",
+                str(video_path),
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if result.returncode != 0:
+            return {}
+        streams = json.loads(result.stdout).get("streams", [])
+        if not streams:
+            return {}
+        stream = streams[0]
+        out = {}
+        if stream.get("sample_rate"):
+            out["source_sample_rate"] = int(stream["sample_rate"])
+        if stream.get("channels") is not None:
+            out["audio_channels"] = int(stream["channels"])
+        if stream.get("codec_name"):
+            out["audio_codec"] = stream["codec_name"]
+        return out
+    except Exception:  # noqa: BLE001 -- best-effort, never break the pipeline
+        return {}
+
+
+def run_seed_ingestion(seed_path):
+    """3.5: auto-ingest the locked Manuscript task seed so the pipeline knows
+    the real C#/O# structure and locked shot ranges BEFORE analyzing. Without
+    this, every stage invents empty characters/objects/shots.
+    """
+    print("\n=== PHASE 0.5: TASK SEED INGESTION ===\n")
+
+    seed_path = Path(seed_path).expanduser().resolve()
+
+    if not seed_path.exists():
+        raise FileNotFoundError(f"Task seed file not found: {seed_path}")
+
+    text = seed_path.read_text(encoding="utf-8-sig")
+
+    if not text.strip():
+        raise ValueError(f"Task seed file is empty: {seed_path}")
+
+    parsed = parse_seed_text(text)
+
+    if not parsed["shots"]:
+        print("TASK SEED: WARNING | no shot boundaries parsed; "
+              "shot-aware evidence will stay empty until a valid seed is used")
+
+    result = write_task_context(parsed, preserve_sha=True)
+
+    meta = result["seed_meta"]
+
+    print("Seed file:", seed_path)
+    print("Characters:", ", ".join(result["characters"]) or "(none)")
+    print("Objects:", ", ".join(result["objects"]) or "(none)")
+    print("Shots:", len(result["shots"]))
+
+    if meta["parse_issues"]:
+        print("Parse issues:")
+        for issue in meta["parse_issues"]:
+            print("  -", issue)
+
+    print("Task context:", CONTEXT)
+    return result
+
+
+def preprocess_source_video(video=None):
     print("\n=== PHASE 0: SOURCE PREPROCESSING ===\n")
 
-    if len(sys.argv) >= 2:
-        video = Path(sys.argv[1]).expanduser().resolve()
-    else:
+    if video is None:
         video = ROOT / "VIDEO.mp4"
+
+    video = Path(video).expanduser().resolve()
 
     global VIDEO_PATH
     VIDEO_PATH = video
@@ -87,11 +173,28 @@ def preprocess_source_video():
         VIDEO_IDENTITY,
     )
 
+    # 3.5: record the ORIGINAL source audio properties (the analysis WAV is
+    # resampled to 16 kHz mono, so its sample rate must never be presented
+    # as the source's). Best-effort: if ffprobe fails, the key stays absent
+    # and the master reports it honestly as not extracted.
+    source_media = probe_source_audio(video)
+    if source_media:
+        identity.update(source_media)
+        with VIDEO_IDENTITY.open("w", encoding="utf-8") as f:
+            json.dump(identity, f, indent=2)
+
     print("Source video:", video)
     print(
         "Video fingerprint:",
         identity["video_sha256"][:12] + "...",
     )
+    if identity.get("source_sample_rate"):
+        print(
+            "Source audio:",
+            f"{identity['source_sample_rate']} Hz, "
+            f"{identity.get('audio_channels', '?')} ch, "
+            f"{identity.get('audio_codec', '?')}",
+        )
     print("WhisperX Python:", whisperx_python)
 
     run(
@@ -338,6 +441,7 @@ def run_sound_events():
                     "ambience": {"candidates": [], "findings": []},
                     "source_attribution": {"character_candidates": [], "object_candidates": []},
                     "masking_evidence": {"candidates": []},
+                    "transients": {"events": [], "findings": [], "status": "unavailable"},
                     "review_windows": [],
                     "findings": [],
                 },
@@ -350,6 +454,24 @@ def clamp(value, low, high):
     return max(low, min(high, value))
 
 
+def shot_of_window(start, end, shots):
+    best = None
+    best_overlap = 0.0
+
+    for shot in shots:
+        shot_start = float(shot.get("start", 0.0))
+        shot_end = float(shot.get("end", 0.0))
+        overlap = max(
+            0.0,
+            min(float(end), shot_end) - max(float(start), shot_start),
+        )
+        if overlap > best_overlap:
+            best_overlap = overlap
+            best = shot.get("shot")
+
+    return best
+
+
 def build_review_queue():
     print("\n=== PHASE 2: TARGETED REVIEW QUEUE ===\n")
 
@@ -358,6 +480,23 @@ def build_review_queue():
 
     duration = float(evidence["media"]["duration_sec"])
     windows = []
+
+    # 3.5: every review window carries its locked shot when the seed defines
+    # one, so reviewers can queue by shot.
+    context_shots = []
+    if CONTEXT.exists():
+        try:
+            with CONTEXT.open("r", encoding="utf-8-sig") as f:
+                context_shots = json.load(f).get("shots", []) or []
+        except (json.JSONDecodeError, OSError):
+            context_shots = []
+
+    def with_shot(item):
+        if context_shots:
+            item["shot"] = shot_of_window(
+                float(item["start"]), float(item["end"]), context_shots
+            )
+        return item
 
     for segment in evidence.get("whisperx_segments", []):
         for word in segment.get("low_confidence_words", []):
@@ -597,6 +736,36 @@ def build_review_queue():
                 "segment":
                     item.get("segment"),
             })
+    # 3.5: sound/music/ambience/transient review windows (Phase 3C/3.5) also
+    # enter the queue so clips get cut for them. Transient_sfx_check windows
+    # from the independent detector are high-priority when STRONG.
+    if SOUND_FUSION_EVIDENCE.exists():
+        try:
+            with SOUND_FUSION_EVIDENCE.open(
+                "r", encoding="utf-8-sig"
+            ) as f:
+                sound_fusion = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            sound_fusion = {}
+
+        for item in sound_fusion.get("review_windows", []):
+            tier = item.get("tier")
+            priority = (
+                "high"
+                if tier in ("STRONG", "CONFLICT")
+                else "medium"
+            )
+            windows.append({
+                "priority": priority,
+                "type": item.get("type", "sound_check"),
+                "start": round(float(item["start"]), 3),
+                "end": round(float(item["end"]), 3),
+                "description": item.get("description", "Verify sound by listening."),
+                "tier": tier,
+            })
+
+    windows = [with_shot(w) for w in windows]
+
     windows = merge_transcript_review_windows(
         windows,
         max_gap_sec=0.25,
@@ -733,7 +902,20 @@ def main():
     print(" MANUSCRIPT II AUDIO REVIEW PIPELINE")
     print("===================================")
 
-    preprocess_source_video()
+    # Usage: python manuscript_audio_pipeline.py VIDEO.mp4 [SEED.txt]
+    video_arg = sys.argv[1] if len(sys.argv) >= 2 else None
+    seed_arg = sys.argv[2] if len(sys.argv) >= 3 else None
+
+    preprocess_source_video(video_arg)
+
+    if seed_arg:
+        run_seed_ingestion(seed_arg)
+    elif CONTEXT.exists():
+        print(
+            "\nTASK SEED: using existing task_context.json "
+            "(no seed.txt argument was passed).\n"
+        )
+
     run_analyzer()
 
     run_optional_evidence()

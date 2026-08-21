@@ -408,7 +408,11 @@ def main():
 
     evidence = {
         "media": {
-            "sample_rate": sr,
+            # 3.5: this WAV is the RESAMPLED 16 kHz analysis copy, never the
+            # source rate. Name it honestly; the source rate comes from
+            # ffprobe in the pipeline (video_identity.json).
+            "analysis_sample_rate": sr,
+            "sample_rate": sr,  # backward-compatible alias
             "duration_sec": round(len(audio) / sr, 3),
         },
         "whisperx_segments": build_whisperx_evidence(whisperx_data),

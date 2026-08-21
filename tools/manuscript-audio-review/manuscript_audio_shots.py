@@ -38,6 +38,67 @@ def validate_context(context):
         previous_end = end
 
 
+def shot_for_window(start, end, shots):
+    """Return the locked shot (int) whose range best overlaps [start, end],
+    or None when no shot overlaps at all (3.5: every finding carries a shot
+    when the seed defines one)."""
+    best = None
+    best_overlap = 0.0
+
+    for shot in shots:
+        shot_start = float(shot.get("start", 0.0))
+        shot_end = float(shot.get("end", 0.0))
+        overlap = max(
+            0.0,
+            min(float(end), shot_end) - max(float(start), shot_start),
+        )
+        if overlap > best_overlap:
+            best_overlap = overlap
+            best = shot.get("shot")
+
+    return best
+
+
+def enrich_segments_with_shots(evidence, shots):
+    """Tag every timestamped transcript entity with its locked shot so all
+    downstream consumers (review queue, master findings) can filter or group
+    by shot without re-deriving the mapping (3.5).
+    """
+    for segment in evidence.get("whisperx_segments", []):
+        segment["shot"] = shot_for_window(
+            float(segment.get("start", 0.0)),
+            float(segment.get("end", 0.0)),
+            shots,
+        )
+        for word in segment.get("low_confidence_words", []):
+            word["shot"] = shot_for_window(
+                float(word.get("start", 0.0)),
+                float(word.get("end", 0.0)),
+                shots,
+            )
+
+    for item in evidence.get("review_synthesis", []):
+        item["shot"] = shot_for_window(
+            float(item.get("start", 0.0)),
+            float(item.get("end", 0.0)),
+            shots,
+        )
+
+    for boundary in evidence.get("continuity_boundaries", []):
+        # `boundary` is a "left->right" segment-index label, not a
+        # timestamp; use the right segment's start time for the shot map.
+        right_index = boundary.get("right_segment")
+        segments = evidence.get("whisperx_segments", [])
+        anchor = None
+        if right_index is not None and 0 <= int(right_index) < len(segments):
+            anchor = float(segments[int(right_index)].get("start", 0.0))
+        if anchor is None:
+            anchor = 0.0
+        boundary["shot"] = shot_for_window(anchor, anchor, shots)
+
+    return evidence
+
+
 def build_shot_audio_evidence(context, whisperx_data):
     validate_context(context)
 
@@ -172,6 +233,9 @@ def enrich_evidence_with_shots(
             whisperx_data,
         )
     )
+
+    # 3.5: every timestamped transcript entity carries its locked shot.
+    enrich_segments_with_shots(evidence, context["shots"])
 
     with evidence_path.open("w", encoding="utf-8") as f:
         json.dump(

@@ -44,6 +44,7 @@ from manuscript_audio_sound_fusion import (
     estimate_recorded_level,
     estimate_mix_role,
     describe_relationships,
+    build_transient_events,
 )
 from manuscript_audio_sound_vocabulary import (
     HUMAN_NONVERBAL, AMBIENCE, OBJECT_SFX,
@@ -166,6 +167,7 @@ def _empty_contract(status, error=None):
             "object_candidates": [],
         },
         "masking_evidence": {"candidates": []},
+        "transients": {"events": [], "findings": []},
         "review_windows": [],
         "findings": [],
     }
@@ -333,6 +335,7 @@ def _enrich_sound_candidate(cand, index, supporting, panns_windows):
         "start": cand["start"],
         "end": cand["end"],
         "duration_sec": cand["duration_sec"],
+        "shot": shot["shot"] if shot else None,
         "tier": tier,
         "signals": cand["signals"],
         "evidence": [
@@ -368,11 +371,15 @@ def _enrich_music_region(region, index, supporting, panns_windows):
     baseline = supporting.get("clip_baseline_rms_dbfs")
     event_rms = _window_rms_dbfs(panns_windows, region["start"], region["end"])
     level = estimate_recorded_level(event_rms, baseline)
-    clip_duration = supporting.get("clip_duration_sec") or 0.0
-
-    mix_role = estimate_mix_role(
-        "music", region.get("duration_sec", 0.0), clip_duration, False
+    shot = _shot_containing(
+        region["start"], region["end"], supporting.get("shots", [])
     )
+
+    # 3.5: mix_role is deliberately NOT auto-filled for Music. The recorded
+    # level (e.g. "Quiet") may be reasonable, but a mix role like "Foreground"
+    # requires knowing whether dialogue is the focus -- which the models
+    # cannot establish. Leave it blank for human review.
+    mix_role = None
 
     evidence_lines = []
     for s in region["signals"]:
@@ -388,6 +395,7 @@ def _enrich_music_region(region, index, supporting, panns_windows):
         "start": region["start"],
         "end": region["end"],
         "duration_sec": region["duration_sec"],
+        "shot": shot["shot"] if shot else None,
         "tier": region["tier"],
         "signals": region["signals"],
         "evidence": evidence_lines,
@@ -489,10 +497,15 @@ def build_sound_fusion_evidence(raw, supporting=None):
 
     panns_windows = raw.get("panns_windows", []) or []
     clap_windows = raw.get("clap_windows", []) or []
+    transient_features = raw.get("transient_feature_windows", []) or []
 
-    if not panns_windows and not clap_windows:
+    # 3.5: a complete worker may have NO model windows (PANNs/CLAP missed
+    # the sound) but still carry transient/SFX detector features -- the
+    # exact "models cannot name the punch" case. Require at least one
+    # evidence source, not specifically a model one.
+    if not panns_windows and not clap_windows and not transient_features:
         return _empty_contract(
-            "failed", "worker completed but produced no model windows"
+            "failed", "worker completed but produced no evidence windows"
         )
 
     provenance = raw.get("provenance", {}) or {}
@@ -571,7 +584,10 @@ def build_sound_fusion_evidence(raw, supporting=None):
         if c["group"] == OBJECT_SFX
     ]
 
-    # Masking evidence: overlap is never automatically masking.
+    # Masking evidence: overlap is never automatically masking (3.5: a
+    # masking finding only surfaces when intelligibility actually drops --
+    # see `_build_review_windows` / `_build_findings` which gate on
+    # masking == "possible_masking").
     masking_candidates = []
     for c in enriched_sound:
         if not c.get("overlaps_speech"):
@@ -587,16 +603,26 @@ def build_sound_fusion_evidence(raw, supporting=None):
             "candidate_class": c["candidate_class"],
             "start": c["start"],
             "end": c["end"],
+            "shot": _shot_containing(
+                c["start"], c["end"], shots
+            )["shot"] if shots else None,
             **mask,
         })
 
+    # 3.5: independent transient/SFX detector evidence.
+    transients = _build_transients(
+        raw, speech_windows, enriched_sound, shots
+    )
+
     # Review windows: only meaningful uncertainty, never every STRONG event.
     review_windows = _build_review_windows(
-        enriched_sound, music_regions, masking_candidates
+        enriched_sound, music_regions, masking_candidates,
+        transient_events=transients["events"], shots=shots,
     )
 
     findings = _build_findings(
-        enriched_sound, music, ambience, masking_candidates
+        enriched_sound, music, ambience, masking_candidates,
+        transient_findings=transients["findings"],
     )
 
     return {
@@ -607,6 +633,7 @@ def build_sound_fusion_evidence(raw, supporting=None):
             "status": "complete",
             "panns": panns_prov,
             "clap": clap_prov,
+            "transient": (raw.get("provenance", {}) or {}).get("transient", {}),
             "runtime": {
                 "total_sec": raw.get("runtime_sec"),
                 "panns_sec": panns_prov.get("runtime_sec"),
@@ -621,13 +648,133 @@ def build_sound_fusion_evidence(raw, supporting=None):
             "object_candidates": obj_candidates,
         },
         "masking_evidence": {"candidates": masking_candidates},
+        "transients": transients,
         "review_windows": review_windows,
         "findings": findings,
     }
 
 
-def _build_review_windows(sound, music_regions, masking_candidates):
+def _build_transients(raw, speech_windows, sound_candidates, shots):
+    """Turn worker low-level features into reviewer-facing transient events.
+
+    Unexplained STRONG transients (no speech, no named sound overlapping)
+    are the high-priority review windows the 3.5 audit asked for: the models
+    may not be able to NAME the sound, but a strong spike across the five
+    low-level indicators is still evidence a Sound event exists.
+    """
+    feature_windows = raw.get("transient_feature_windows", []) or []
+
+    if not feature_windows:
+        return {"events": [], "findings": [], "status": "no_features"}
+
+    events = build_transient_events(feature_windows)
+    out = []
+    findings = []
+
+    for e in events:
+        named_overlaps = [
+            c for c in sound_candidates
+            if _overlap(e["start"], e["end"], c["start"], c["end"]) > 0.05
+        ]
+        has_speech = any(
+            _overlap(e["start"], e["end"], s, t) > 0.05
+            for s, t in speech_windows
+        )
+
+        # 3.5: only a NAMED sound candidate truly explains a transient.
+        # Co-occurring speech is context, not an explanation -- a punch
+        # during dialogue is still a punch, and the models could not name
+        # it (the audit's exact case). Speech overlap is recorded so the
+        # reviewer knows to separate a real SFX from speech emphasis.
+        explained_by = sorted({c["semantic_label"] for c in named_overlaps})
+        if has_speech:
+            explained_by.append("speech")
+
+        explained = bool(named_overlaps)
+        tier = e["tier"]
+        if explained and tier == STRONG:
+            tier = MEDIUM
+
+        shot = _shot_containing(e["start"], e["end"], shots)
+
+        # Explicit reason-why-retained fields: speech overlap alone never
+        # demotes a transient (a punch during dialogue is still a punch), so
+        # `overlaps_speech` is pure context and `explained_by_named_sound`
+        # is the only thing that can lower the tier.
+        event = {
+            **e,
+            "tier": tier,
+            "explained_by": explained_by,
+            "unexplained": not explained,
+            "overlaps_speech": has_speech,
+            "explained_by_named_sound": explained,
+            "shot": shot["shot"] if shot else None,
+        }
+        out.append(event)
+
+        if tier in (STRONG, MEDIUM):
+            if not explained:
+                if tier == STRONG:
+                    action = (
+                        "High-priority listen: identify the sound. Even "
+                        "unnamed, strong transients may support a Sound event."
+                    )
+                else:
+                    action = (
+                        "Listen and identify the sound; even unnamed, a "
+                        "transient may support a Sound event."
+                    )
+                if has_speech:
+                    action = (
+                        "A transient occurs DURING speech -- separate a "
+                        "real SFX from speech emphasis, and identify it. "
+                        "Even unnamed, it may support a Sound event."
+                    )
+                    if tier == STRONG:
+                        action = (
+                            "High-priority listen: a strong transient occurs "
+                            "DURING speech -- separate a real SFX from "
+                            "speech emphasis, and identify it. Even unnamed, "
+                            "it may support a Sound event."
+                        )
+                findings.append({
+                    "claim": (
+                        f"Unidentified transient sound at "
+                        f"{e['start']}-{e['end']}s "
+                        f"({tier} acoustic evidence)."
+                    ),
+                    "tier": tier,
+                    "evidence": [
+                        "transient detector: " + ", ".join(e["signals"]),
+                        "no named sound source explains it",
+                    ]
+                    + (["occurs during speech"] if has_speech else []),
+                    "action": action,
+                    "window": [e["start"], e["end"]],
+                })
+            else:
+                findings.append({
+                    "claim": (
+                        f"Transient at {e['start']}-{e['end']}s coincides "
+                        f"with {', '.join(explained_by)}."
+                    ),
+                    "tier": MEDIUM,
+                    "evidence": ["transient detector: " + ", ".join(e["signals"])],
+                    "action": (
+                        "Likely a byproduct of the named source; confirm by "
+                        "listening if you need to separate it."
+                    ),
+                    "window": [e["start"], e["end"]],
+                })
+
+    return {"events": out, "findings": findings, "status": "complete"}
+
+
+def _build_review_windows(
+    sound, music_regions, masking_candidates, transient_events=None, shots=None
+):
     windows = []
+    shots = shots or []
 
     def add(start, end, kind, tier, description):
         windows.append({
@@ -636,6 +783,7 @@ def _build_review_windows(sound, music_regions, masking_candidates):
             "start": round(float(start), 3),
             "end": round(float(end), 3),
             "description": description,
+            "shot": _shot_containing(start, end, shots)["shot"] if shots else None,
         })
 
     for c in sound:
@@ -654,10 +802,36 @@ def _build_review_windows(sound, music_regions, masking_candidates):
             add(r["start"], r["end"], "music_check", WEAK,
                 "Music evidence is weak; do NOT create a Music event without listening.")
 
+    # 3.5 stricter masking: a masking review window only exists when another
+    # source is actually present AND ASR evidence shows words disappeared
+    # during the overlap (intelligibility drop). Plain overlap, or overlap
+    # with unknown ASR outcome, is not a masking review -- it is handled by
+    # the generic sound-identity check above.
     for m in masking_candidates:
-        if m.get("tier") == MEDIUM:
+        if m.get("masking") == "possible_masking":
             add(m["start"], m["end"], "masking_check", MEDIUM,
-                "Sound overlaps speech; listen for actual intelligibility loss.")
+                "Another sound source overlaps speech and ASR words "
+                "disappeared during the overlap; listen for actual "
+                "intelligibility loss.")
+
+    # 3.5: strong unexplained transients are high-priority review windows
+    # even though no model can name them.
+    for t in transient_events or []:
+        if t["tier"] not in (STRONG, MEDIUM):
+            continue
+        if t.get("unexplained"):
+            add(
+                t["start"], t["end"], "transient_sfx_check", t["tier"],
+                "Strong unidentified transient sound; listen and identify "
+                "it (may support a Sound event even unnamed).",
+            )
+        else:
+            add(
+                t["start"], t["end"], "transient_sfx_check", MEDIUM,
+                "Transient coincides with "
+                + ", ".join(t.get("explained_by", []))
+                + "; confirm it is a byproduct.",
+            )
 
     # De-duplicate by (type, start, end) and sort.
     seen = set()
@@ -670,8 +844,9 @@ def _build_review_windows(sound, music_regions, masking_candidates):
     return unique
 
 
-def _build_findings(sound, music, ambience, masking_candidates):
+def _build_findings(sound, music, ambience, masking_candidates, transient_findings=None):
     findings = []
+    transient_findings = transient_findings or []
 
     for c in sound:
         tier = c["tier"]
@@ -704,17 +879,24 @@ def _build_findings(sound, music, ambience, masking_candidates):
             "action": "Do NOT create a Music event without listening.",
         })
 
+    # 3.5 stricter masking: only "possible_masking" (real overlap + ASR word
+    # loss during the overlap) becomes a finding. Plain overlap and
+    # unknown-outcome overlaps stay as data, never as masking warnings --
+    # they only ever justify "Low-confidence speech: re-listen".
     for m in masking_candidates:
-        if m.get("masking") in ("possible_masking", "UNKNOWN"):
+        if m.get("masking") == "possible_masking":
             findings.append({
                 "claim": (
-                    f"Possible masking: {m['candidate_class']} overlaps speech."
+                    f"Possible masking: {m['candidate_class']} overlaps speech "
+                    "and ASR words disappeared during the overlap."
                 ),
                 "tier": m.get("tier") or UNKNOWN,
                 "evidence": m.get("action", ""),
-                "action": "Listen for actual intelligibility loss; do not call it masking automatically.",
+                "action": "Listen for actual intelligibility loss before calling it masking.",
                 "window": [m["start"], m["end"]],
             })
+
+    findings.extend(transient_findings)
 
     findings.sort(
         key=lambda f: (

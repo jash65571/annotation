@@ -5,6 +5,10 @@ consumes whatever raw per-window scores the model workers produced (or
 synthetic fixtures in tests) and turns them into reviewer-facing evidence
 using the shared STRONG/MEDIUM/WEAK/CONFLICT/UNKNOWN vocabulary.
 
+Phase 3.5 addition: the transient/SFX detector (short-time RMS, spectral
+flux, onset strength, broadband energy change, crest factor) -- pure
+stdlib, numpy lives only in the worker.
+
 Design rules carried over from 3A/3B and restated for 3C:
 
 - A classifier score is never a Manuscript fact by itself. Independent
@@ -15,6 +19,8 @@ Design rules carried over from 3A/3B and restated for 3C:
   nonverbal Sound candidate, never invented dialogue.
 - Visible motion alone never selects a human or object sound source.
 """
+
+import statistics
 
 from manuscript_audio_sound_vocabulary import (
     HUMAN_NONVERBAL, AMBIENCE, OBJECT_SFX, MUSIC,
@@ -415,6 +421,134 @@ def build_music_candidates(panns_windows, clap_windows, rhythmicity_by_window=No
         "regions": candidates,
         "overall_confidence": overall,
     }
+
+
+# ---------------------------------------------------------------------------
+# Transient / SFX detector (3.5) -- pure stdlib, no numpy here.
+#
+# The model workers (PANNs/CLAP) miss short, loud, unnamed sounds (the
+# punch at ~8.77s in the audit clip). This independent detector runs on
+# low-level features -- short-time RMS, spectral flux, onset strength,
+# broadband energy change, and crest factor -- computed in the worker
+# (numpy) and turned into events here so the logic stays unit-testable
+# without any audio dependency.
+# ---------------------------------------------------------------------------
+
+TRANSIENT_SCORE_THRESHOLD = 0.5
+TRANSIENT_STRONG_SCORE = 0.7
+TRANSIENT_JOIN_GAP_SEC = 0.4
+TRANSIENT_SIGNAL_BAR = 0.5
+
+
+def _clamp01(value):
+    return max(0.0, min(1.0, float(value)))
+
+
+def _robust_z(values):
+    """Median/MAD z-score (pure stdlib). Constant input -> all zeros."""
+    values = [float(v) for v in values]
+    n = len(values)
+    if n == 0:
+        return []
+
+    median = statistics.median(values)
+    deviations = [abs(v - median) for v in values]
+    mad = statistics.median(deviations) if n > 1 else 0.0
+    scale = mad * 1.4826 if mad > 0 else (statistics.pstdev(values) if n > 1 else 0.0)
+
+    if scale <= 1e-9:
+        return [0.0] * n
+
+    return [(v - median) / scale for v in values]
+
+
+def build_transient_events(feature_windows, join_gap=TRANSIENT_JOIN_GAP_SEC):
+    """Turn per-window low-level detector features into transient events.
+
+    feature_windows: list of {"start", "end", "rms_db", "crest_factor",
+    "spectral_flux", "onset_strength", "energy_change_db"}. A window is a
+    transient candidate when several independent indicators spike together
+    (RMS above baseline, broadband energy change, spectral flux, onset
+    strength, crest factor). Adjacent candidates merge. Windows without a
+    usable rms_db are ignored.
+
+    Tier is acoustic strength only: STRONG >= 0.7, MEDIUM >= 0.5. Whether a
+    transient is *explained* by speech or a named sound is the caller's job
+    (it needs speech windows + sound candidates); that demotion decides
+    review priority.
+    """
+    feature_windows = [
+        w for w in (feature_windows or [])
+        if w.get("rms_db") is not None
+    ]
+
+    if not feature_windows:
+        return []
+
+    feature_windows = sorted(
+        feature_windows, key=lambda w: (float(w["start"]), float(w["end"]))
+    )
+
+    rms = [float(w["rms_db"]) for w in feature_windows]
+    flux = [float(w.get("spectral_flux", 0.0)) for w in feature_windows]
+    onset = [float(w.get("onset_strength", 0.0)) for w in feature_windows]
+    energy = [float(w.get("energy_change_db", 0.0)) for w in feature_windows]
+    crest = [float(w.get("crest_factor", 0.0)) for w in feature_windows]
+
+    rms_z = _robust_z(rms)
+    flux_z = _robust_z(flux)
+    onset_z = _robust_z(onset)
+    energy_z = _robust_z(energy)
+
+    events = []
+
+    for i, w in enumerate(feature_windows):
+        indicators = {
+            "short_time_rms": _clamp01(rms_z[i] / 2.0),
+            "broadband_energy_change": _clamp01(energy_z[i] / 2.0),
+            "spectral_flux": _clamp01(flux_z[i] / 2.0),
+            "onset_strength": _clamp01(onset_z[i] / 2.0),
+            "crest_factor": _clamp01((crest[i] - 3.0) / 7.0),
+        }
+
+        score = round(
+            sum(indicators.values()) / len(indicators), 3
+        )
+
+        if score < TRANSIENT_SCORE_THRESHOLD:
+            continue
+
+        events.append({
+            "start": w["start"],
+            "end": w["end"],
+            "score": score,
+            "tier": (
+                STRONG if score >= TRANSIENT_STRONG_SCORE else MEDIUM
+            ),
+            "signals": [
+                k for k, v in indicators.items()
+                if v >= TRANSIENT_SIGNAL_BAR
+            ],
+            "features": {
+                k: round(v, 4) for k, v in indicators.items()
+            },
+        })
+
+    merged = []
+
+    for e in events:
+        if merged and e["start"] <= merged[-1]["end"] + join_gap:
+            g = merged[-1]
+            g["end"] = max(g["end"], e["end"])
+            g["score"] = round(max(g["score"], e["score"]), 3)
+            g["tier"] = STRONG if g["score"] >= TRANSIENT_STRONG_SCORE else MEDIUM
+            for signal in e["signals"]:
+                if signal not in g["signals"]:
+                    g["signals"].append(signal)
+        else:
+            merged.append(dict(e))
+
+    return merged
 
 
 # ---------------------------------------------------------------------------

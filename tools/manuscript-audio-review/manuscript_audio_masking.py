@@ -42,11 +42,13 @@ def load_json(path):
         return json.load(f)
 
 
-def overlaps(a_start, a_end, b_start, b_end):
-    return (
-        float(a_start) < float(b_end)
-        and float(a_end) > float(b_start)
-    )
+def overlaps(a_start, a_end, b_start, b_end, minimum=0.05):
+    """3.5 stricter masking: touching intervals are NOT an overlap. A
+    masking candidate requires a real overlapping source (>= 50 ms of shared
+    time), otherwise the word is plain low-confidence speech.
+    """
+    shared = min(float(a_end), float(b_end)) - max(float(a_start), float(b_start))
+    return shared >= minimum
 
 
 def build_speaker_overlap_regions(diarization):
@@ -134,6 +136,19 @@ def get_supported_sound_candidates(sound_data):
                 "max_score"
             ),
         })
+
+    # 3.5 stricter masking: an ambient / whole-clip candidate (e.g. a Music
+    # or Room-ambience detection spanning nearly the whole clip) is a
+    # background condition, NOT a masking source. Treating it as a masking
+    # source would turn every low-confidence word in the clip into a
+    # "possible masking" warning -- exactly the audit's complaint. Only
+    # localized events can mask speech.
+    if results:
+        span = max(r["end"] for r in results) - min(r["start"] for r in results)
+        results = [
+            r for r in results
+            if (r["end"] - r["start"]) < 0.5 * max(span, 1e-6)
+        ]
 
     return results
 
