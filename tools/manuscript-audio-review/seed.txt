@@ -1,0 +1,625 @@
+Overview
+Cast and global descriptors
+
+Audio-only task. Visual text is locked and carried over as-is. You edit the Voice statement on every character, a Sound statement on objects that make a sound, the overview Audio summary, each shot's Audio events, and Audio concerns.
+Cast
+Descriptions are locked — add the Voice / Sound statements
+Add off-screen speaker
+Add sound source
+
+Characters
+8
+· Voice statement required on every C#
+descriptions locked
+C1
+A mid-teens white male of average build with short wavy brown hair and rectangular glasses. He wears a bright blue short-sleeved polo shirt with a small yellow logo on the chest, a white wristband on his left wrist, and grey and white plaid shorts. Lower body and shoes are not visible.
+
+Voice
+Observed
+Observed briefly
+Not observed
+Describe the predominant setting — how C1 mostly sounds. If the voice changes during the clip (a whisper, a shout), describe that on the shot's audio event with “Voice changes during this event”.
+
+Pitch
+
+Mid
+Speaking level
+
+Normal
+Speed
+
+Normal
+Delivery
+
+Flat
+Recorded level
+
+Moderate
+Mix role
+
+Foreground
+Clarity
+
+Clear
+Confidence
+
+High
+Texture (more than one only when both are clearly audible)
+Ordinary
+Breathy
+Rough
+Nasal
+Squeaky
+Note (optional)
+Accent (only if confidently identifiable), masking caveat…
+Voice: Observed. Mid pitch; ordinary texture; normal speaking level; normal speed; flat delivery; moderate recorded level; foreground in the mix; clear. Confidence: high.
+
+Add a Sound statement
+C2
+A mid-teens white male of tall, lean build with short dark brown hair. He wears a black and white sleeveless jersey with "BACARDI GOLD" on the front over a white short-sleeved t-shirt, and grey pants. Lower body and shoes are not visible.
+
+Voice
+Observed
+Observed briefly
+Not observed
+Describe the predominant setting — how C2 mostly sounds. If the voice changes during the clip (a whisper, a shout), describe that on the shot's audio event with “Voice changes during this event”.
+
+Pitch
+
+Mid
+Speaking level
+
+Raised
+Speed
+
+Normal
+Delivery
+
+Ordinary
+Recorded level
+
+Moderate
+Mix role
+
+Supporting
+Clarity
+
+Clear
+Confidence
+
+High
+Texture (more than one only when both are clearly audible)
+Ordinary
+Breathy
+Rough
+Nasal
+Squeaky
+Note (optional)
+Accent (only if confidently identifiable), masking caveat…
+Voice: Observed. Mid pitch; ordinary texture; raised speaking level; normal speed; ordinary delivery; moderate recorded level; supporting in the mix; clear. Confidence: high.
+
+Add a Sound statement
+C3
+A mid-teens white male of tall, lean build with short light brown hair. He wears a red and white vertically striped short-sleeved jersey with "Santo" on the front, and dark shorts. Lower body and shoes are not visible.
+
+Voice
+Observed
+Observed briefly
+Not observed
+Describe the predominant setting — how C3 mostly sounds. If the voice changes during the clip (a whisper, a shout), describe that on the shot's audio event with “Voice changes during this event”.
+
+Pitch
+
+Mid
+Speaking level
+
+Shouted
+Speed
+
+Normal
+Delivery
+
+Dramatic
+Recorded level
+
+Loud
+Mix role
+
+Foreground
+Clarity
+
+Clear
+Confidence
+
+High
+Texture (more than one only when both are clearly audible)
+Ordinary
+Breathy
+Rough
+Nasal
+Squeaky
+Note (optional)
+Accent (only if confidently identifiable), masking caveat…
+Voice: Observed. Mid pitch; ordinary and squeaky texture; shouted speaking level; normal speed; dramatic delivery; loud recorded level; foreground in the mix; clear. Confidence: high.
+
+Add a Sound statement
+C4
+A mid-teens white male of average build with short light brown hair. He wears a green and white jersey with "EAGLES" on the front and grey shorts. He carries a red backpack. Lower body and shoes are not visible.
+
+Voice
+Observed
+Observed briefly
+Not observed
+Reason (optional)
+no audible speech or vocalization is confidently attributed to this character
+Leave empty to export the standard sentence shown below.
+
+Voice: Not observed; no audible speech or vocalization is confidently attributed to this character.
+
+Add a Sound statement
+C5
+A mid-teens white male of average build with short light brown hair. He wears a yellow jersey with a white number 6 on the back, and dark shorts. Lower body and shoes are not visible.
+
+Voice
+Observed
+Observed briefly
+Not observed
+Reason (optional)
+no audible speech or vocalization is confidently attributed to this character
+Leave empty to export the standard sentence shown below.
+
+Voice: Not observed; no audible speech or vocalization is confidently attributed to this character.
+
+Add a Sound statement
+C6
+A mid-teens white male of average build with short dark hair. He wears a dark sleeveless shirt with a white number 14 on the back, and khaki shorts. Lower body and shoes are not visible.
+
+Voice
+Observed
+Observed briefly
+Not observed
+Reason (optional)
+no audible speech or vocalization is confidently attributed to this character
+Leave empty to export the standard sentence shown below.
+
+Voice: Not observed; no audible speech or vocalization is confidently attributed to this character.
+
+Add a Sound statement
+C7
+A mid-teens white male of average build with short dark hair. He wears a white t-shirt and dark shorts, carrying a black backpack. Lower body and shoes are not visible.
+
+Voice
+Observed
+Observed briefly
+Not observed
+Reason (optional)
+no audible speech or vocalization is confidently attributed to this character
+Leave empty to export the standard sentence shown below.
+
+Voice: Not observed; no audible speech or vocalization is confidently attributed to this character.
+
+Add a Sound statement
+C8
+A mid-teens white male of average build with short dark hair. He wears green jacket with grey sweatpants. Lower body and shoes are not visible.
+
+Voice
+Observed
+Observed briefly
+Not observed
+Reason (optional)
+no audible speech or vocalization is confidently attributed to this character
+Leave empty to export the standard sentence shown below.
+
+Voice: Not observed; no audible speech or vocalization is confidently attributed to this character.
+
+Add a Sound statement
+
+Objects
+3
+· Sound statement only when the object is audible
+descriptions locked
+O1
+A piece of white paper.
+
+Sound
+Makes a sound
+Silent
+O1 makes no meaningful sound — no Sound statement is exported.
+
+Add a Voice statement
+O2
+A red pencil or pen.
+
+Sound
+Makes a sound
+Silent
+O2 makes no meaningful sound — no Sound statement is exported.
+
+Add a Voice statement
+O3
+A black plastic trash can with a black liner bag.
+
+Sound
+Makes a sound
+Silent
+O3 makes no meaningful sound — no Sound statement is exported.
+
+Add a Voice statement
+Scene
+School cafeteria. Cream-colored painted cinder block walls. Pale green speckled linoleum floor. Long grey laminate rectangular tables with green plastic stackable chairs. Along the left wall, a white open-shelf unit holds a white microwave. O3 sits on the floor beside it. A yellow sign reading "FA" and a framed black-and-white photograph are mounted above the shelf unit. A grid of open cubbyholes is on the far wall. A green door is at the far end. A fluorescent ceiling light panel overhead. O1 lies flat on the near table. O2 rests on the table near O1.
+
+Style
+Naturalistic handheld-style video, though the camera is locked static. Flat, even fluorescent lighting from overhead, diffused and cool. Shallow depth of field is not in use, the full scene is in focus. Colors are muted and institutional. No visible color grading or film stock treatment. Standard aspect ratio.
+
+Visual concerns
+Heavy motion blur in the final frames during the physical contact.
+
+Audio
+Summarize the whole soundscape: the kind of speech, principal and secondary speakers, overall clarity, important overlap or masking, music/ambience, and how non-speech sounds sit under the voices. Don't restate the C#/O# properties.
+
+C1, C2, and C3 speak in a confrontational exchange. C2 initiates with a mocking taunt, C1 responds twice in a flat and defiant tone, and C3 delivers a threat. There is ambience sound throughout the video of chattering people off screen. A chair scrapes sharply across the hard floor at around 9-10 seconds. An unidentified sound produces big boom, heard at a moderate recorded level in the supporting.
+Audio concerns
+Answer the five recording-defect questions below — the sentence is written for you. Add any other genuine intelligibility or clip-boundary problem by editing the text.
+
+Recording defects
+Obvious clipping
+no
+yes
+Distortion
+no
+yes
+Excessive echo
+no
+yes
+Wind noise
+no
+yes
+Other recording defect
+no
+yes
+No obvious clipping, distortion, excessive echo, wind noise, or other recording defect is audible.
+Shots
+1 shot · 0 reviewed · click a shot to play it on loop
+
+Collapse all
+
+Shot 1of 1
+00:00:00.0–00:00:14.1
+(14.1s)
+shot & visuals locked
+Cut into this shot
+Opening shot
+
+Camera
+Medium-wide shot, eye-level, locked static.
+
+Scene
+No changes from overview.
+
+Movements
+C1 sits at the near table, head down, writing on O1 with O2 held in his right hand. His left hand rests flat on the table, white wristband visible. C2 stands to C1's right, leaning in over the table, chin angled down toward C1, and speaks. C1 stops writing, lifts his head, pushes his glasses up with his left hand, and looks toward C2. His jaw tightens. C3 stands to C1's left, leaning in close, and speaks. C1's eyes stay level, his mouth firms. He slaps both hands flat on the table surface. He pushes the chair back, the chair scraping loudly across the floor, and stands up to face the group. His chin lifts and he speaks. C3 steps back slightly. C2 raises both arms briefly. C4 stands behind the group, grinning, arms rising as C1 stands. C5 is seated at the table behind C1, partially obscured by the standing figures. C3 then grabs C1 by the upper body and shoves him forward and downward. The final frame is heavily motion-blurred as C1 is forced toward the table surface. C6 is visible near the far right doorway in early frames, watching, then moves out of view. C7 walks across the background from left to right and exits through the green door.
+
+Playback speed
+regular
+
+Audio
+editable
+Describe every audible event in the order it happens — speech with an exact transcription in double quotes, plus non-speech sounds. No sub-shot timestamps.
+
+Speech
+#1
+Make Sound
+
+
+
+Source
+
+C2
+A mid-teens white male of tall, lean build with short dark brown hair. He wears a black and white sleeveless jersey with "BACARDI GOLD" on the front over a white short-sleeved t-shirt, and grey pants. Lower body and shoes are not visible.
+Tone (optional)
+
+Select one…
+Does this character speak the same as in the overview?
+Same as overview
+It changes here
+What is different here:
+Pitch
+Speaking level
+Speed
+Delivery
+Recorded level
+Mix role
+Clarity
+Speaking level
+
+Raised
+Recorded level
+
+Loud
+Mix role
+
+Foreground
+Clarity
+
+Clear
+Transcription — the words actually heard
+Hey, shitface. What are you doing at our table?
+Mark, never guess:
+[unintelligible]
+[inaudible]
+[uncertain: word]
+Voice changes during this event
+Relationship / ordering (optional)
+at the beginning of the shot
+Quick add:
+Off-screen
+at the beginning of the shot
+near the end of the shot
+throughout the shot
+Caption sentence
+Regenerate
+At the beginning of the shot, C2 speaks at a raised speaking level, heard clearly at a loud recorded level in the foreground: "Hey, shitface. What are you doing at our table?"
+Speech
+#2
+Make Sound
+
+
+
+Source
+
+C1
+A mid-teens white male of average build with short wavy brown hair and rectangular glasses. He wears a bright blue short-sleeved polo shirt with a small yellow logo on the chest, a white wristband on his left wrist, and grey and white plaid shorts. Lower body and shoes are not visible.
+Tone (optional)
+
+Select one…
+Does this character speak the same as in the overview?
+Same as overview
+It changes here
+What is different here:
+Pitch
+Speaking level
+Speed
+Delivery
+Recorded level
+Mix role
+Clarity
+Pitch
+
+Mid
+Speaking level
+
+Raised
+Recorded level
+
+Moderate
+Mix role
+
+Foreground
+Clarity
+
+Clear
+Transcription — the words actually heard
+It's not your table.
+Mark, never guess:
+[unintelligible]
+[inaudible]
+[uncertain: word]
+Voice changes during this event
+Relationship / ordering (optional)
+beneath C1's speech without masking him; near the end of the shot…
+
+Quick add:
+Off-screen
+at the beginning of the shot
+near the end of the shot
+throughout the shot
+Caption sentence · edited
+Regenerate
+C1 says in a flat, annoyed tone: "It's not your table."
+Speech
+#3
+Make Sound
+
+
+
+Source
+
+C3
+A mid-teens white male of tall, lean build with short light brown hair. He wears a red and white vertically striped short-sleeved jersey with "Santo" on the front, and dark shorts. Lower body and shoes are not visible.
+Tone (optional)
+
+Select one…
+Does this character speak the same as in the overview?
+Same as overview
+It changes here
+What is different here:
+Pitch
+Speaking level
+Speed
+Delivery
+Recorded level
+Mix role
+Clarity
+Pitch
+
+High
+Speaking level
+
+Shouted
+Recorded level
+
+Loud
+Mix role
+
+Foreground
+Clarity
+
+Clear
+Transcription — the words actually heard
+If you don't get up, I'm gonna put you in the trash like the garbage that you are.
+Mark, never guess:
+[unintelligible]
+[inaudible]
+[uncertain: word]
+Voice changes during this event
+Relationship / ordering (optional)
+throughout the shot
+Quick add:
+Off-screen
+at the beginning of the shot
+near the end of the shot
+throughout the shot
+Caption sentence · edited
+Regenerate
+Throughout the shot, C3 speaks at a shouting speaking level, with a high pitch, heard clearly at a loud recorded level in the foreground: "If you don't get up, I'm gonna put you in the trash like the garbage that you are."
+Sound
+#4
+Make Speech
+
+
+
+Source
+
+C2
+A mid-teens white male of tall, lean build with short dark brown hair. He wears a black and white sleeveless jersey with "BACARDI GOLD" on the front over a white short-sleeved t-shirt, and grey pants. Lower body and shoes are not visible.
+Recorded level
+
+Quiet
+Mix role
+
+Background
+What the sound is like
+screeching of chair movement on floor
+Relationship / ordering (optional)
+near the end of the shot
+Quick add:
+Off-screen
+at the beginning of the shot
+near the end of the shot
+throughout the shot
+Caption sentence
+Regenerate
+C2 produces screeching of chair movement on floor, heard at a quiet recorded level in the background, near the end of the shot.
+Speech
+#5
+Make Sound
+
+
+
+Source
+
+C1
+A mid-teens white male of average build with short wavy brown hair and rectangular glasses. He wears a bright blue short-sleeved polo shirt with a small yellow logo on the chest, a white wristband on his left wrist, and grey and white plaid shorts. Lower body and shoes are not visible.
+Tone (optional)
+
+Select one…
+Does this character speak the same as in the overview?
+Same as overview
+It changes here
+What is different here:
+Pitch
+Speaking level
+Speed
+Delivery
+Recorded level
+Mix role
+Clarity
+Pitch
+
+Mid
+Speaking level
+
+Raised
+Recorded level
+
+Moderate
+Mix role
+
+Foreground
+Clarity
+
+Clear
+Transcription — the words actually heard
+I'd like to see you try.
+Mark, never guess:
+[unintelligible]
+[inaudible]
+[uncertain: word]
+Voice changes during this event
+Relationship / ordering (optional)
+beneath C1's speech without masking him; near the end of the shot…
+
+Quick add:
+Off-screen
+at the beginning of the shot
+near the end of the shot
+throughout the shot
+Caption sentence
+Regenerate
+C1 speaks at a raised speaking level, heard clearly at a moderate recorded level in the foreground: "I'd like to see you try."
+Sound
+#6
+Make Speech
+
+
+
+Source
+
+Unidentified sound
+Audible, but the source cannot be identified
+Recorded level
+
+Moderate
+Mix role
+
+Supporting
+What the sound is like
+big boom
+Relationship / ordering (optional)
+beneath C1's speech without masking him; near the end of the shot…
+
+Quick add:
+Off-screen
+at the beginning of the shot
+near the end of the shot
+throughout the shot
+Caption sentence
+Regenerate
+An unidentified sound produces big boom, heard at a moderate recorded level in the supporting.
+Sound
+#7
+Make Speech
+
+
+
+Source
+
+Room ambience
+General indoor ambience
+Recorded level
+
+Moderate
+Mix role
+
+Background
+What the sound is like
+people chattering
+Relationship / ordering (optional)
+beneath C1's speech without masking him; near the end of the shot…
+
+Quick add:
+Off-screen
+at the beginning of the shot
+near the end of the shot
+throughout the shot
+Caption sentence
+Regenerate
+Room ambience produces people chattering, heard at a moderate recorded level in the background.
+Speech
+Other sound
+Draft from events (the Final Audio text below is what ships)
+At the beginning of the shot, C2 speaks at a raised speaking level, heard clearly at a loud recorded level in the foreground: "Hey, shitface. What are you doing at our table?" C1 says in a flat, annoyed tone: "It's not your table." Throughout the shot, C3 speaks at a shouting speaking level, with a high pitch, heard clearly at a loud recorded level in the foreground: "If you don't get up, I'm gonna put you in the trash like the garbage that you are." C2 produces screeching of chair movement on floor, heard at a quiet recorded level in the background, near the end of the shot. C1 speaks at a raised speaking level, heard clearly at a moderate recorded level in the foreground: "I'd like to see you try." An unidentified sound produces big boom, heard at a moderate recorded level in the supporting. Room ambience produces people chattering, heard at a moderate recorded level in the background.
+
+Final Audio text
+Regenerate from events
+At the beginning of the shot, C2 speaks at a raised speaking level, heard clearly at a loud recorded level in the foreground: "Hey, shitface. What are you doing at our table?" C1 says in a flat, annoyed tone: "It's not your table." Throughout the shot, C3 speaks at a shouting speaking level, with a high pitch, heard clearly at a loud recorded level in the foreground: "If you don't get up, I'm gonna put you in the trash like the garbage that you are." C2 produces screeching of chair movement on floor, heard at a quiet recorded level in the background, near the end of the shot. C1 speaks at a raised speaking level, heard clearly at a moderate recorded level in the foreground: "I'd like to see you try." An unidentified sound produces big boom, heard at a moderate recorded level in the supporting. Room ambience produces people chattering, heard at a moderate recorded level in the background.
