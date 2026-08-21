@@ -26,7 +26,7 @@ CANDIDATE_CLASSES = {
     HUMAN_NONVERBAL: (
         "applause", "clapping", "cheering", "whoop", "laughter", "chuckle",
         "giggle", "gasp", "sigh", "groan", "scream", "cough",
-        "throat_clearing", "humming", "wordless_vocalization", "crowd_noise",
+        "throat_clearing", "humming", "chewing", "wordless_vocalization", "crowd_noise",
         "speech_babble",
     ),
     AMBIENCE: (
@@ -42,7 +42,7 @@ CANDIDATE_CLASSES = {
         # click, and a knock are different acoustic sources (O1 can be the
         # physical door while the chime is a different source).
         "door_open_close", "doorbell_chime", "door_latch_click", "door_knock",
-        "chair_scrape", "furniture_scrape", "handling_noise",
+        "chair_scrape", "furniture_scrape", "bottle_contact", "handling_noise",
     ),
     MUSIC: (
         "music", "background_music", "instrumental_music",
@@ -91,6 +91,9 @@ RAW_LABEL_MAP = (
     ("shout", HUMAN_NONVERBAL, "scream"),
     ("cough", HUMAN_NONVERBAL, "cough"),
     ("throat clearing", HUMAN_NONVERBAL, "throat_clearing"),
+    ("chewing, mastication", HUMAN_NONVERBAL, "chewing"),
+    ("mastication", HUMAN_NONVERBAL, "chewing"),
+    ("chewing", HUMAN_NONVERBAL, "chewing"),
     ("humming", HUMAN_NONVERBAL, "humming"),
     ("hum", HUMAN_NONVERBAL, "humming"),
     ("babble", HUMAN_NONVERBAL, "speech_babble"),
@@ -138,6 +141,9 @@ RAW_LABEL_MAP = (
     ("furniture scraping", OBJECT_SFX, "furniture_scrape"),
     ("scrape", OBJECT_SFX, "furniture_scrape"),
     ("metallic click", OBJECT_SFX, "metallic_click"),
+    ("glass bottle clink", OBJECT_SFX, "bottle_contact"),
+    ("bottle clink", OBJECT_SFX, "bottle_contact"),
+    ("bottle", OBJECT_SFX, "bottle_contact"),
     ("metallic", OBJECT_SFX, "metallic_impact"),
     ("clang", OBJECT_SFX, "metallic_impact"),
     ("thud", OBJECT_SFX, "impact"),
@@ -208,7 +214,7 @@ def map_raw_label(raw_label):
 # comparable across runs.
 # ---------------------------------------------------------------------------
 
-CLAP_PROMPT_SET_VERSION = "3c-prompts-v3-chair-scrape"
+CLAP_PROMPT_SET_VERSION = "3c-prompts-v4-food-wind-contact"
 
 CLAP_PROMPTS = (
     {"prompt": "people clapping", "group": HUMAN_NONVERBAL, "candidate_class": "clapping"},
@@ -220,8 +226,10 @@ CLAP_PROMPTS = (
     {"prompt": "a person gasping", "group": HUMAN_NONVERBAL, "candidate_class": "gasp"},
     {"prompt": "a person sighing", "group": HUMAN_NONVERBAL, "candidate_class": "sigh"},
     {"prompt": "a person coughing", "group": HUMAN_NONVERBAL, "candidate_class": "cough"},
+    {"prompt": "a person chewing food", "group": HUMAN_NONVERBAL, "candidate_class": "chewing"},
     {"prompt": "a crowd of people talking at once", "group": HUMAN_NONVERBAL, "candidate_class": "speech_babble"},
     {"prompt": "wind noise", "group": AMBIENCE, "candidate_class": "wind"},
+    {"prompt": "wind buffeting a microphone", "group": AMBIENCE, "candidate_class": "wind"},
     {"prompt": "ocean waves and water", "group": AMBIENCE, "candidate_class": "waves"},
     {"prompt": "rain falling", "group": AMBIENCE, "candidate_class": "rain"},
     {"prompt": "birds chirping outdoors", "group": AMBIENCE, "candidate_class": "birds"},
@@ -229,6 +237,7 @@ CLAP_PROMPTS = (
     {"prompt": "a boat engine running", "group": AMBIENCE, "candidate_class": "boat_engine"},
     {"prompt": "a quiet indoor room tone", "group": AMBIENCE, "candidate_class": "room_ambience"},
     {"prompt": "a metallic click or clink", "group": OBJECT_SFX, "candidate_class": "metallic_click"},
+    {"prompt": "a bottle being set down on a table", "group": OBJECT_SFX, "candidate_class": "bottle_contact"},
     {"prompt": "a chair scraping across a hard floor", "group": OBJECT_SFX, "candidate_class": "chair_scrape"},
     {"prompt": "furniture scraping across the floor", "group": OBJECT_SFX, "candidate_class": "furniture_scrape"},
     {"prompt": "footsteps", "group": OBJECT_SFX, "candidate_class": "footsteps"},

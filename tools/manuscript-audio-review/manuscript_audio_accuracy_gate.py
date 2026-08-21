@@ -86,6 +86,28 @@ def _window(value):
         return None
 
 
+def _same_window(left, right, tolerance_sec=0.05):
+    return bool(left and right) and all(
+        abs(float(a) - float(b)) <= tolerance_sec
+        for a, b in zip(left, right)
+    )
+
+
+def _support_only_finding(section, claim):
+    """Evidence worth retaining that is not an independent decision."""
+    text = (claim or "").strip().lower()
+    return (
+        section == "speaker_face_mapping"
+        or (
+            section == "transients"
+            and text.startswith("speech-associated energy")
+        )
+        or (
+            section == "speaker_clusters"
+            and "overlap-only cluster" in text
+            and "zero assigned words" in text
+        )
+    )
 def _sources(text):
     return sorted({match.upper() for match in SOURCE_ID.findall(text or "")})
 
@@ -167,6 +189,8 @@ def build_claim_ledger(sections, previous=None):
         priority = "high" if tier in {"STRONG", "CONFLICT"} else (
             "medium" if tier == "MEDIUM" else "low"
         )
+        if _support_only_finding(section, claim):
+            priority = "low"
         row = {
             "id": _stable_id("claim", payload),
             "origin": "ranked_finding",
@@ -192,6 +216,15 @@ def build_claim_ledger(sections, previous=None):
     for item in sections.get("review_queue", []) or []:
         window = _window([item.get("start"), item.get("end")])
         description = str(item.get("description") or "")
+        # A transient already has an atomic evidence row with the same
+        # decision window. The queue entry is merely its playback shortcut;
+        # adding it again doubled stop-ship work without adding a decision.
+        if item.get("type") == "transient_sfx_check" and any(
+            row.get("section") == "transients"
+            and _same_window(row.get("private_window"), window)
+            for row in rows
+        ):
+            continue
         payload = {
             "type": item.get("type"),
             "description": description,
@@ -244,7 +277,9 @@ def _candidate_categories(claim):
         "humming": ("hum",),
         "audible_breath": ("breath", "exhale", "inhale"),
         "wordless_reaction": ("wordless", "reaction"),
-        "physical_sound": ("clap", "shuffle", "handling", "footstep"),
+        "physical_sound": (
+            "clap", "shuffle", "handling", "footstep", "chew", "eating",
+        ),
     }
     return {
         category

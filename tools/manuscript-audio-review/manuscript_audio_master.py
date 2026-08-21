@@ -925,6 +925,10 @@ def build_speaker_face_mapping(mapping):
         "face_worker_diagnostic_code": mapping.get("face_worker_diagnostic_code"),
         "face_worker_error": mapping.get("face_worker_error"),
         "face_tracks": mapping.get("face_tracks", []),
+        "discarded_short_face_tracks": mapping.get(
+            "discarded_short_face_tracks", []
+        ),
+        "face_track_summary": mapping.get("face_track_summary", {}),
         "active_speaker_windows": mapping.get("active_speaker_windows", []),
         "cluster_to_face_candidates": mapping.get("cluster_to_face_candidates", []),
         "face_to_character_candidates": mapping.get("face_to_character_candidates", []),
@@ -2165,7 +2169,7 @@ def build_review_me(sections, evidence):
     return "\n".join(lines) + "\n"
 
 
-def build_master_md(sections, evidence):
+def build_master_md(sections, evidence, ui=None):
     """One markdown file with literally everything a reviewer (or an LLM)
     needs in a single read: media, locked cast/objects/shots, the full
     word-level transcript, ASR coverage, sounds/music/ambience/transients,
@@ -2191,7 +2195,15 @@ def build_master_md(sections, evidence):
 
     context = load(CONTEXT, {})
     primary = load(ROOT / "output" / "VIDEO.json", {})
-    ui = load(UI_SUGGESTIONS, {})
+    # UI suggestions belong to this in-memory packet build. Never read the
+    # prior run's file here: main() intentionally renders MASTER before/after
+    # several artifacts, and a file read made stale suggestions (for example
+    # an old cough) leak into the next clip's MASTER.
+    if ui is None:
+        ui = build_ui_suggestions(
+            evidence,
+            load(SOUND_FUSION, {"status": "unavailable"}),
+        )
 
     add("# MASTER — Complete Audio Review")
     blank()
@@ -2204,7 +2216,8 @@ def build_master_md(sections, evidence):
     add("## 1. Media")
     present = media.get("present", {})
     for key in (
-        "video_name", "video_sha256", "duration_sec", "source_sample_rate",
+        "video_name", "video_sha256", "duration_sec", "width", "height",
+        "fps", "frame_count", "video_codec", "source_sample_rate",
         "analysis_sample_rate", "audio_channels", "audio_codec",
     ):
         if present.get(key) is not None:
@@ -2512,6 +2525,16 @@ def build_master_md(sections, evidence):
             f"- Face tracking: {sfm.get('face_worker_status')} "
             f"({sfm.get('face_worker_diagnostic_code') or sfm.get('face_worker_error') or 'unavailable'})"
         )
+    face_summary = sfm.get("face_track_summary", {}) or {}
+    if face_summary:
+        add(
+            "- Face tracking summary: "
+            f"{face_summary.get('stable_segment_count', 0)} stable anonymous "
+            f"segments; {face_summary.get('discarded_short_track_count', 0)} "
+            "short flickers suppressed; maximum "
+            f"{face_summary.get('max_simultaneous_stable_faces', 0)} stable "
+            "faces visible at once. Segments are not a people count."
+        )
     for track in (sfm.get("face_tracks", []) or []):
         add(
             f"- Face track **{track.get('face_id')}**: "
@@ -2542,6 +2565,19 @@ def build_master_md(sections, evidence):
                 f"`{row.get('evidence_candidate', 'unknown')}` "
                 f"(human listening required: {row.get('human_listening_required', True)})"
             )
+    seed_targets = (
+        context.get("seed_meta", {}).get("human_listening_targets", []) or []
+    )
+    if seed_targets:
+        add(
+            "- **Seed-declared listening targets (not machine-confirmed):** "
+            + ", ".join(
+                str(item.get("label") or item.get("class"))
+                for item in seed_targets
+                if isinstance(item, dict)
+            )
+            + ". Confirm or reject each by listening."
+        )
     overlap = sections.get("overlap_masking", {}) or {}
     for region in (overlap.get("overlap_regions", []) or []):
         add(
@@ -2696,13 +2732,15 @@ def main():
             ensure_ascii=False,
         )
 
+    # Build the current run's sparse UI suggestions once, then pass the same
+    # object to every renderer. This makes artifact order irrelevant.
+    ui = build_ui_suggestions(evidence, sound_fusion)
+
     review_me = build_review_me(sections, evidence)
     REVIEW_ME.write_text(review_me, encoding="utf-8")
 
-    master_md = build_master_md(sections, evidence)
+    master_md = build_master_md(sections, evidence, ui=ui)
     MASTER.write_text(master_md, encoding="utf-8")
-
-    ui = build_ui_suggestions(evidence, sound_fusion)
 
     with UI_SUGGESTIONS.open("w", encoding="utf-8") as f:
         json.dump(ui, f, indent=2, ensure_ascii=False)

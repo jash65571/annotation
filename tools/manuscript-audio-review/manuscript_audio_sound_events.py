@@ -152,6 +152,35 @@ def _speech_dominated_energy_match(event, speech_windows):
     )
 
 
+def _speech_boundary_energy_match(event, speech_windows, tolerance_sec=0.4):
+    """True for a short, non-impact-shaped sliver beside a speech edge.
+
+    Diarization boundaries are estimates, not acoustic cuts. Splitting a
+    merged energy region exactly at those boundaries created tiny false SFX
+    tails. Treat a <=400 ms sliver touching a speech edge as speech context
+    unless its crest/energy jump is independently impact-like.
+    """
+    duration = float(event["end"]) - float(event["start"])
+    if duration <= 0.0 or duration > tolerance_sec:
+        return False
+    edges = [float(value) for window in speech_windows for value in window]
+    if not edges or min(
+        min(abs(float(event["start"]) - edge), abs(float(event["end"]) - edge))
+        for edge in edges
+    ) > tolerance_sec:
+        return False
+    raw_peaks = [
+        peak.get("raw_features", {}) or {}
+        for peak in event.get("peaks", [])
+        if peak.get("raw_features")
+    ]
+    return bool(raw_peaks) and all(
+        float(raw.get("crest_factor", 0.0)) <= 10.0
+        and float(raw.get("energy_change_db", 0.0)) <= 20.0
+        for raw in raw_peaks
+    )
+
+
 def _asr_words_lost_in_window(asr_consensus, start, end):
     """None (unknown / not evaluated), False (coverage stayed intact), or
     True (words disappeared/disagreed during the overlap)."""
@@ -268,10 +297,15 @@ def _split_transient_events(feature_events, speech_windows, sound_candidates, sp
                 _overlap(start, end, speech_start, speech_end) > 0.05
                 for speech_start, speech_end in speech_windows
             )
+            boundary_associated = _speech_boundary_energy_match(
+                {"start": start, "end": end, "peaks": peaks},
+                speech_windows,
+            )
             speech_associated = (
-                has_speech
-                and not named_overlaps
+                not named_overlaps
                 and (
+                    boundary_associated
+                    or (has_speech and (
                     _speech_onset_match(
                         {"start": start, "end": end, "peaks": peaks},
                         speech_onsets,
@@ -280,6 +314,7 @@ def _split_transient_events(feature_events, speech_windows, sound_candidates, sp
                         {"start": start, "end": end, "peaks": peaks},
                         speech_windows,
                     )
+                    ))
                 )
             )
             labels = tuple(sorted({c["semantic_label"] for c in named_overlaps}))
@@ -298,6 +333,7 @@ def _split_transient_events(feature_events, speech_windows, sound_candidates, sp
                     "named_overlaps": named_overlaps,
                     "has_speech": has_speech,
                     "speech_associated": speech_associated,
+                    "speech_boundary_associated": boundary_associated,
                     "speech_overlap_ratio": round(
                         _speech_overlap_ratio(start, end, speech_windows), 3
                     ),
@@ -1004,7 +1040,11 @@ def _build_transients(
                 and _speech_onset_match(e, speech_onsets or [])
             )
         if speech_associated:
-            explained_by.append("speech_onset")
+            explained_by.append(
+                "speech_boundary"
+                if context.get("speech_boundary_associated")
+                else "speech_onset"
+            )
 
         tier = e["tier"]
         if explained and tier == STRONG:
@@ -1028,6 +1068,9 @@ def _build_transients(
             "explained_by": explained_by,
             "unexplained": not explained and not speech_associated,
             "speech_associated": speech_associated,
+            "speech_boundary_associated": bool(
+                context.get("speech_boundary_associated")
+            ),
             "speech_overlap_ratio": context.get("speech_overlap_ratio", 0.0),
             "overlaps_speech": has_speech,
             "explained_by_named_sound": explained,
@@ -1054,7 +1097,11 @@ def _build_transients(
                     "tier": tier,
                     "evidence": [
                         "transient detector: " + ", ".join(e["signals"]),
-                        "peak aligns with a known word/segment onset",
+                        (
+                            "short non-impact energy touches a speech boundary"
+                            if context.get("speech_boundary_associated")
+                            else "peak aligns with a known word/segment onset"
+                        ),
                         "acoustic shape is compatible with voiced onset",
                     ],
                     "action": (

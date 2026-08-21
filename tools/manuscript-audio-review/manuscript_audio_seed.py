@@ -97,6 +97,65 @@ _DESC_NOISE = re.compile(
     re.IGNORECASE,
 )
 
+_ENTITY_STATEMENT_RE = re.compile(r"^(?:voice|sound)\s*:", re.IGNORECASE)
+_LOCKED_DESCRIPTION_HINT_RE = re.compile(
+    r"\b(?:visual appearance|appearance is|looks?\b|wearing\b|visible\b)",
+    re.IGNORECASE,
+)
+
+
+def _description_after_bare_id(lines, start_index):
+    """Recover a locked description from a verbose live-UI entity block."""
+    fallback = ""
+    option_noise = {
+        "male", "female", "unclear", "observed", "observed briefly",
+        "not observed", "mid", "normal", "ordinary", "moderate",
+        "foreground", "supporting", "clear", "high", "breathy", "rough",
+        "nasal", "squeaky", "makes a sound", "silent",
+    }
+    for follow in lines[start_index + 1:]:
+        candidate = follow.strip()
+        if not candidate:
+            continue
+        if (
+            _ID_ONLY_RE.match(candidate)
+            or _SHOT_HEADER_RE.match(candidate)
+            or _SHOT_RE.match(candidate)
+        ):
+            break
+        if _LOCKED_DESCRIPTION_HINT_RE.search(candidate):
+            return candidate
+        if (
+            candidate.lower() in option_noise
+            or _DESC_NOISE.match(candidate)
+            or _ENTITY_STATEMENT_RE.match(candidate)
+        ):
+            continue
+        # Compact seeds commonly put prose immediately after the id. Require
+        # several words so a UI option cannot become a locked description.
+        if not fallback and len(candidate.split()) >= 4:
+            fallback = candidate
+    return fallback
+
+
+def _seed_listening_targets(text):
+    """Return seed-named non-speech checks, never machine confirmations."""
+    lower = text.lower()
+    targets = []
+    if re.search(r"\b(?:chew|chewing|mastication|eating sound)\w*\b", lower):
+        targets.append({"class": "chewing", "label": "chewing/eating sounds"})
+    if re.search(r"\bwind(?:\s+noise|\s+sound)?\b", lower):
+        targets.append({"class": "wind_noise", "label": "wind noise"})
+    if (
+        re.search(r"\bbottles?\b", lower)
+        and re.search(r"\b(?:table|contact|hit|hitting|sat|set|clink)\w*\b", lower)
+    ):
+        targets.append({
+            "class": "bottle_table_contact",
+            "label": "bottle/table contact",
+        })
+    return targets
+
 
 def _timecode_to_seconds(value):
     hours, minutes, seconds = value.split(":")
@@ -208,15 +267,7 @@ def parse_seed_text(text):
         # Only trust these in the Cast section (before the first shot).
         id_only = _ID_ONLY_RE.match(line)
         if id_only and (first_shot_line is None or index < first_shot_line):
-            description = ""
-            for follow in lines[index + 1:]:
-                candidate = follow.strip()
-                if not candidate:
-                    continue
-                if _ID_ONLY_RE.match(candidate) or _DESC_NOISE.match(candidate):
-                    break
-                description = candidate
-                break
+            description = _description_after_bare_id(lines, index)
             add_entity(id_only.group("id"), description, line_no)
             continue
 
@@ -246,6 +297,7 @@ def parse_seed_text(text):
             "original_character_ids": character_ids,
             "original_object_ids": object_ids,
             "shot_count_declared": declared_shot_count,
+            "human_listening_targets": _seed_listening_targets(text),
             "parse_issues": issues,
         },
     }

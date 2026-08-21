@@ -515,7 +515,15 @@ stay UNKNOWN, late speech is recovered). Run it any time — no video, no models
 .\.venv-review\Scripts\python.exe test_3c_sound_fusion.py
 .\.venv-review\Scripts\python.exe test_3e_accuracy_gate.py
 .\.venv-review\Scripts\python.exe test_3f_run_provenance.py
+.\.venv-review\Scripts\python.exe test_3g_reported_regressions.py
 ```
+
+Face output reports stable anonymous track segments, suppresses sub-half-second
+flickers from speaker leads, and separately reports the maximum stable faces
+visible at once. It deliberately does not merge identity across hard edits.
+Verbose UI seeds also preserve locked C#/O# descriptions and consolidate any
+seed-named chewing, wind, or bottle-contact claims into one listen-and-reject
+check; those claims never become automatic Sound events.
 
 ### Run provenance safeguards
 

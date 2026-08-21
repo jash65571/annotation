@@ -824,12 +824,20 @@ def build_review_queue():
     # 3.5: every review window carries its locked shot when the seed defines
     # one, so reviewers can queue by shot.
     context_shots = []
+    seed_listening_targets = []
     if CONTEXT.exists():
         try:
             with CONTEXT.open("r", encoding="utf-8-sig") as f:
-                context_shots = json.load(f).get("shots", []) or []
+                task_context = json.load(f)
+            context_shots = task_context.get("shots", []) or []
+            seed_listening_targets = (
+                task_context.get("seed_meta", {}).get(
+                    "human_listening_targets", []
+                ) or []
+            )
         except (json.JSONDecodeError, OSError):
             context_shots = []
+            seed_listening_targets = []
 
     def with_shot(item):
         if not context_shots:
@@ -1104,6 +1112,34 @@ def build_review_queue():
                 "shots": item.get("shots") or [],
             })
 
+    # Preserve seed-named non-speech claims as ONE consolidated listen/reject
+    # task. They are not machine confirmations and must not become automatic
+    # Sound events, but silently dropping them makes a completeness audit
+    # impossible (for example chewing, wind, and bottle/table contact).
+    target_labels = [
+        str(item.get("label") or item.get("class") or "").strip()
+        for item in seed_listening_targets
+        if isinstance(item, dict)
+    ]
+    target_labels = [label for label in target_labels if label]
+    if target_labels:
+        windows.append({
+            "priority": "high",
+            "type": "seed_nonspeech_check",
+            "start": 0.0,
+            "end": round(duration, 3),
+            "description": (
+                "Seed names these non-speech sounds; listen through once and "
+                "confirm or reject each without assuming it is present: "
+                + ", ".join(target_labels)
+                + "."
+            ),
+            "candidate_classes": [
+                item.get("class") for item in seed_listening_targets
+                if isinstance(item, dict) and item.get("class")
+            ],
+        })
+
     windows = [with_shot(w) for w in windows]
 
     windows = merge_transcript_review_windows(
@@ -1319,7 +1355,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
 
 

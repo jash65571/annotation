@@ -44,6 +44,8 @@ _MOUTH_RIGHT = 291
 
 _IOU_MATCH_THRESHOLD = 0.25
 _MAX_TRACK_GAP_SEC = 0.6  # a gap longer than this ends a track (likely a cut)
+_MIN_REPORT_TRACK_POINTS = 4
+_MIN_REPORT_TRACK_DURATION_SEC = 0.5
 
 
 def diagnostic_code_for_exception(exc):
@@ -276,10 +278,16 @@ def _track_faces(frames):
                 "points": [{"time": t, "bbox": det["bbox"], "mar": det["mar"]}],
             })
 
-    # Drop tracks that only ever had one detection -- almost always a false
-    # positive (a single stray frame), not a real visible face worth
-    # reporting as evidence.
-    tracks = [t for t in active if len(t["points"]) >= 2]
+    # A two/three-frame FaceMesh flicker is not enough temporal evidence for
+    # mouth-motion attribution. Keep only stable anonymous face segments;
+    # downstream applies the same threshold defensively when reading older
+    # evidence files.
+    tracks = [
+        t for t in active
+        if len(t["points"]) >= _MIN_REPORT_TRACK_POINTS
+        and t["points"][-1]["time"] - t["points"][0]["time"]
+        >= _MIN_REPORT_TRACK_DURATION_SEC
+    ]
 
     results = []
     for track in tracks:
@@ -324,8 +332,8 @@ def write_face_track_evidence(video_path, output_path, fps=5):
 
         if not face_tracks:
             result["note"] = (
-                "No face detected across sampled frames (or every "
-                "detection was a single-frame flicker). Downstream mapping "
+                "No stable face detected across sampled frames (or every "
+                "detection was a short flicker). Downstream mapping "
                 "must treat all speech as possibly off-screen."
             )
 

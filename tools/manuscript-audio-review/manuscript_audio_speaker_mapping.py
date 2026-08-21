@@ -79,12 +79,46 @@ CONFLICT_SCORE_RATIO = 1.3
 # Mouth-motion-only evidence is never allowed to reach STRONG.
 _MAX_MOUTH_MOTION_TIER = MEDIUM
 _TIER_RANK = {UNKNOWN: 0, WEAK: 1, CONFLICT: 1, MEDIUM: 2, STRONG: 3}
+# Two-frame FaceMesh flickers created noisy F5/F6 speaker leads in real clips.
+# Four samples at the default 5 fps plus half a second of persistence is the
+# minimum for a face segment to participate in mouth-motion attribution.
+MIN_STABLE_TRACK_POINTS = 4
+MIN_STABLE_TRACK_DURATION_SEC = 0.5
 
 
 def _cap_tier(tier):
     if _TIER_RANK.get(tier, 0) > _TIER_RANK[_MAX_MOUTH_MOTION_TIER]:
         return _MAX_MOUTH_MOTION_TIER
     return tier
+
+
+def partition_face_tracks(tracks):
+    stable = []
+    discarded = []
+    for track in tracks or []:
+        points = track.get("points", []) or []
+        count = int(track.get("frame_count") or len(points))
+        duration = max(
+            0.0,
+            float(track.get("last_seen", 0.0))
+            - float(track.get("first_seen", 0.0)),
+        )
+        if count >= MIN_STABLE_TRACK_POINTS and duration >= MIN_STABLE_TRACK_DURATION_SEC:
+            stable.append(track)
+        else:
+            rejected = dict(track)
+            rejected["discard_reason"] = "short_face_track_flicker"
+            discarded.append(rejected)
+    return stable, discarded
+
+
+def max_simultaneous_faces(tracks):
+    counts = {}
+    for track in tracks or []:
+        for point in track.get("points", []) or []:
+            key = round(float(point.get("time", 0.0)), 3)
+            counts[key] = counts.get(key, 0) + 1
+    return max(counts.values(), default=0)
 
 
 def merge_intervals(intervals, join_gap=0.15):
@@ -152,7 +186,8 @@ def compute_active_speaker_windows(face_evidence, speech_windows, sampled_fps=No
     Never emits a character (C#) identity -- only face_id candidates. Never
     exceeds MEDIUM (mouth-motion-only cap, non-negotiable rule 3B-F).
     """
-    tracks = face_evidence.get("face_tracks", []) if face_evidence else []
+    raw_tracks = face_evidence.get("face_tracks", []) if face_evidence else []
+    tracks, _ = partition_face_tracks(raw_tracks)
     sampled_fps = sampled_fps or (face_evidence or {}).get("media", {}).get("sampled_fps")
 
     # 3.6: distinguish "no face was actually detected" from "face evidence
@@ -355,8 +390,14 @@ def build_face_to_character_candidates():
 def build_speaker_mapping_evidence(diarization, vad, face_evidence):
     speech_windows, speech_source = independent_speech_windows(diarization, vad)
 
+    stable_tracks, discarded_tracks = partition_face_tracks(
+        (face_evidence or {}).get("face_tracks", [])
+    )
+    stable_face_evidence = dict(face_evidence or {})
+    stable_face_evidence["face_tracks"] = stable_tracks
+
     active_speaker_windows = compute_active_speaker_windows(
-        face_evidence, speech_windows
+        stable_face_evidence, speech_windows
     )
 
     result = {
@@ -370,7 +411,17 @@ def build_speaker_mapping_evidence(diarization, vad, face_evidence):
             if diarization and diarization.get("status") == "complete"
             else []
         ),
-        "face_tracks": (face_evidence or {}).get("face_tracks", []),
+        # These are stable anonymous face *segments*, not a people count.
+        # Tracks across hard edits remain separate because merging identity
+        # across cuts without embeddings would be an unsupported claim.
+        "face_tracks": stable_tracks,
+        "discarded_short_face_tracks": discarded_tracks,
+        "face_track_summary": {
+            "raw_track_count": len((face_evidence or {}).get("face_tracks", [])),
+            "stable_segment_count": len(stable_tracks),
+            "discarded_short_track_count": len(discarded_tracks),
+            "max_simultaneous_stable_faces": max_simultaneous_faces(stable_tracks),
+        },
         "active_speaker_windows": active_speaker_windows,
         "cluster_to_face_candidates": build_cluster_to_face_candidates(
             diarization, active_speaker_windows
