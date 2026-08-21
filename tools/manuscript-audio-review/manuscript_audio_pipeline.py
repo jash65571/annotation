@@ -355,6 +355,7 @@ def run_asr_consensus():
                     "coverage": None,
                     "word_consensus": [],
                     "conflicts": [],
+                    "divergence_regions": [],
                     "rerun_windows": [],
                 },
                 f,
@@ -492,10 +493,24 @@ def build_review_queue():
             context_shots = []
 
     def with_shot(item):
-        if context_shots:
-            item["shot"] = shot_of_window(
-                float(item["start"]), float(item["end"]), context_shots
-            )
+        if not context_shots:
+            return item
+        item["shot"] = shot_of_window(
+            float(item["start"]), float(item["end"]), context_shots
+        )
+        # 3.6: cross-shot windows carry their full shots list instead of one
+        # forced shot (e.g. a transient spanning Shots 2-3 must not be
+        # labeled only Shot 3).
+        crossed = []
+        for shot in context_shots:
+            s_start = float(shot.get("start", 0.0))
+            s_end = float(shot.get("end", 0.0))
+            if float(item["end"]) > s_start and float(item["start"]) < s_end:
+                crossed.append(shot.get("shot"))
+        crossed = sorted(s for s in crossed if s is not None)
+        if len(crossed) > 1:
+            item["shots"] = crossed
+            item["shot"] = None  # cross-shot: never force one shot (3.6)
         return item
 
     for segment in evidence.get("whisperx_segments", []):
@@ -703,13 +718,17 @@ def build_review_queue():
             "review_windows",
             [],
         ):
+            # 3.6: masking_check queue items exist ONLY from the final
+            # masking evidence (masking_overlap_evidence.json) -- the fusion
+            # layer never emits them, so the queue can never contradict the
+            # packet's masking section.
             windows.append({
                 "priority": item.get(
                     "priority",
                     "high",
                 ),
                 "type":
-                    "overlap_intelligibility_check",
+                    item.get("type", "masking_check"),
                 "start": round(
                     clamp(
                         float(item["start"]),
@@ -762,6 +781,7 @@ def build_review_queue():
                 "end": round(float(item["end"]), 3),
                 "description": item.get("description", "Verify sound by listening."),
                 "tier": tier,
+                "shots": item.get("shots") or [],
             })
 
     windows = [with_shot(w) for w in windows]

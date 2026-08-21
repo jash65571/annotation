@@ -140,6 +140,30 @@ def _shot_containing(event_start, event_end, shots):
     return best
 
 
+def _shots_overlapped(event_start, event_end, shots):
+    """ALL locked shots a window touches, sorted. 3.6: evidence that
+    crosses shot boundaries carries a `shots` list instead of being forced
+    onto one misleading `shot` (e.g. whole-clip music labeled Shot 2)."""
+    out = []
+    for shot in shots:
+        s = float(shot.get("start", 0.0))
+        e = float(shot.get("end", 0.0))
+        if _overlap(event_start, event_end, s, e) > 0:
+            out.append(shot.get("shot"))
+    return sorted(s for s in out if s is not None)
+
+
+def _assign_shots(event_start, event_end, shots):
+    """Return (primary_shot, shots_list). A single-shot window keeps its
+    primary `shot`; anything crossing boundaries gets `shot: None` plus a
+    `shots` list (3.6 -- never force one wrong shot on cross-shot
+    evidence)."""
+    best = _shot_containing(event_start, event_end, shots)
+    shots_list = _shots_overlapped(event_start, event_end, shots)
+    primary = best["shot"] if best and len(shots_list) <= 1 else None
+    return primary, shots_list
+
+
 # ---------------------------------------------------------------------------
 # Fail-soft skeleton
 # ---------------------------------------------------------------------------
@@ -300,6 +324,9 @@ def _enrich_sound_candidate(cand, index, supporting, panns_windows):
         clip_duration, cand.get("overlaps_speech", False),
     )
 
+    primary_shot, shots_list = _assign_shots(
+        cand["start"], cand["end"], supporting.get("shots", [])
+    )
     shot = _shot_containing(
         cand["start"], cand["end"], supporting.get("shots", [])
     )
@@ -335,7 +362,8 @@ def _enrich_sound_candidate(cand, index, supporting, panns_windows):
         "start": cand["start"],
         "end": cand["end"],
         "duration_sec": cand["duration_sec"],
-        "shot": shot["shot"] if shot else None,
+        "shot": primary_shot,
+        "shots": shots_list,
         "tier": tier,
         "signals": cand["signals"],
         "evidence": [
@@ -371,9 +399,18 @@ def _enrich_music_region(region, index, supporting, panns_windows):
     baseline = supporting.get("clip_baseline_rms_dbfs")
     event_rms = _window_rms_dbfs(panns_windows, region["start"], region["end"])
     level = estimate_recorded_level(event_rms, baseline)
-    shot = _shot_containing(
+
+    # 3.6: continuous whole-clip evidence (music running under every shot)
+    # is marked as overview evidence with a `shots` list -- never forced
+    # onto one misleading shot.
+    primary_shot, shots_list = _assign_shots(
         region["start"], region["end"], supporting.get("shots", [])
     )
+    clip_duration = supporting.get("clip_duration_sec") or 0.0
+    if clip_duration and (region["end"] - region["start"]) >= 0.9 * clip_duration:
+        scope = "whole_clip"
+    else:
+        scope = "cross_shot" if len(shots_list) > 1 else "localized"
 
     # 3.5: mix_role is deliberately NOT auto-filled for Music. The recorded
     # level (e.g. "Quiet") may be reasonable, but a mix role like "Foreground"
@@ -395,7 +432,9 @@ def _enrich_music_region(region, index, supporting, panns_windows):
         "start": region["start"],
         "end": region["end"],
         "duration_sec": region["duration_sec"],
-        "shot": shot["shot"] if shot else None,
+        "shot": primary_shot,
+        "shots": shots_list,
+        "scope": scope,
         "tier": region["tier"],
         "signals": region["signals"],
         "evidence": evidence_lines,
@@ -585,11 +624,17 @@ def build_sound_fusion_evidence(raw, supporting=None):
     ]
 
     # Masking evidence: overlap is never automatically masking (3.5: a
-    # masking finding only surfaces when intelligibility actually drops --
-    # see `_build_review_windows` / `_build_findings` which gate on
-    # masking == "possible_masking").
+    # masking finding only surfaces when intelligibility actually drops).
+    # 3.6: only MEDIUM/STRONG sound candidates can even be masking
+    # candidates -- WEAK model evidence must never drive a masking claim.
+    # And the fusion layer never emits masking_check review windows: the
+    # review queue only gets masking_check from the FINAL masking evidence
+    # (masking_overlap_evidence.json / overlap_masking), so it can never
+    # contradict the packet's masking section.
     masking_candidates = []
     for c in enriched_sound:
+        if c.get("tier") not in (STRONG, MEDIUM):
+            continue
         if not c.get("overlaps_speech"):
             continue
         asr_words_lost = _asr_words_lost_in_window(
@@ -598,14 +643,14 @@ def build_sound_fusion_evidence(raw, supporting=None):
         mask = evaluate_masking(
             c, speech_windows, asr_words_lost=asr_words_lost
         )
+        primary_shot, shots_list = _assign_shots(c["start"], c["end"], shots)
         masking_candidates.append({
             "candidate_id": c["id"],
             "candidate_class": c["candidate_class"],
             "start": c["start"],
             "end": c["end"],
-            "shot": _shot_containing(
-                c["start"], c["end"], shots
-            )["shot"] if shots else None,
+            "shot": primary_shot,
+            "shots": shots_list,
             **mask,
         })
 
@@ -672,9 +717,14 @@ def _build_transients(raw, speech_windows, sound_candidates, shots):
     findings = []
 
     for e in events:
+        # 3.6: ONLY a MEDIUM/STRONG named sound can explain a transient.
+        # WEAK/CONFLICT/UNKNOWN sound evidence must never explain or demote
+        # a transient -- a WEAK cheering guess (CLAP 0.218) must not turn a
+        # real impact into "explained". Speech overlap remains pure context.
         named_overlaps = [
             c for c in sound_candidates
-            if _overlap(e["start"], e["end"], c["start"], c["end"]) > 0.05
+            if c["tier"] in (STRONG, MEDIUM)
+            and _overlap(e["start"], e["end"], c["start"], c["end"]) > 0.05
         ]
         has_speech = any(
             _overlap(e["start"], e["end"], s, t) > 0.05
@@ -695,7 +745,7 @@ def _build_transients(raw, speech_windows, sound_candidates, shots):
         if explained and tier == STRONG:
             tier = MEDIUM
 
-        shot = _shot_containing(e["start"], e["end"], shots)
+        primary_shot, shots_list = _assign_shots(e["start"], e["end"], shots)
 
         # Explicit reason-why-retained fields: speech overlap alone never
         # demotes a transient (a punch during dialogue is still a punch), so
@@ -708,11 +758,18 @@ def _build_transients(raw, speech_windows, sound_candidates, shots):
             "unexplained": not explained,
             "overlaps_speech": has_speech,
             "explained_by_named_sound": explained,
-            "shot": shot["shot"] if shot else None,
+            "shot": primary_shot,
+            "shots": shots_list,
         }
         out.append(event)
 
         if tier in (STRONG, MEDIUM):
+            kind_label = e.get("kind", "transient").replace("_", " ")
+            peak_times = ", ".join(
+                f"{p['start']:.2f}-{p['end']:.2f}s"
+                for p in e.get("peaks", [])
+            )
+
             if not explained:
                 if tier == STRONG:
                     action = (
@@ -737,12 +794,12 @@ def _build_transients(raw, speech_windows, sound_candidates, shots):
                             "speech emphasis, and identify it. Even unnamed, "
                             "it may support a Sound event."
                         )
+                claim = f"Unidentified {kind_label} at {e['start']}-{e['end']}s"
+                if peak_times:
+                    claim += f" (peaks: {peak_times})"
+                claim += f" ({tier} acoustic evidence)."
                 findings.append({
-                    "claim": (
-                        f"Unidentified transient sound at "
-                        f"{e['start']}-{e['end']}s "
-                        f"({tier} acoustic evidence)."
-                    ),
+                    "claim": claim,
                     "tier": tier,
                     "evidence": [
                         "transient detector: " + ", ".join(e["signals"]),
@@ -753,11 +810,12 @@ def _build_transients(raw, speech_windows, sound_candidates, shots):
                     "window": [e["start"], e["end"]],
                 })
             else:
+                claim = f"{kind_label.capitalize()} at {e['start']}-{e['end']}s coincides "
+                if peak_times:
+                    claim += f"(peaks: {peak_times}) "
+                claim += f"with {', '.join(explained_by)}."
                 findings.append({
-                    "claim": (
-                        f"Transient at {e['start']}-{e['end']}s coincides "
-                        f"with {', '.join(explained_by)}."
-                    ),
+                    "claim": claim,
                     "tier": MEDIUM,
                     "evidence": ["transient detector: " + ", ".join(e["signals"])],
                     "action": (
@@ -777,13 +835,15 @@ def _build_review_windows(
     shots = shots or []
 
     def add(start, end, kind, tier, description):
+        primary_shot, shots_list = _assign_shots(start, end, shots)
         windows.append({
             "type": kind,
             "tier": tier,
             "start": round(float(start), 3),
             "end": round(float(end), 3),
             "description": description,
-            "shot": _shot_containing(start, end, shots)["shot"] if shots else None,
+            "shot": primary_shot,
+            "shots": shots_list,
         })
 
     for c in sound:
@@ -802,17 +862,12 @@ def _build_review_windows(
             add(r["start"], r["end"], "music_check", WEAK,
                 "Music evidence is weak; do NOT create a Music event without listening.")
 
-    # 3.5 stricter masking: a masking review window only exists when another
-    # source is actually present AND ASR evidence shows words disappeared
-    # during the overlap (intelligibility drop). Plain overlap, or overlap
-    # with unknown ASR outcome, is not a masking review -- it is handled by
-    # the generic sound-identity check above.
-    for m in masking_candidates:
-        if m.get("masking") == "possible_masking":
-            add(m["start"], m["end"], "masking_check", MEDIUM,
-                "Another sound source overlaps speech and ASR words "
-                "disappeared during the overlap; listen for actual "
-                "intelligibility loss.")
+    # 3.6: masking_check review windows are deliberately NOT emitted here.
+    # The review queue only creates masking_check from the FINAL masking
+    # evidence (masking_overlap_evidence.json / the packet's overlap_masking
+    # section). This fusion layer must never independently infer masking --
+    # that is how the queue contradicted the packet's (empty) masking
+    # section in the Phase 3.6 run.
 
     # 3.5: strong unexplained transients are high-priority review windows
     # even though no model can name them.
@@ -820,15 +875,18 @@ def _build_review_windows(
         if t["tier"] not in (STRONG, MEDIUM):
             continue
         if t.get("unexplained"):
+            strength = "Strong " if t["tier"] == STRONG else ""
             add(
                 t["start"], t["end"], "transient_sfx_check", t["tier"],
-                "Strong unidentified transient sound; listen and identify "
-                "it (may support a Sound event even unnamed).",
+                f"{strength}unidentified {t.get('kind', 'transient')}; "
+                "listen and identify it (may support a Sound event even "
+                "unnamed).",
             )
         else:
             add(
                 t["start"], t["end"], "transient_sfx_check", MEDIUM,
-                "Transient coincides with "
+                t.get("kind", "transient").replace("_", " ")
+                + " coincides with "
                 + ", ".join(t.get("explained_by", []))
                 + "; confirm it is a byproduct.",
             )
@@ -879,22 +937,10 @@ def _build_findings(sound, music, ambience, masking_candidates, transient_findin
             "action": "Do NOT create a Music event without listening.",
         })
 
-    # 3.5 stricter masking: only "possible_masking" (real overlap + ASR word
-    # loss during the overlap) becomes a finding. Plain overlap and
-    # unknown-outcome overlaps stay as data, never as masking warnings --
-    # they only ever justify "Low-confidence speech: re-listen".
-    for m in masking_candidates:
-        if m.get("masking") == "possible_masking":
-            findings.append({
-                "claim": (
-                    f"Possible masking: {m['candidate_class']} overlaps speech "
-                    "and ASR words disappeared during the overlap."
-                ),
-                "tier": m.get("tier") or UNKNOWN,
-                "evidence": m.get("action", ""),
-                "action": "Listen for actual intelligibility loss before calling it masking.",
-                "window": [m["start"], m["end"]],
-            })
+    # 3.6: masking findings are NOT emitted from this fusion layer either.
+    # The packet's official masking section (overlap_masking) is the only
+    # place masking claims live; fusion records overlap data in
+    # `masking_evidence.candidates` but never asserts masking itself.
 
     findings.extend(transient_findings)
 

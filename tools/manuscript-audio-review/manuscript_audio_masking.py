@@ -259,10 +259,13 @@ def build_review_windows(word_risks):
             + 0.40
         )
 
+        # 3.6: the queue's masking_check windows exist ONLY here -- from the
+        # final masking evidence. The fusion layer never emits masking_check,
+        # so the queue can never contradict the packet's masking section.
         windows.append({
             "priority": "high",
             "type":
-                "overlap_intelligibility_check",
+                "masking_check",
             "start": round(start, 3),
             "end": round(end, 3),
             "description": (

@@ -489,6 +489,31 @@ def build_asr_consensus(asr_consensus, independent_speech_regions=None):
 
     coverage = asr_consensus.get("coverage", {}) or {}
 
+    # 3.6: multi-stream divergence is ONE high-priority item, not N fake
+    # per-word conflicts. When the models were following different
+    # concurrent vocal content (foreground speech vs lyrics/vocals), no
+    # amount of per-word listening resolves it -- the reviewer must
+    # separate the streams first.
+    for region in asr_consensus.get("divergence_regions", []):
+        findings.append(
+            finding(
+                "MULTI_STREAM_ASR_DIVERGENCE: the two ASR models appear to "
+                f"track different concurrent vocal content in "
+                f"{region['start']}-{region['end']}s.",
+                STRONG,
+                [
+                    f"primary: \"{region['primary_text']}\"",
+                    f"secondary: \"{region['secondary_text']}\"",
+                    f"{region['word_count']} consecutive conflicting words "
+                    "with zero same-text agreement",
+                ],
+                "Do NOT pick either model's words here. Listen and separate "
+                "foreground speech from lyrics/background vocals, then "
+                "transcribe the real speech only.",
+                window=(region["start"], region["end"]),
+            )
+        )
+
     for c in asr_consensus.get("conflicts", []):
         findings.append(
             finding(
@@ -662,6 +687,7 @@ def build_asr_consensus(asr_consensus, independent_speech_regions=None):
         "word_consensus": asr_consensus.get("word_consensus", []),
         "secondary_only_words": asr_consensus.get("secondary_only_words", []),
         "conflicts": asr_consensus.get("conflicts", []),
+        "divergence_regions": asr_consensus.get("divergence_regions", []),
         "rerun_windows": asr_consensus.get("rerun_windows", []),
         "reruns_executed": asr_consensus.get("reruns_executed", []),
         "hallucination_risk_words": asr_consensus.get("hallucination_risk_words", []),
@@ -730,11 +756,28 @@ def build_speaker_face_mapping(mapping):
         tier = window["tier"]
 
         if tier == UNKNOWN:
+            # 3.6: distinguish "face evidence was unavailable" from "no
+            # face was actually detected". If the face worker did not run
+            # (missing .venv-vision), we did NOT prove no face is visible --
+            # we only proved face evidence is missing.
+            face_evidence_available = (
+                mapping.get("face_worker_status") == "complete"
+                and mapping.get("face_tracks")
+            )
+            if face_evidence_available:
+                claim = "No visible face during this speech window."
+            else:
+                claim = (
+                    "Visible-speaker evidence unavailable for this speech "
+                    "window (face tracking did not run or produced no "
+                    "usable tracks)."
+                )
             findings.append(
                 finding(
-                    "No visible face during this speech window.",
+                    claim,
                     UNKNOWN,
-                    [window["reason"]],
+                    [window["reason"]]
+                    + ([] if face_evidence_available else ["face_worker_status: " + str(mapping.get("face_worker_status"))]),
                     window["action"],
                     window=(window["start"], window["end"]),
                 )
@@ -1328,6 +1371,22 @@ def shot_for_window(start, end, shots):
     return best
 
 
+def shots_for_window(start, end, shots):
+    """All locked shots a window touches, sorted (3.6: cross-shot evidence
+    gets a `shots` list -- a rerun spanning 4.99-15.31s must never be
+    forced onto one misleading Shot 2)."""
+    out = []
+    for shot in shots:
+        shot_start = float(shot.get("start", 0.0))
+        shot_end = float(shot.get("end", 0.0))
+        if (
+            float(end) > shot_start
+            and float(start) < shot_end
+        ):
+            out.append(shot.get("shot"))
+    return sorted(s for s in out if s is not None)
+
+
 def collect_all_findings(sections, context_shots=None):
     all_findings = []
     context_shots = context_shots or []
@@ -1343,8 +1402,16 @@ def collect_all_findings(sections, context_shots=None):
                     item["shot"] = shot_for_window(
                         item["window"][0], item["window"][1], context_shots
                     )
+                    item["shots"] = shots_for_window(
+                        item["window"][0], item["window"][1], context_shots
+                    )
+                    # 3.6: a finding spanning multiple shots is cross-shot
+                    # evidence; do not force it onto one wrong shot.
+                    if len(item["shots"]) > 1:
+                        item["shot"] = None
                 else:
                     item["shot"] = None
+                    item["shots"] = []
                 all_findings.append(item)
 
     all_findings.sort(key=lambda f: TIER_ORDER.get(f["tier"], 9))
@@ -1653,7 +1720,9 @@ def build_review_me(sections, evidence):
             window = ""
             if f.get("window"):
                 window = f" [{f['window'][0]}-{f['window'][1]}s]"
-                if f.get("shot"):
+                if f.get("shots") and len(f["shots"]) > 1:
+                    window += ", Shots " + ", ".join(str(s) for s in f["shots"])
+                elif f.get("shot"):
                     window += f", Shot {f['shot']}"
             add(f"- **{f['tier']}**{window}: {f['claim']}")
             if f.get("grouped"):
@@ -1667,7 +1736,10 @@ def build_review_me(sections, evidence):
 
     ranked = sections["ranked_findings"]
 
-    dump("STRONG — safe defaults", [f for f in ranked if f["tier"] == STRONG])
+    # 3.6: STRONG is never a "safe default" -- a strong UNTRANSCRIBED_SPEECH
+    # finding or a strong unnamed transient is strong evidence the reviewer
+    # must inspect, not something to annotate blindly.
+    dump("HIGH PRIORITY — strong evidence", [f for f in ranked if f["tier"] == STRONG])
     dump(
         "NEEDS REVIEW — medium / conflict",
         [f for f in ranked if f["tier"] in (MEDIUM, CONFLICT)],
@@ -1694,6 +1766,18 @@ def build_review_me(sections, evidence):
             f"(longest single region "
             f"{asr_coverage.get('longest_uncovered_region_sec')}s)."
         )
+        # 3.6: when the models tracked different concurrent vocal content,
+        # the per-word disagreement count is region-level noise -- surface
+        # the real number of divergence regions so the count never reads as
+        # "18 uncertain words".
+        if asr_coverage.get("words_in_divergence_regions"):
+            add(
+                f"Note: {asr_coverage['words_in_divergence_regions']} word(s) "
+                "sit inside MULTI-STREAM divergence regions -- the models "
+                "were following different vocal content there, so those are "
+                "not per-word uncertainties."
+            )
+            add()
 
         strong_words = [
             w for w in asr.get("word_consensus", [])
@@ -1706,9 +1790,13 @@ def build_review_me(sections, evidence):
                 "confirmed by both models."
             )
 
+        # 3.6: words inside a multi-stream divergence region are covered by
+        # the region item below; listing each one as a separate "listen"
+        # word would re-create the per-word noise the region exists to
+        # remove.
         listen_words = [
             w for w in asr.get("word_consensus", [])
-            if w.get("needs_listen")
+            if w.get("needs_listen") and not w.get("divergence_region")
         ]
         if listen_words:
             add()
@@ -1737,6 +1825,20 @@ def build_review_me(sections, evidence):
                     f"- {c['start']}-{c['end']}s: primary "
                     f"\"{c['primary_word']}\" vs secondary "
                     f"\"{c['secondary_word']}\""
+                )
+
+        divergence = asr.get("divergence_regions", [])
+        if divergence:
+            add()
+            add("**MULTI-STREAM DIVERGENCE** (models tracked different "
+                "concurrent vocal content -- do NOT trust either model's "
+                "words here; separate speech from lyrics/vocals by "
+                "listening):")
+            for r in divergence:
+                add(
+                    f"- {r['start']}-{r['end']}s: primary "
+                    f"\"{r['primary_text']}\" vs secondary "
+                    f"\"{r['secondary_text']}\""
                 )
     elif asr.get("findings"):
         add()
@@ -1768,7 +1870,18 @@ def build_review_me(sections, evidence):
         off_screen = [w for w in active_windows if w["tier"] == UNKNOWN]
         if off_screen:
             add()
-            add(f"{len(off_screen)} speech window(s) had no visible face candidate.")
+            # 3.6: we cannot claim "no visible face" when face tracking was
+            # unavailable -- only that visible-speaker evidence is missing.
+            if speaker_mapping.get("face_worker_status") == "complete" and speaker_mapping.get("face_tracks"):
+                add(
+                    f"{len(off_screen)} speech window(s) had no visible face "
+                    "candidate (face tracking ran but found no face)."
+                )
+            else:
+                add(
+                    f"{len(off_screen)} speech window(s) had no visible-speaker "
+                    "evidence (face tracking unavailable or no usable tracks)."
+                )
 
     # Untranscribed speech gets its own explicit callout.
     if coverage.get("untranscribed_regions"):
@@ -1865,17 +1978,25 @@ def build_review_me(sections, evidence):
         add("## UNNAMED TRANSIENTS (listen + identify)")
         for t in transient_events:
             shot = f", Shot {t['shot']}" if t.get("shot") else ""
+            if t.get("shots") and len(t["shots"]) > 1:
+                shot = ", Shots " + ", ".join(str(s) for s in t["shots"])
+            kind_label = t.get("kind", "transient").replace("_", " ")
+            peaks = ""
+            if t.get("peaks"):
+                peaks = " (peaks: " + ", ".join(
+                    f"{p['start']:.2f}-{p['end']:.2f}s" for p in t["peaks"]
+                ) + ")"
             if t.get("unexplained"):
                 strength = "strong " if t["tier"] == STRONG else ""
                 add(
-                    f"- **{t['tier']}** [{t['start']}-{t['end']}s{shot}]: "
-                    f"{strength}unidentified transient; no named sound "
+                    f"- **{t['tier']}** [{t['start']}-{t['end']}s{shot}]{peaks}: "
+                    f"{strength}unidentified {kind_label}; no named sound "
                     "explains it. Listen and identify."
                 )
             else:
                 add(
-                    f"- **{t['tier']}** [{t['start']}-{t['end']}s{shot}]: "
-                    "transient coincides with "
+                    f"- **{t['tier']}** [{t['start']}-{t['end']}s{shot}]{peaks}: "
+                    f"{kind_label} coincides with "
                     + ", ".join(t.get("explained_by", []))
                     + "."
                 )

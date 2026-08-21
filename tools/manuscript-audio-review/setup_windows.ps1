@@ -18,14 +18,14 @@ if (-not $PyLauncher) {
     throw "Python Launcher ('py') was not found. Install Python 3.11 for Windows, then reopen PowerShell."
 }
 
-Write-Host "[1/6] Checking Python 3.11..."
+Write-Host "[1/8] Checking Python 3.11..."
 & py -3.11 -c "import sys; print('Python:', sys.version); assert sys.version_info[:2] == (3, 11)"
 if ($LASTEXITCODE -ne 0) {
     throw "Python 3.11 is required. Run: py -0p to see installed Python versions."
 }
 
 Write-Host ""
-Write-Host "[2/6] Checking FFmpeg..."
+Write-Host "[2/8] Checking FFmpeg..."
 $FFmpeg = Get-Command ffmpeg -ErrorAction SilentlyContinue
 $FFprobe = Get-Command ffprobe -ErrorAction SilentlyContinue
 if (-not $FFmpeg -or -not $FFprobe) {
@@ -35,7 +35,7 @@ Write-Host "FFmpeg:" $FFmpeg.Source
 Write-Host "FFprobe:" $FFprobe.Source
 
 Write-Host ""
-Write-Host "[3/6] Creating review environment..."
+Write-Host "[3/8] Creating review environment..."
 if (-not (Test-Path $ReviewVenv)) {
     & py -3.11 -m venv $ReviewVenv
     if ($LASTEXITCODE -ne 0) { throw "Failed to create .venv-review." }
@@ -63,7 +63,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host ""
-Write-Host "[4/6] Creating WhisperX environment..."
+Write-Host "[4/8] Creating WhisperX environment..."
 if (-not (Test-Path $WhisperXVenv)) {
     & py -3.11 -m venv $WhisperXVenv
     if ($LASTEXITCODE -ne 0) { throw "Failed to create .venv-whisperx." }
@@ -82,7 +82,7 @@ if ($LASTEXITCODE -ne 0) { throw "Failed to upgrade pip in .venv-whisperx." }
 if ($LASTEXITCODE -ne 0) { throw "Failed to install WhisperX requirements." }
 
 Write-Host ""
-Write-Host "[5/6] Verifying environments..."
+Write-Host "[5/8] Verifying environments..."
 & $ReviewPython -c "import numpy, opensmile, soundfile, torch, transformers; print('Review environment: PASS'); print('numpy:', numpy.__version__); print('opensmile:', opensmile.__version__); print('soundfile:', soundfile.__version__); print('torch:', torch.__version__); print('transformers:', transformers.__version__)"
 if ($LASTEXITCODE -ne 0) { throw "Review environment verification failed." }
 
@@ -92,7 +92,7 @@ if ($LASTEXITCODE -ne 0) { throw "WhisperX import verification failed." }
 if ($LASTEXITCODE -ne 0) { throw "WhisperX CLI verification failed." }
 
 Write-Host ""
-Write-Host "[6/6] Checking Manuscript V2 scripts..."
+Write-Host "[6/8] Checking Manuscript V2 scripts..."
 
 $ReviewScripts = @(
     "manuscript_audio_review.py",
@@ -145,7 +145,8 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "Manuscript V2 scripts: PASS"
 
 Write-Host ""
-Write-Host "[7/7] Audio-events environment (Phase 3C, OPTIONAL)..."
+Write-Host ""
+Write-Host "[7/8] Audio-events environment (Phase 3C, OPTIONAL)..."
 Write-Host "      This installs torch (CPU), PANNs, and CLAP. It is best-effort:"
 Write-Host "      a failure here does NOT block the core review stack."
 $AudioSetup = Join-Path $Root "setup_audio_events_windows.ps1"
@@ -161,6 +162,25 @@ if (Test-Path $AudioSetup) {
     }
 } else {
     Write-Host "SKIPPED | setup_audio_events_windows.ps1 not found (optional)." -ForegroundColor Yellow
+}
+
+Write-Host ""
+Write-Host "[8/8] Vision environment (Phase 3B face tracking, OPTIONAL)..."
+Write-Host "      This installs mediapipe + opencv for face-track active-speaker"
+Write-Host "      mapping. It is best-effort: a failure here does NOT block the"
+Write-Host "      core review stack (face evidence just degrades to unavailable)."
+$VisionSetup = Join-Path $Root "setup_vision_windows.ps1"
+if (Test-Path $VisionSetup) {
+    try {
+        & $VisionSetup
+    } catch {
+        Write-Host "WARNING: Phase 3B vision setup did not complete." -ForegroundColor Yellow
+        Write-Host "  $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "  Face tracking will be unavailable; the rest of the pipeline still" -ForegroundColor Yellow
+        Write-Host "  runs normally. Re-run setup_vision_windows.ps1 directly to retry." -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "SKIPPED | setup_vision_windows.ps1 not found (optional)." -ForegroundColor Yellow
 }
 
 Write-Host ""

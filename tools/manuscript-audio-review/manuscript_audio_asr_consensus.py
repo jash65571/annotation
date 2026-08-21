@@ -71,6 +71,16 @@ MATCH_FAR_PENALTY = -2.0
 # strongly preferred over gapping.
 ALIGN_GAP_PENALTY = -0.8
 
+# 3.6 stream-divergence gate: when the two models align to DIFFERENT
+# concurrent vocal streams (foreground speech vs lyrics/background vocals),
+# every word in the region comes back "conflicting" with zero same-text
+# matches. That is not N uncertain words -- it is ONE region where the
+# models were hearing different content. A run of at least this many
+# consecutive all-conflict words (within a plausible timing gap) becomes a
+# MULTI_STREAM_ASR_DIVERGENCE region instead of dozens of fake conflicts.
+DIVERGENCE_MIN_RUN = 4
+DIVERGENCE_MAX_GAP_SEC = 0.6
+
 # 3A.1: merge rerun candidates within this gap into one inference call.
 MERGE_GAP_SEC = 0.5
 # 3A.1: a secondary-only gap must clear one of these bars to earn an
@@ -363,6 +373,30 @@ def _word_center(w):
     return (float(w["start"]) + float(w["end"])) / 2.0
 
 
+def _ends_sentence(word):
+    return str(word or "").rstrip().endswith((".", "!", "?", ";", ":"))
+
+
+def _sentence_initial_indices(primary_words):
+    """Indices of primary words that START a sentence (first word of a
+    segment, or following sentence-ending punctuation). Used by the
+    proper-noun detector: sentence-initial capitalization is formatting,
+    not a name (3.6)."""
+    flags = set()
+    previous = None
+
+    for i, w in enumerate(primary_words):
+        if (
+            previous is None
+            or previous.get("segment") != w.get("segment")
+            or _ends_sentence(previous.get("word"))
+        ):
+            flags.add(i)
+        previous = w
+
+    return flags
+
+
 def _pair_score(pw, sw):
     """Score aligning primary word pw with secondary word sw.
 
@@ -477,6 +511,8 @@ def build_word_consensus(primary_words, secondary_words):
         primary_words, secondary_words
     )
 
+    sentence_initial = _sentence_initial_indices(primary_words)
+
     consensus = []
 
     for i, pw in enumerate(primary_words):
@@ -537,6 +573,7 @@ def build_word_consensus(primary_words, secondary_words):
             "center_distance_sec": round(
                 abs(_word_center(pw) - _word_center(sw)), 3
             ),
+            "sentence_initial": i in sentence_initial,
             "needs_listen": state in ("conflicting", "probable"),
         }
 
@@ -559,7 +596,12 @@ def build_word_consensus(primary_words, secondary_words):
     return consensus, secondary_only_words
 
 
-def build_conflicts(word_consensus):
+def build_conflicts(word_consensus, excluded_indices=None):
+    """Per-word conflicts. Words inside a MULTI_STREAM_ASR_DIVERGENCE
+    region are excluded -- those are region-level problems, not N separate
+    uncertain words (3.6)."""
+    excluded_indices = excluded_indices or set()
+
     return [
         {
             "start": w["start"],
@@ -569,9 +611,71 @@ def build_conflicts(word_consensus):
             "primary_score": w["primary_score"],
             "secondary_score": w["secondary_score"],
         }
-        for w in word_consensus
-        if w["state"] == "conflicting"
+        for i, w in enumerate(word_consensus)
+        if w["state"] == "conflicting" and i not in excluded_indices
     ]
+
+
+def detect_stream_divergence(word_consensus):
+    """3.6: detect regions where the two models were following DIFFERENT
+    concurrent vocal streams (foreground speech vs lyrics/background
+    vocals).
+
+    Signature: a run of >= DIVERGENCE_MIN_RUN consecutive "conflicting"
+    words with temporally plausible spacing and ZERO same-text matches. In
+    that situation the per-word conflicts are not "18 uncertain words" --
+    the aligner is forcing two independent streams into one word-to-word
+    comparison. We stop word-level matching for the region and report one
+    MULTI_STREAM_ASR_DIVERGENCE item instead.
+
+    Returns (regions, flagged_indices). Every flagged consensus entry also
+    gets `divergence_region: True` so downstream consumers (master,
+    REVIEW_ME) never treat region words as individual risks.
+    """
+    runs = []
+    current = []
+
+    def flush():
+        if len(current) >= DIVERGENCE_MIN_RUN:
+            runs.append(current)
+
+    for i, w in enumerate(word_consensus):
+        if w["state"] == "conflicting":
+            if current and (w["start"] - current[-1][1]["end"]) <= DIVERGENCE_MAX_GAP_SEC:
+                current.append((i, w))
+            else:
+                flush()
+                current = [(i, w)]
+        else:
+            flush()
+            current = []
+    flush()
+
+    regions = []
+    flagged = set()
+
+    for run in runs:
+        start = run[0][1]["start"]
+        end = run[-1][1]["end"]
+        primary_text = " ".join(w["word"] for _, w in run).strip()
+        secondary_text = " ".join(
+            w["secondary_word"] or "" for _, w in run
+        ).strip()
+
+        regions.append({
+            "start": round(float(start), 3),
+            "end": round(float(end), 3),
+            "word_count": len(run),
+            "primary_text": primary_text,
+            "secondary_text": secondary_text,
+            "assessment": "MULTI_STREAM_ASR_DIVERGENCE",
+        })
+
+        for i, w in run:
+            flagged.add(i)
+            w["divergence_region"] = True
+
+    return regions, flagged
 
 
 # ---------------------------------------------------------------------------
@@ -680,38 +784,44 @@ def build_hallucination_risk(
     return risks
 
 
-def compute_proper_noun_risk(word_entry):
-    """Conservative: flags a token worth checking, never guesses the name.
+# Common words ASRs routinely capitalize mid-sentence (lyric/title words)
+# that are not names. Keep the proper-noun detector honest by never
+# flagging them on capitalization alone (3.6).
+_MID_SENTENCE_CAPITALIZED_COMMON = frozenset({"happy", "merry"})
 
-    Trigger bar: not a common function/filler word, AND (model disagreement
-    OR low primary confidence). Purely a listening cue.
+
+def compute_proper_noun_risk(word_entry):
+    """3.6 repair: flags real name-like tokens only, never common words.
+
+    Old rule flagged every model-disagreement / low-confidence word, which
+    produced noise like `percussion`, `Check`, `him`, `out`, `light` as
+    "possible proper nouns". New rule: a token is worth a name check only
+    when it is CAPITALIZED MID-SENTENCE -- i.e. the capitalization is not
+    explained by sentence structure, which is exactly how ASRs write real
+    names (`Harry`, `Lindsey`). Sentence-start capitalization is formatting,
+    not a name, and lowercase common words are never flagged.
     """
     norm = normalize_word(word_entry["word"])
 
     if len(norm) < PROPER_NOUN_MIN_LENGTH or norm in _STOPWORDS:
         return None
-
-    state = word_entry.get("state")
-    score_val = word_entry.get("primary_score")
-    weak_confidence = score_val is not None and score_val < PROPER_NOUN_LOW_CONFIDENCE
-
-    if state != "conflicting" and not weak_confidence:
+    if norm in _MID_SENTENCE_CAPITALIZED_COMMON:
         return None
 
-    reasons = []
-    if state == "conflicting":
-        reasons.append(
-            f"model disagreement (secondary heard "
-            f"\"{word_entry.get('secondary_word')}\")"
-        )
-    if weak_confidence:
-        reasons.append(f"low primary confidence ({score_val})")
+    raw = str(word_entry.get("word", "")).strip()
+    if not raw or not raw[0].isupper():
+        return None
+    if word_entry.get("sentence_initial"):
+        return None
 
     return {
         "word": word_entry["word"],
         "start": word_entry["start"],
         "end": word_entry["end"],
-        "reasons": reasons,
+        "reasons": [
+            "capitalized mid-sentence (not explained by sentence structure) "
+            "-- likely a name, check against the locked cast",
+        ],
     }
 
 
@@ -735,6 +845,7 @@ def build_coverage_stats(
     secondary_only_words,
     word_consensus,
     duration_sec,
+    divergence_flags=None,
 ):
     primary_spans = merge_intervals(
         (w["start"], w["end"]) for w in primary_words
@@ -748,6 +859,17 @@ def build_coverage_stats(
 
     matched = [w for w in word_consensus if w["secondary_word"] is not None]
     agreeing = [w for w in matched if w["state"] == "confirmed"]
+
+    # 3.6: words inside a MULTI_STREAM_ASR_DIVERGENCE region are region-level
+    # disagreement, not N separate per-word conflicts -- the count the
+    # report surfaces must not re-inflate what the divergence gate just
+    # collapsed.
+    divergence_flags = divergence_flags or set()
+    per_word_conflicts = sum(
+        1
+        for i, w in enumerate(word_consensus)
+        if w["state"] == "conflicting" and i not in divergence_flags
+    )
 
     longest_uncovered = (
         round(max(b - a for a, b in secondary_only_spans), 3)
@@ -765,9 +887,8 @@ def build_coverage_stats(
         "model_agreement_pct": (
             round(len(agreeing) / len(matched), 3) if matched else None
         ),
-        "word_disagreement_count": sum(
-            1 for w in word_consensus if w["state"] == "conflicting"
-        ),
+        "word_disagreement_count": per_word_conflicts,
+        "words_in_divergence_regions": len(divergence_flags),
         "missing_from_primary_count": len(secondary_only_words),
         "missing_from_secondary_count": sum(
             1
@@ -815,6 +936,7 @@ def identify_rerun_windows(
     word_consensus,
     duration_sec,
     independent_speech_regions=None,
+    excluded_indices=None,
 ):
     """Windows worth a short, targeted secondary rerun.
 
@@ -857,8 +979,11 @@ def identify_rerun_windows(
     # Each conflicting word is its own raw candidate (not pre-merged) so a
     # transcript conflict never loses its individual identity -- the outer
     # merge step below is the only place nearby candidates combine.
-    for w in word_consensus:
-        if w["state"] == "conflicting":
+    # 3.6: words inside a MULTI_STREAM_ASR_DIVERGENCE region are skipped --
+    # a rerun cannot resolve two concurrent streams, and per-word reruns
+    # there would just re-hear one stream or the other.
+    for i, w in enumerate(word_consensus):
+        if w["state"] == "conflicting" and i not in (excluded_indices or set()):
             raw_candidates.append({
                 "start": w["start"], "end": w["end"],
                 "reason": "model_disagreement",
@@ -973,6 +1098,7 @@ def _unavailable_result(error):
         "coverage": None,
         "word_consensus": [],
         "conflicts": [],
+        "divergence_regions": [],
         "rerun_windows": [],
         "reruns_executed": [],
         "hallucination_risk_words": [],
@@ -1035,10 +1161,18 @@ def write_asr_consensus_evidence(
             primary_words, secondary_words
         )
 
-        conflicts = build_conflicts(word_consensus)
+        # 3.6: multi-stream divergence gate. Runs of consecutive all-conflict
+        # words become ONE region-level item (models tracked different
+        # concurrent vocal content), not dozens of fake word conflicts.
+        divergence_regions, divergence_flags = detect_stream_divergence(
+            word_consensus
+        )
+
+        conflicts = build_conflicts(word_consensus, excluded_indices=divergence_flags)
 
         coverage = build_coverage_stats(
-            primary_words, secondary_only_words, word_consensus, duration_sec
+            primary_words, secondary_only_words, word_consensus, duration_sec,
+            divergence_flags=divergence_flags,
         )
 
         rerun_windows = identify_rerun_windows(
@@ -1047,16 +1181,24 @@ def write_asr_consensus_evidence(
             word_consensus,
             duration_sec,
             independent_speech_regions,
+            excluded_indices=divergence_flags,
         )
 
+        # Words inside a divergence region are region-level, not word-level:
+        # they never produce individual hallucination / proper-noun risks.
+        word_level = [
+            w for i, w in enumerate(word_consensus)
+            if i not in divergence_flags
+        ]
+
         hallucination_risk_words = build_hallucination_risk(
-            word_consensus,
+            word_level,
             primary_segment_avg_logprob,
             secondary_segments,
             independent_speech_regions,
         )
 
-        proper_noun_risk_words = build_proper_noun_risk(word_consensus)
+        proper_noun_risk_words = build_proper_noun_risk(word_level)
 
         reruns_executed = []
 
@@ -1100,6 +1242,7 @@ def write_asr_consensus_evidence(
             "word_consensus": word_consensus,
             "secondary_only_words": secondary_only_words,
             "conflicts": conflicts,
+            "divergence_regions": divergence_regions,
             "rerun_windows": rerun_windows,
             "reruns_executed": reruns_executed,
             "reruns_skipped_count": max(0, skipped),

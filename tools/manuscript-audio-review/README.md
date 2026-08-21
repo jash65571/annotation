@@ -170,6 +170,39 @@ Phase 3.5 hardening (see `3B_VERIFICATION.md` for the earlier phases):
 - **Honest media metadata** -- both `source_sample_rate` (original video)
   and `analysis_sample_rate` (the resampled 16 kHz WAV) are reported.
 
+Phase 3.6 fixes (from real-task failures):
+
+- **ASR multi-stream divergence gate** -- when the two ASR models align to
+  DIFFERENT concurrent vocal content (foreground speech vs lyrics/background
+  vocals), the word-level match stops and ONE `MULTI_STREAM_ASR_DIVERGENCE`
+  region is reported instead of dozens of fake per-word conflicts. Words in
+  the region never become individual risks.
+- **Proper-noun filter repaired** -- only mid-sentence capitalized tokens
+  (real name-like words) are flagged; sentence-start capitalization and
+  lowercase common words like `percussion`, `Check`, `him` are never called
+  proper nouns.
+- **Masking queue depends on final masking evidence** -- the review queue
+  only creates `masking_check` from `masking_overlap_evidence.json`; the
+  sound-fusion layer never independently infers masking, and WEAK sounds
+  can never drive a masking claim.
+- **WEAK sounds never explain transients** -- only MEDIUM/STRONG named
+  sounds can explain or demote a transient; a WEAK cheering guess (CLAP
+  0.218) leaves the transient unexplained and STRONG.
+- **Cross-shot evidence carries `shots: [...]`** -- whole-clip music, long
+  reruns, and multi-shot transients get a `shots` list instead of one
+  forced (wrong) shot; whole-clip music is marked `scope: whole_clip`.
+- **Vision environment installed by default setup** -- `setup_windows.ps1`
+  now runs `setup_vision_windows.ps1` best-effort, so Phase 3B face
+  tracking works on a fresh clone instead of requiring a manual install.
+- **Unavailable face evidence is not "no face"** -- when face tracking
+  did not run, the packet says "Visible-speaker evidence unavailable",
+  never "No visible face during this speech window".
+- **Long transient spans are regions** -- merged peaks > 1 s are labeled
+  `high_energy_acoustic_region` with the individual peak times underneath,
+  not one giant "transient".
+- **REVIEW_ME wording** -- STRONG findings are "HIGH PRIORITY — strong
+  evidence", never "safe defaults".
+
 ## Reviewer environment
 
 Pinned direct packages:
@@ -197,6 +230,29 @@ whisperx==3.8.6
 ```
 
 It is installed from `requirements-whisperx.txt`.
+
+## Vision environment (Phase 3B, optional)
+
+Pinned packages (`requirements-vision.txt`):
+
+```text
+mediapipe==0.10.21
+opencv-python-headless==4.10.0.84
+numpy<2
+```
+
+Installed into `.venv-vision` by `setup_vision_windows.ps1`, which the main
+`setup_windows.ps1` now runs best-effort (step 8/8). A failure here does NOT
+block the core review stack: face tracking just degrades to unavailable
+speaker evidence. If it was skipped during setup, install it later with:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File ".\setup_vision_windows.ps1"
+```
+
+Without it, Phase 1.6 face tracking is skipped and speech windows are
+reported as "Visible-speaker evidence unavailable" rather than claiming no
+face is visible.
 
 ## Troubleshooting
 

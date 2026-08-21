@@ -155,6 +155,15 @@ def compute_active_speaker_windows(face_evidence, speech_windows, sampled_fps=No
     tracks = face_evidence.get("face_tracks", []) if face_evidence else []
     sampled_fps = sampled_fps or (face_evidence or {}).get("media", {}).get("sampled_fps")
 
+    # 3.6: distinguish "no face was actually detected" from "face evidence
+    # was unavailable". When the face worker did not run (missing
+    # .venv-vision), we did NOT prove no face is visible -- only that
+    # visible-speaker evidence is missing.
+    face_evidence_unavailable = (
+        not face_evidence
+        or face_evidence.get("status") != "complete"
+    )
+
     results = []
 
     for start, end in speech_windows:
@@ -164,16 +173,27 @@ def compute_active_speaker_windows(face_evidence, speech_windows, sampled_fps=No
         ]
 
         if not overlapping:
+            if face_evidence_unavailable:
+                reason = "face_evidence_unavailable"
+                action = (
+                    "Visible-speaker evidence was unavailable (face tracking "
+                    "did not run or produced no usable tracks). Do not "
+                    "assume the speaker is off-screen -- no face evidence "
+                    "was collected."
+                )
+            else:
+                reason = "no_visible_face_during_speech"
+                action = (
+                    "Speaker may be off-screen, or no face was detected. "
+                    "Do not assume a visible character spoke this line."
+                )
             results.append({
                 "start": round(start, 3),
                 "end": round(end, 3),
                 "candidates": [],
                 "tier": UNKNOWN,
-                "reason": "no_visible_face_during_speech",
-                "action": (
-                    "Speaker may be off-screen, or no face was detected. "
-                    "Do not assume a visible character spoke this line."
-                ),
+                "reason": reason,
+                "action": action,
             })
             continue
 

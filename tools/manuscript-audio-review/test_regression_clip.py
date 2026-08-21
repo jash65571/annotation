@@ -597,14 +597,24 @@ def run():
             "secondary_word": "chris",
         }) is None,
     )
+    # 3.6: proper-noun risk targets real name-like tokens only. Lowercase
+    # common words -- even disagreeing, low-confidence ones -- are never
+    # flagged (the old rule produced noise like 'percussion', 'Check',
+    # 'him'). Only a mid-sentence capitalized token is name-like.
     name_risk = asrc.compute_proper_noun_risk({
-        "word": "chris", "start": 0.0, "end": 0.1,
-        "state": "conflicting", "primary_score": 0.2,
-        "secondary_word": "kris",
+        "word": "Chris", "start": 0.0, "end": 0.1,
+        "sentence_initial": False,
     })
     check(
-        "a disagreeing, low-confidence name-like word is flagged for review",
-        name_risk is not None and "chris" == name_risk["word"],
+        "a mid-sentence capitalized name-like word is flagged for review",
+        name_risk is not None and "Chris" == name_risk["word"],
+    )
+    check(
+        "a lowercase disagreeing common word is never flagged as a name",
+        asrc.compute_proper_noun_risk({
+            "word": "chris", "start": 0.0, "end": 0.1,
+            "sentence_initial": False,
+        }) is None,
     )
     check(
         "proper_noun_risk never asserts a corrected spelling",

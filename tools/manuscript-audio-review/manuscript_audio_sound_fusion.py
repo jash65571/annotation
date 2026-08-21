@@ -438,6 +438,12 @@ TRANSIENT_SCORE_THRESHOLD = 0.5
 TRANSIENT_STRONG_SCORE = 0.7
 TRANSIENT_JOIN_GAP_SEC = 0.4
 TRANSIENT_SIGNAL_BAR = 0.5
+# A merged transient event longer than this is not really a "transient" --
+# it is a sustained high-energy acoustic region (speech emphasis, a musical
+# crescendo, applause). Keep the individual peaks underneath it (3.6).
+TRANSIENT_KIND_MAX_SEC = 1.0
+TRANSIENT_KIND_TRANSIENT = "transient"
+TRANSIENT_KIND_REGION = "high_energy_acoustic_region"
 
 
 def _clamp01(value):
@@ -545,8 +551,33 @@ def build_transient_events(feature_windows, join_gap=TRANSIENT_JOIN_GAP_SEC):
             for signal in e["signals"]:
                 if signal not in g["signals"]:
                     g["signals"].append(signal)
+            g["peaks"].append({
+                "start": e["start"],
+                "end": e["end"],
+                "score": e["score"],
+                "tier": e["tier"],
+            })
         else:
-            merged.append(dict(e))
+            merged.append({
+                **e,
+                "peaks": [{
+                    "start": e["start"],
+                    "end": e["end"],
+                    "score": e["score"],
+                    "tier": e["tier"],
+                }],
+            })
+
+    # 3.6: merged spans > TRANSIENT_KIND_MAX_SEC are high-energy acoustic
+    # REGIONS (a musical crescendo or strong speech can look like one giant
+    # transient otherwise). The individual peak times stay underneath.
+    for g in merged:
+        duration = g["end"] - g["start"]
+        g["kind"] = (
+            TRANSIENT_KIND_REGION
+            if duration > TRANSIENT_KIND_MAX_SEC
+            else TRANSIENT_KIND_TRANSIENT
+        )
 
     return merged
 
