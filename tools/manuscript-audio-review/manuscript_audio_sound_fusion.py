@@ -538,6 +538,16 @@ def build_transient_events(feature_windows, join_gap=TRANSIENT_JOIN_GAP_SEC):
             "features": {
                 k: round(v, 4) for k, v in indicators.items()
             },
+            # Preserve the low-level measurements so downstream gates can
+            # distinguish a voiced speech onset from a broadband impact.
+            "raw_features": {
+                key: w.get(key)
+                for key in (
+                    "rms_db", "crest_factor", "spectral_flux",
+                    "onset_strength", "energy_change_db",
+                )
+                if w.get(key) is not None
+            },
         })
 
     merged = []
@@ -556,6 +566,7 @@ def build_transient_events(feature_windows, join_gap=TRANSIENT_JOIN_GAP_SEC):
                 "end": e["end"],
                 "score": e["score"],
                 "tier": e["tier"],
+                "raw_features": e.get("raw_features", {}),
             })
         else:
             merged.append({
@@ -565,6 +576,7 @@ def build_transient_events(feature_windows, join_gap=TRANSIENT_JOIN_GAP_SEC):
                     "end": e["end"],
                     "score": e["score"],
                     "tier": e["tier"],
+                    "raw_features": e.get("raw_features", {}),
                 }],
             })
 

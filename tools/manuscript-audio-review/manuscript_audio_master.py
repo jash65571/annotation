@@ -534,6 +534,7 @@ def build_asr_consensus(asr_consensus, independent_speech_regions=None):
     for a, b in merge_intervals(
         (w["start"], w["end"])
         for w in asr_consensus.get("secondary_only_words", [])
+        if w.get("coverage_gap", w.get("classification", "secondary_only_speech") == "secondary_only_speech")
     ):
         length = b - a
         tier = STRONG if length >= 0.6 else MEDIUM
@@ -685,7 +686,14 @@ def build_asr_consensus(asr_consensus, independent_speech_regions=None):
     return {
         "coverage": coverage,
         "word_consensus": asr_consensus.get("word_consensus", []),
-        "secondary_only_words": asr_consensus.get("secondary_only_words", []),
+        "secondary_only_words": [
+            w for w in asr_consensus.get("secondary_only_words", [])
+            if w.get("coverage_gap", w.get("classification", "secondary_only_speech") == "secondary_only_speech")
+        ],
+        "lexical_insertions": [
+            w for w in asr_consensus.get("secondary_only_words", [])
+            if not w.get("coverage_gap", w.get("classification", "secondary_only_speech") == "secondary_only_speech")
+        ],
         "conflicts": asr_consensus.get("conflicts", []),
         "divergence_regions": asr_consensus.get("divergence_regions", []),
         "rerun_windows": asr_consensus.get("rerun_windows", []),
@@ -721,6 +729,9 @@ def build_speaker_face_mapping(mapping):
             )
         )
         return {
+            "face_worker_status": mapping.get("face_worker_status"),
+            "face_worker_diagnostic_code": mapping.get("face_worker_diagnostic_code"),
+            "face_worker_error": mapping.get("face_worker_error"),
             "face_tracks": [],
             "active_speaker_windows": [],
             "cluster_to_face_candidates": [],
@@ -734,9 +745,16 @@ def build_speaker_face_mapping(mapping):
         findings.append(
             finding(
                 "Face detection did not complete "
-                f"(status: {mapping.get('face_worker_status')}).",
+                f"(status: {mapping.get('face_worker_status')}; "
+                f"reason: {mapping.get('face_worker_diagnostic_code') or 'worker_failed'}).",
                 UNKNOWN,
-                ["face worker did not produce usable tracks"],
+                [
+                    "face worker did not produce usable tracks",
+                    *(["diagnostic_code: " + str(mapping.get("face_worker_diagnostic_code"))]
+                      if mapping.get("face_worker_diagnostic_code") else []),
+                    *(["error: " + str(mapping.get("face_worker_error"))]
+                      if mapping.get("face_worker_error") else []),
+                ],
                 "Treat every speech window as possibly off-screen.",
             )
         )
@@ -762,7 +780,6 @@ def build_speaker_face_mapping(mapping):
             # we only proved face evidence is missing.
             face_evidence_available = (
                 mapping.get("face_worker_status") == "complete"
-                and mapping.get("face_tracks")
             )
             if face_evidence_available:
                 claim = "No visible face during this speech window."
@@ -842,6 +859,9 @@ def build_speaker_face_mapping(mapping):
         )
 
     return {
+        "face_worker_status": mapping.get("face_worker_status"),
+        "face_worker_diagnostic_code": mapping.get("face_worker_diagnostic_code"),
+        "face_worker_error": mapping.get("face_worker_error"),
         "face_tracks": mapping.get("face_tracks", []),
         "active_speaker_windows": mapping.get("active_speaker_windows", []),
         "cluster_to_face_candidates": mapping.get("cluster_to_face_candidates", []),
@@ -1809,12 +1829,26 @@ def build_review_me(sections, evidence):
             if len(listen_words) > 15:
                 add(f"- ... and {len(listen_words) - 15} more")
 
-        gaps = asr.get("secondary_only_words", [])
+        gaps = [
+            g for g in asr.get("secondary_only_words", [])
+            if g.get("coverage_gap", g.get("classification", "secondary_only_speech") == "secondary_only_speech")
+        ]
         if gaps:
             add()
             add("**ASR COVERAGE GAPS** (secondary-only speech, primary missed it):")
             for a, b in merge_intervals((g["start"], g["end"]) for g in gaps):
                 add(f"- {round(a, 3)}-{round(b, 3)}s")
+
+        insertions = asr.get("lexical_insertions", [])
+        if insertions:
+            add()
+            add("**LEXICAL INSERTIONS / ALIGNMENT MISMATCHES** "
+                "(secondary token overlaps existing primary speech; not a coverage gap):")
+            for item in insertions:
+                add(
+                    f"- {item['start']}-{item['end']}s "
+                    f'"{item["word"]}" overlaps primary speech; no rerun required.'
+                )
 
         conflicts = asr.get("conflicts", [])
         if conflicts:
@@ -1872,7 +1906,7 @@ def build_review_me(sections, evidence):
             add()
             # 3.6: we cannot claim "no visible face" when face tracking was
             # unavailable -- only that visible-speaker evidence is missing.
-            if speaker_mapping.get("face_worker_status") == "complete" and speaker_mapping.get("face_tracks"):
+            if speaker_mapping.get("face_worker_status") == "complete":
                 add(
                     f"{len(off_screen)} speech window(s) had no visible face "
                     "candidate (face tracking ran but found no face)."
@@ -1974,31 +2008,52 @@ def build_review_me(sections, evidence):
     transient_events = transients.get("events", [])
 
     if transient_events:
-        add()
-        add("## UNNAMED TRANSIENTS (listen + identify)")
-        for t in transient_events:
+        def transient_location(t):
             shot = f", Shot {t['shot']}" if t.get("shot") else ""
             if t.get("shots") and len(t["shots"]) > 1:
                 shot = ", Shots " + ", ".join(str(s) for s in t["shots"])
-            kind_label = t.get("kind", "transient").replace("_", " ")
             peaks = ""
             if t.get("peaks"):
                 peaks = " (peaks: " + ", ".join(
                     f"{p['start']:.2f}-{p['end']:.2f}s" for p in t["peaks"]
                 ) + ")"
-            if t.get("unexplained"):
-                strength = "strong " if t["tier"] == STRONG else ""
+            return shot, peaks
+
+        unnamed = [t for t in transient_events if not t.get("speech_associated")]
+        speech_associated = [t for t in transient_events if t.get("speech_associated")]
+
+        if unnamed:
+            add()
+            add("## UNNAMED TRANSIENTS (listen + identify)")
+            for t in unnamed:
+                shot, peaks = transient_location(t)
+                kind_label = t.get("kind", "transient").replace("_", " ")
+                if t.get("unexplained"):
+                    strength = "strong " if t["tier"] == STRONG else ""
+                    add(
+                        f"- **{t['tier']}** [{t['start']}-{t['end']}s{shot}]{peaks}: "
+                        f"{strength}unidentified {kind_label}; no named sound "
+                        "explains it. Listen and identify."
+                    )
+                else:
+                    add(
+                        f"- **{t['tier']}** [{t['start']}-{t['end']}s{shot}]{peaks}: "
+                        f"{kind_label} coincides with "
+                        + ", ".join(t.get("explained_by", []))
+                        + "."
+                    )
+
+        if speech_associated:
+            add()
+            add("## SPEECH-ASSOCIATED ENERGY (lower SFX priority)")
+            for t in speech_associated:
+                shot, peaks = transient_location(t)
                 add(
                     f"- **{t['tier']}** [{t['start']}-{t['end']}s{shot}]{peaks}: "
-                    f"{strength}unidentified {kind_label}; no named sound "
-                    "explains it. Listen and identify."
-                )
-            else:
-                add(
-                    f"- **{t['tier']}** [{t['start']}-{t['end']}s{shot}]{peaks}: "
-                    f"{kind_label} coincides with "
-                    + ", ".join(t.get("explained_by", []))
-                    + "."
+                    "energy aligns with a known speech onset and has a "
+                    "speech-compatible acoustic shape; it is not an "
+                    "independent SFX finding. Preserve speech continuity and "
+                    "only promote after hearing a separate impact."
                 )
 
     add()

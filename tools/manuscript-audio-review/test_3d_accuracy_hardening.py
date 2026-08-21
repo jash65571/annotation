@@ -26,6 +26,7 @@ import json
 
 import manuscript_audio_asr_consensus as a
 import manuscript_audio_master as m
+import manuscript_audio_pipeline as pipeline
 import manuscript_audio_shots as ms
 import manuscript_audio_sound_events as se
 import manuscript_audio_sound_fusion as sf
@@ -76,6 +77,33 @@ def run():
     check("aligned words record their center-time distance",
           all(c.get("center_distance_sec") is not None for c in consensus),
           json.dumps(consensus))
+
+    # A secondary token inside an active primary word/segment is an insertion,
+    # not a missing-speech gap and must not trigger a targeted rerun.
+    insertion = {
+        "word": "and", "start": 5.08, "end": 5.30,
+        "secondary_score": 0.8, "missing_from": "primary",
+        "classification": "lexical_insertion_or_alignment_mismatch",
+        "coverage_gap": False,
+    }
+    primary_segment = {"segment": 1, "start": 4.5, "end": 5.5}
+    check("secondary token inside primary content is lexical insertion",
+          a._classify_secondary_only_word(
+              insertion,
+              [{"start": 4.793, "end": 5.333}],
+              [primary_segment],
+          ) == "lexical_insertion_or_alignment_mismatch")
+    insertion_reruns = a.identify_rerun_windows(
+        [{"start": 4.793, "end": 5.333}],
+        [insertion],
+        [],
+        duration_sec=5.5,
+        independent_speech_regions=[(5.0, 5.4)],
+        primary_segments=[primary_segment],
+    )
+    check("lexical insertion inside primary segment gets no rerun",
+          not insertion_reruns,
+          json.dumps(insertion_reruns))
 
     # Different text at the same time is still a conflict.
     conflict_primary = [word("need", 13.0, 13.2, 0.9)]
@@ -192,6 +220,41 @@ def run():
           and during_speech[0].get("overlaps_speech") is True
           and during_speech[0].get("explained_by_named_sound") is False,
           json.dumps(during_speech))
+
+    # A peak aligned to a known word onset with a voiced, non-impact shape is
+    # retained as evidence but removed from the high-priority SFX queue.
+    speech_onset_raw = dict(raw)
+    speech_onset_raw["transient_feature_windows"] = quiet + [{
+        "start": 8.5, "end": 10.0, "rms_db": -20.0,
+        "crest_factor": 5.0, "spectral_flux": 0.04,
+        "onset_strength": 0.001, "energy_change_db": 8.0,
+    }]
+    speech_onset_fused = se.build_sound_fusion_evidence(
+        speech_onset_raw,
+        {
+            "diarization": {"status": "complete", "turns": [
+                {"start": 8.4, "end": 9.9, "speaker": "SPEAKER_00"},
+            ]},
+            "asr_consensus": {"status": "complete", "word_consensus": [
+                {"word": "Sandy", "start": 8.5, "end": 8.9},
+            ]},
+            "evidence": {"whisperx_segments": [{"start": 8.5, "end": 9.9}]},
+        },
+    )
+    onset_events = [
+        e for e in speech_onset_fused["transients"]["events"]
+        if e.get("speech_associated")
+    ]
+    check("speech-onset energy is classified separately from SFX",
+          onset_events
+          and onset_events[0]["kind"] == "speech_associated_energy"
+          and onset_events[0]["tier"] == sf.MEDIUM
+          and onset_events[0]["explained_by_named_sound"] is False,
+          json.dumps(onset_events))
+    check("speech-onset energy does not create a transient SFX queue item",
+          not any(w["type"] == "transient_sfx_check"
+                  for w in speech_onset_fused["review_windows"]),
+          json.dumps(speech_onset_fused["review_windows"]))
 
     # A transient overlapping a NAMED sound candidate IS explained -> demoted.
     named_raw = dict(raw)
@@ -594,6 +657,74 @@ def run():
           and not any("No visible face" in f["claim"] for f in face_sec["findings"]),
           json.dumps(face_sec["findings"]))
 
+    completed_no_face = m.build_speaker_face_mapping({
+        "status": "complete",
+        "face_worker_status": "complete",
+        "face_tracks": [],
+        "active_speaker_windows": [{
+            "start": 1.0, "end": 2.0, "candidates": [], "tier": m.UNKNOWN,
+            "reason": "no_visible_face_during_speech", "action": "listen",
+        }],
+        "cluster_to_face_candidates": [],
+        "face_to_character_candidates": [],
+    })
+    check("completed face tracking with no detections says no visible face",
+          any("No visible face" in f["claim"]
+              for f in completed_no_face["findings"])
+          and not any("Visible-speaker evidence unavailable" in f["claim"]
+                      for f in completed_no_face["findings"]),
+          json.dumps(completed_no_face["findings"]))
+
+    from manuscript_audio_face_worker import diagnostic_code_for_exception
+    check("mediapipe failures expose an actionable diagnostic code",
+          diagnostic_code_for_exception(
+              ModuleNotFoundError("missing", name="mediapipe")
+          ) == "mediapipe_import_failed")
+    check("opencv failures expose an actionable diagnostic code",
+          diagnostic_code_for_exception(
+              ModuleNotFoundError("missing", name="cv2")
+          ) == "opencv_import_failed")
+
+    # Routine visual cuts collapse into one continuity instruction; a word
+    # crossing a cut remains a separate targeted boundary check.
+    routine_boundary_evidence = {
+        "shot_audio_evidence": [
+            {"shot": 1, "start": 0.0, "end": 2.0,
+             "speech_crosses_out_of_shot": True},
+            {"shot": 2, "start": 2.0, "end": 4.0,
+             "speech_crosses_out_of_shot": True},
+            {"shot": 3, "start": 4.0, "end": 6.0,
+             "speech_crosses_out_of_shot": True},
+        ],
+        "whisperx_segments": [{"start": 0.0, "end": 6.0, "words": [
+            {"word": "hello", "start": 0.2, "end": 0.5},
+        ]}],
+    }
+    routine_boundaries = pipeline.build_shot_boundary_review_windows(
+        routine_boundary_evidence, 6.0
+    )
+    check("routine shot-boundary warnings collapse into one continuity item",
+          len(routine_boundaries) == 1
+          and routine_boundaries[0]["type"] == "shot_boundary_continuity_check",
+          json.dumps(routine_boundaries))
+    targeted_boundary_evidence = {
+        **routine_boundary_evidence,
+        "shot_audio_evidence": [{
+            "shot": 1, "start": 0.0, "end": 2.0,
+            "speech_crosses_out_of_shot": True,
+        }],
+        "whisperx_segments": [{"start": 0.0, "end": 2.0, "words": [
+            {"word": "hello", "start": 1.8, "end": 2.2},
+        ]}],
+    }
+    targeted_boundaries = pipeline.build_shot_boundary_review_windows(
+        targeted_boundary_evidence, 2.5
+    )
+    check("word-crossing shot boundary remains a targeted check",
+          len(targeted_boundaries) == 1
+          and targeted_boundaries[0]["type"] == "shot_boundary_speech_check",
+          json.dumps(targeted_boundaries))
+
     # ------------------------------------------------------------------
     # 3.6h. REVIEW_ME: STRONG is 'HIGH PRIORITY -- strong evidence'.
     # ------------------------------------------------------------------
@@ -627,6 +758,20 @@ def run():
           "HIGH PRIORITY — strong evidence" in review_me
           and "STRONG — safe defaults" not in review_me,
           review_me[:400])
+
+    sections["transients"] = {"events": [{
+        "start": 1.0, "end": 2.0, "tier": m.MEDIUM,
+        "kind": "speech_associated_energy",
+        "speech_associated": True,
+        "unexplained": False,
+        "shot": 1, "shots": [1], "peaks": [],
+        "explained_by": ["speech", "speech_onset"],
+    }]}
+    speech_review_me = m.build_review_me(sections, evidence)
+    check("speech-associated energy is not rendered as unnamed SFX",
+          "SPEECH-ASSOCIATED ENERGY (lower SFX priority)" in speech_review_me
+          and "## UNNAMED TRANSIENTS" not in speech_review_me,
+          speech_review_me[-600:])
 
     # ------------------------------------------------------------------
     # 3.6i. setup_vision_windows.ps1 exists for fresh-install face tracking.

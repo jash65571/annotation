@@ -1,7 +1,31 @@
 ﻿from pathlib import Path
 import json
+import os
 import subprocess
 import sys
+
+
+def load_env_file(path=".env"):
+    """Best-effort .env loader (local secrets only). Sets HF_TOKEN etc. in
+    os.environ BEFORE any subprocess spawns, so the WhisperX diarization
+    child (which reads os.environ["HF_TOKEN"]) inherits it. Missing file,
+    malformed lines, and empty values are silently ignored -- never raise.
+    """
+    env_path = Path(path)
+    if not env_path.exists():
+        return
+    try:
+        for line in env_path.read_text(encoding="utf-8-sig").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and value:
+                os.environ.setdefault(key, value)
+    except OSError:
+        return
 
 from manuscript_audio_shots import enrich_evidence_with_shots
 from manuscript_audio_queue import merge_transcript_review_windows
@@ -363,10 +387,67 @@ def run_asr_consensus():
             )
 
 
+def _write_face_failure(status, error, diagnostic_code):
+    FACE_TRACK_EVIDENCE.parent.mkdir(parents=True, exist_ok=True)
+    with FACE_TRACK_EVIDENCE.open("w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "status": status,
+                "error": error,
+                "error_code": diagnostic_code,
+                "face_tracks": [],
+            },
+            f,
+            indent=2,
+        )
+
+
+def _normalize_face_failure_artifact():
+    """Validate the worker artifact and preserve an actionable failure code."""
+    try:
+        with FACE_TRACK_EVIDENCE.open("r", encoding="utf-8-sig") as f:
+            result = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        _write_face_failure(
+            "failed",
+            "face worker did not produce valid JSON output",
+            "worker_output_invalid",
+        )
+        return
+
+    if not isinstance(result, dict) or result.get("status") not in ("complete", "failed", "unavailable"):
+        _write_face_failure(
+            "failed",
+            "face worker output is missing a valid status",
+            "worker_output_invalid",
+        )
+        return
+
+    if result.get("status") != "complete":
+        result.setdefault("error_code", "worker_failed")
+        result.setdefault("face_tracks", [])
+        with FACE_TRACK_EVIDENCE.open("w", encoding="utf-8") as f:
+            json.dump(result, f, indent=2, ensure_ascii=False)
+
+
 def run_face_and_speaker_mapping():
     print("\n=== PHASE 1.6: FACE TRACKING / ACTIVE-SPEAKER MAPPING ===\n")
 
-    if VISION_PYTHON.exists() and FACE_WORKER.exists():
+    if not VISION_PYTHON.exists():
+        print("FACE TRACKING: SKIPPED | .venv-vision not found (run setup)")
+        _write_face_failure(
+            "unavailable",
+            "vision environment missing",
+            "vision_environment_missing",
+        )
+    elif not FACE_WORKER.exists():
+        print("FACE TRACKING: SKIPPED | face worker script not found")
+        _write_face_failure(
+            "failed",
+            "face worker script not found",
+            "worker_launch_failed",
+        )
+    else:
         try:
             run([
                 str(VISION_PYTHON),
@@ -376,22 +457,13 @@ def run_face_and_speaker_mapping():
                 "--fps",
                 "5",
             ])
-        except subprocess.CalledProcessError as exc:
-            print(f"FACE TRACKING: SKIPPED | subprocess failed: {exc}")
-            FACE_TRACK_EVIDENCE.parent.mkdir(parents=True, exist_ok=True)
-            with FACE_TRACK_EVIDENCE.open("w", encoding="utf-8") as f:
-                json.dump(
-                    {"status": "failed", "error": str(exc), "face_tracks": []},
-                    f, indent=2,
-                )
-    else:
-        print("FACE TRACKING: SKIPPED | .venv-vision not found (run setup)")
-        FACE_TRACK_EVIDENCE.parent.mkdir(parents=True, exist_ok=True)
-        with FACE_TRACK_EVIDENCE.open("w", encoding="utf-8") as f:
-            json.dump(
-                {"status": "unavailable", "error": "vision environment missing",
-                 "face_tracks": []},
-                f, indent=2,
+            _normalize_face_failure_artifact()
+        except (subprocess.CalledProcessError, OSError) as exc:
+            print(f"FACE TRACKING: SKIPPED | worker launch failed: {exc}")
+            _write_face_failure(
+                "failed",
+                str(exc),
+                "worker_launch_failed",
             )
 
     try:
@@ -408,6 +480,7 @@ def run_face_and_speaker_mapping():
                 {
                     "status": "failed",
                     "error": f"{type(exc).__name__}: {exc}",
+                    "error_code": "worker_output_invalid",
                     "face_tracks": [],
                     "active_speaker_windows": [],
                     "cluster_to_face_candidates": [],
@@ -471,6 +544,104 @@ def shot_of_window(start, end, shots):
             best = shot.get("shot")
 
     return best
+
+
+def build_shot_boundary_review_windows(evidence, duration):
+    """Collapse routine visual-cut continuity cues into one listening item.
+
+    A locked visual cut does not imply an audio cut. Keep separate targeted
+    checks only when the evidence points to a word crossing the cut, a source
+    change, or an intelligibility risk. Routine continuous speech across
+    multiple cuts becomes one continuity instruction instead of one warning
+    per shot boundary.
+    """
+    shot_evidence = evidence.get("shot_audio_evidence", []) or []
+    segments = evidence.get("whisperx_segments", []) or []
+    low_confidence = [
+        word
+        for segment in segments
+        for word in segment.get("low_confidence_words", [])
+    ]
+
+    routine_centers = []
+    targeted = []
+    seen = set()
+
+    for shot in shot_evidence:
+        candidates = []
+        if shot.get("speech_crosses_into_shot"):
+            candidates.append((
+                float(shot["start"]),
+                f"Speech crosses into Shot {shot['shot']} from the previous shot.",
+            ))
+        if shot.get("speech_crosses_out_of_shot"):
+            candidates.append((
+                float(shot["end"]),
+                f"Speech continues out of Shot {shot['shot']} into the next shot.",
+            ))
+
+        for center, description in candidates:
+            center = float(center)
+            key = round(center, 3)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            word_crosses = any(
+                float(word.get("start", 0.0)) < center < float(word.get("end", 0.0))
+                for segment in segments
+                for word in segment.get("words", [])
+                if word.get("start") is not None and word.get("end") is not None
+            )
+            nearby_low_confidence = any(
+                abs(float(word.get("start", center)) - center) <= 0.35
+                or abs(float(word.get("end", center)) - center) <= 0.35
+                for word in low_confidence
+            )
+            source_change = bool(shot.get("possible_speaker_or_source_change"))
+            targeted_reason = (
+                "word crosses the visual cut" if word_crosses else
+                "source identity may change" if source_change else
+                "intelligibility risk near the cut" if nearby_low_confidence else
+                None
+            )
+
+            start = round(clamp(center - 0.75, 0.0, duration), 3)
+            end = round(clamp(center + 0.75, 0.0, duration), 3)
+            if targeted_reason:
+                targeted.append({
+                    "priority": "high",
+                    "type": "shot_boundary_speech_check",
+                    "start": start,
+                    "end": end,
+                    "description": description + " " + targeted_reason + ".",
+                })
+            else:
+                routine_centers.append(center)
+
+    if routine_centers:
+        start = round(clamp(min(routine_centers) - 0.75, 0.0, duration), 3)
+        end = round(clamp(max(routine_centers) + 0.75, 0.0, duration), 3)
+        if len(routine_centers) > 1:
+            description = (
+                "Speech continues across multiple locked visual shot "
+                "boundaries. Preserve continuity when assigning the speech "
+                "to each shot."
+            )
+        else:
+            description = (
+                "Speech continues across a locked visual shot boundary. "
+                "Preserve continuity when assigning the speech to each shot."
+            )
+        targeted.append({
+            "priority": "high",
+            "type": "shot_boundary_continuity_check",
+            "start": start,
+            "end": end,
+            "description": description,
+        })
+
+    return targeted
 
 
 def build_review_queue():
@@ -552,52 +723,11 @@ def build_review_queue():
             ),
         })
 
-    # Flag speech that crosses a Manuscript shot boundary.
-    # Internal timestamps are evidence only and never enter Final Audio Text.
-    seen_boundaries = set()
-
-    for shot in evidence.get("shot_audio_evidence", []):
-        candidates = []
-
-        if shot.get("speech_crosses_into_shot"):
-            candidates.append(
-                (
-                    float(shot["start"]),
-                    f"Speech crosses into Shot {shot['shot']} "
-                    "from the previous shot."
-                )
-            )
-
-        if shot.get("speech_crosses_out_of_shot"):
-            candidates.append(
-                (
-                    float(shot["end"]),
-                    f"Speech continues out of Shot {shot['shot']} "
-                    "into the next shot."
-                )
-            )
-
-        for center, description in candidates:
-            key = round(center, 3)
-
-            if key in seen_boundaries:
-                continue
-
-            seen_boundaries.add(key)
-
-            windows.append({
-                "priority": "high",
-                "type": "shot_boundary_speech_check",
-                "start": round(
-                    clamp(center - 0.75, 0.0, duration),
-                    3,
-                ),
-                "end": round(
-                    clamp(center + 0.75, 0.0, duration),
-                    3,
-                ),
-                "description": description,
-            })
+    # Flag speech that crosses locked visual boundaries. Routine continuity
+    # cues are collapsed; only targeted word/source/intelligibility risks stay
+    # separate. Internal timestamps are evidence only and never enter Final
+    # Audio Text.
+    windows.extend(build_shot_boundary_review_windows(evidence, duration))
     for segment in evidence.get("review_synthesis", []):
         if "emotion_model_ambiguous" not in segment.get(
             "manual_review_reasons",
@@ -921,6 +1051,10 @@ def main():
     print("===================================")
     print(" MANUSCRIPT II AUDIO REVIEW PIPELINE")
     print("===================================")
+
+    # Load local secrets (.env) before any stage runs, so the WhisperX
+    # diarization subprocess inherits HF_TOKEN instead of skipping.
+    load_env_file()
 
     # Usage: python manuscript_audio_pipeline.py VIDEO.mp4 [SEED.txt]
     video_arg = sys.argv[1] if len(sys.argv) >= 2 else None

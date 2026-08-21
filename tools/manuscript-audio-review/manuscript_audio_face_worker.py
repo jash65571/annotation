@@ -46,6 +46,17 @@ _IOU_MATCH_THRESHOLD = 0.25
 _MAX_TRACK_GAP_SEC = 0.6  # a gap longer than this ends a track (likely a cut)
 
 
+def diagnostic_code_for_exception(exc):
+    """Map worker failures to an actionable setup/operational code."""
+    module = getattr(exc, "name", "") or ""
+    message = str(exc).lower()
+    if module == "mediapipe" or "mediapipe" in message:
+        return "mediapipe_import_failed"
+    if module in ("cv2", "opencv", "opencv_python") or "cv2" in message:
+        return "opencv_import_failed"
+    return "worker_failed"
+
+
 def _bbox_from_landmarks(landmarks, width, height):
     xs = [p.x for p in landmarks]
     ys = [p.y for p in landmarks]
@@ -263,6 +274,7 @@ def write_face_track_evidence(video_path, output_path, fps=5):
         result = {
             "status": "failed",
             "error": f"{type(exc).__name__}: {exc}",
+            "error_code": diagnostic_code_for_exception(exc),
             "runtime_sec": round(time.time() - started, 2),
             "face_tracks": [],
         }

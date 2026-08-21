@@ -127,6 +127,54 @@ def _asr_words_lost_in_window(asr_consensus, start, end):
     return False
 
 
+def _speech_onset_times(asr_consensus=None, evidence=None):
+    """Collect known word/segment starts for the speech-onset gate."""
+    starts = []
+    asr_consensus = asr_consensus or {}
+    evidence = evidence or {}
+
+    for word in asr_consensus.get("word_consensus", []):
+        if word.get("start") is not None:
+            starts.append(float(word["start"]))
+
+    for segment in evidence.get("whisperx_segments", []):
+        if segment.get("start") is not None:
+            starts.append(float(segment["start"]))
+
+    return sorted(set(round(start, 3) for start in starts))
+
+
+def _speech_onset_match(event, onset_times, tolerance_sec=0.2):
+    """Return true only for a peak close to a known word/segment onset."""
+    if not onset_times:
+        return False
+
+    for peak in event.get("peaks", []):
+        peak_start = float(peak.get("start", event["start"]))
+        peak_end = float(peak.get("end", event["end"]))
+        if any(
+            min(
+                abs(peak_start - onset),
+                abs(peak_end - onset),
+            ) <= tolerance_sec
+            for onset in onset_times
+        ):
+            raw = peak.get("raw_features", {}) or {}
+            # Voiced onsets are allowed to be energetic, but a very high crest
+            # or broadband jump is more consistent with an impact. If raw
+            # shape data is absent, do not make this explanatory claim.
+            if not raw:
+                continue
+            if (
+                float(raw.get("crest_factor", 0.0)) <= 10.0
+                and float(raw.get("energy_change_db", 0.0)) <= 20.0
+                and float(raw.get("spectral_flux", 0.0)) <= 0.75
+            ):
+                return True
+
+    return False
+
+
 def _shot_containing(event_start, event_end, shots):
     best = None
     best_overlap = 0.0
@@ -656,7 +704,14 @@ def build_sound_fusion_evidence(raw, supporting=None):
 
     # 3.5: independent transient/SFX detector evidence.
     transients = _build_transients(
-        raw, speech_windows, enriched_sound, shots
+        raw,
+        speech_windows,
+        enriched_sound,
+        shots,
+        speech_onsets=_speech_onset_times(
+            asr_consensus=asr_consensus,
+            evidence=supporting.get("evidence"),
+        ),
     )
 
     # Review windows: only meaningful uncertainty, never every STRONG event.
@@ -699,7 +754,13 @@ def build_sound_fusion_evidence(raw, supporting=None):
     }
 
 
-def _build_transients(raw, speech_windows, sound_candidates, shots):
+def _build_transients(
+    raw,
+    speech_windows,
+    sound_candidates,
+    shots,
+    speech_onsets=None,
+):
     """Turn worker low-level features into reviewer-facing transient events.
 
     Unexplained STRONG transients (no speech, no named sound overlapping)
@@ -741,8 +802,21 @@ def _build_transients(raw, speech_windows, sound_candidates, shots):
             explained_by.append("speech")
 
         explained = bool(named_overlaps)
+        speech_associated = (
+            has_speech
+            and not named_overlaps
+            and _speech_onset_match(e, speech_onsets or [])
+        )
+        if speech_associated:
+            explained_by.append("speech_onset")
+
         tier = e["tier"]
         if explained and tier == STRONG:
+            tier = MEDIUM
+        elif speech_associated and tier == STRONG:
+            # This is a lower-priority speech-energy explanation, not a named
+            # SFX explanation. Keep the independent transient evidence in the
+            # packet, but do not send it to the high-priority SFX queue.
             tier = MEDIUM
 
         primary_shot, shots_list = _assign_shots(e["start"], e["end"], shots)
@@ -750,12 +824,14 @@ def _build_transients(raw, speech_windows, sound_candidates, shots):
         # Explicit reason-why-retained fields: speech overlap alone never
         # demotes a transient (a punch during dialogue is still a punch), so
         # `overlaps_speech` is pure context and `explained_by_named_sound`
-        # is the only thing that can lower the tier.
+        # remains false for speech-associated energy.
         event = {
             **e,
+            "kind": "speech_associated_energy" if speech_associated else e.get("kind", "transient"),
             "tier": tier,
             "explained_by": explained_by,
-            "unexplained": not explained,
+            "unexplained": not explained and not speech_associated,
+            "speech_associated": speech_associated,
             "overlaps_speech": has_speech,
             "explained_by_named_sound": explained,
             "shot": primary_shot,
@@ -764,11 +840,34 @@ def _build_transients(raw, speech_windows, sound_candidates, shots):
         out.append(event)
 
         if tier in (STRONG, MEDIUM):
-            kind_label = e.get("kind", "transient").replace("_", " ")
+            kind_label = event.get("kind", "transient").replace("_", " ")
             peak_times = ", ".join(
                 f"{p['start']:.2f}-{p['end']:.2f}s"
                 for p in e.get("peaks", [])
             )
+
+            if speech_associated:
+                claim = (
+                    f"Speech-associated energy at {e['start']}-{e['end']}s"
+                )
+                if peak_times:
+                    claim += f" (peaks: {peak_times})"
+                findings.append({
+                    "claim": claim + "; not an independent SFX finding.",
+                    "tier": tier,
+                    "evidence": [
+                        "transient detector: " + ", ".join(e["signals"]),
+                        "peak aligns with a known word/segment onset",
+                        "acoustic shape is compatible with voiced onset",
+                    ],
+                    "action": (
+                        "Lower SFX priority. Preserve speech continuity; only "
+                        "promote this to a Sound event if listening reveals a "
+                        "separate impact or other non-speech source."
+                    ),
+                    "window": [e["start"], e["end"]],
+                })
+                continue
 
             if not explained:
                 if tier == STRONG:
@@ -873,6 +972,11 @@ def _build_review_windows(
     # even though no model can name them.
     for t in transient_events or []:
         if t["tier"] not in (STRONG, MEDIUM):
+            continue
+        if t.get("speech_associated"):
+            # Speech-onset explanations remain in the evidence packet, but do
+            # not create an SFX review clip unless another signal independently
+            # justifies it.
             continue
         if t.get("unexplained"):
             strength = "Strong " if t["tier"] == STRONG else ""

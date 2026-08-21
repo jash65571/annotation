@@ -12,6 +12,23 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Python = Join-Path $Root ".venv-review\Scripts\python.exe"
 $Pipeline = Join-Path $Root "manuscript_audio_pipeline.py"
 
+# Load local secrets (.env) so HF_TOKEN reaches the WhisperX diarization
+# child even when stages are invoked through the launcher.
+$EnvFile = Join-Path $Root ".env"
+if ((Test-Path $EnvFile) -and -not $env:HF_TOKEN) {
+    Get-Content $EnvFile | ForEach-Object {
+        $Line = $_.Trim()
+        if ($Line -and -not $Line.StartsWith("#") -and $Line.Contains("=")) {
+            $Key, $Value = $Line.Split("=", 2)
+            $Key = $Key.Trim()
+            $Value = $Value.Trim().Trim('"').Trim("'")
+            if ($Key -and $Value) {
+                Set-Item -Path "Env:$Key" -Value $Value
+            }
+        }
+    }
+}
+
 if (-not (Test-Path $Python)) {
     throw "Review Python environment not found: $Python. Run setup_windows.ps1 first."
 }

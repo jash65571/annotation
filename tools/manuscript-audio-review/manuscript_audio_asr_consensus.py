@@ -164,6 +164,67 @@ def normalize_word(word):
     return re.sub(r"[^\w']", "", word.lower()).strip()
 
 
+def load_primary_segments(whisperx_json_path):
+    """Load timed primary ASR segments for distinguishing a real secondary
+    speech gap from an insertion/alignment mismatch inside existing primary
+    speech."""
+    path = Path(whisperx_json_path)
+    if not path.exists():
+        return []
+    try:
+        with path.open("r", encoding="utf-8-sig") as f:
+            transcript = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return []
+    segments = []
+    for index, segment in enumerate(transcript.get("segments", [])):
+        if segment.get("start") is None or segment.get("end") is None:
+            continue
+        segments.append({
+            "segment": index,
+            "start": float(segment["start"]),
+            "end": float(segment["end"]),
+        })
+    return segments
+
+
+def _interval_overlap(start, end, other_start, other_end):
+    return max(0.0, min(float(end), float(other_end)) - max(float(start), float(other_start)))
+
+
+def _classify_secondary_only_word(word, primary_words, primary_segments=None):
+    """Classify a secondary-only token without calling speech inside an
+    existing primary word/segment a coverage gap.
+
+    A secondary token overlapping either interval is an insertion or alignment
+    mismatch. It remains provenance evidence, but it must not create
+    UNTRANSCRIBED_SPEECH, coverage duration, or a targeted rerun.
+    """
+    start, end = float(word["start"]), float(word["end"])
+    if any(_interval_overlap(start, end, w["start"], w["end"]) > 0.02
+           for w in primary_words):
+        return "lexical_insertion_or_alignment_mismatch"
+    if any(_interval_overlap(start, end, s["start"], s["end"]) > 0.02
+           for s in (primary_segments or [])):
+        return "lexical_insertion_or_alignment_mismatch"
+    return "secondary_only_speech"
+
+
+def is_true_secondary_gap(word):
+    """Whether a secondary-only evidence row represents genuine primary
+    coverage loss rather than an insertion/alignment mismatch.
+
+    Older fixtures may not carry the new fields; those retain the historical
+    missing-from-primary behavior for compatibility.
+    """
+    if "coverage_gap" in word:
+        return bool(word["coverage_gap"])
+    if "classification" in word:
+        return word["classification"] == "secondary_only_speech"
+    return word.get("missing_from") == "primary"
+
+
+
 # ---------------------------------------------------------------------------
 # Persistent secondary-ASR worker client (3A.1: one model load per run)
 # ---------------------------------------------------------------------------
@@ -489,7 +550,7 @@ def _align_word_sequences(primary_words, secondary_words):
     return aligned, primary_gapped, secondary_gapped
 
 
-def build_word_consensus(primary_words, secondary_words):
+def build_word_consensus(primary_words, secondary_words, primary_segments=None):
     """Classify each primary word by whether the secondary pass agrees.
 
     Consensus states (spec 3A-C): confirmed / probable / conflicting /
@@ -579,19 +640,28 @@ def build_word_consensus(primary_words, secondary_words):
 
         consensus.append(entry)
 
-    secondary_only_words = [
-        {
+    secondary_only_words = []
+    for j, sw in enumerate(secondary_words):
+        if j not in secondary_gapped:
+            continue
+        classification = _classify_secondary_only_word(
+            sw, primary_words, primary_segments=primary_segments
+        )
+        secondary_only_words.append({
             "word": sw["word"],
             "start": sw["start"],
             "end": sw["end"],
             "secondary_score": sw["score"],
-            "state": "missing_from_one_model",
+            "state": (
+                "missing_from_one_model"
+                if classification == "secondary_only_speech"
+                else classification
+            ),
             "missing_from": "primary",
-            "needs_listen": True,
-        }
-        for j, sw in enumerate(secondary_words)
-        if j in secondary_gapped
-    ]
+            "classification": classification,
+            "coverage_gap": classification == "secondary_only_speech",
+            "needs_listen": classification == "secondary_only_speech",
+        })
 
     return consensus, secondary_only_words
 
@@ -850,8 +920,9 @@ def build_coverage_stats(
     primary_spans = merge_intervals(
         (w["start"], w["end"]) for w in primary_words
     )
+    true_secondary_gaps = [w for w in secondary_only_words if is_true_secondary_gap(w)]
     secondary_only_spans = merge_intervals(
-        (w["start"], w["end"]) for w in secondary_only_words
+        (w["start"], w["end"]) for w in true_secondary_gaps
     )
 
     asr_covered = sum(b - a for a, b in primary_spans)
@@ -889,7 +960,7 @@ def build_coverage_stats(
         ),
         "word_disagreement_count": per_word_conflicts,
         "words_in_divergence_regions": len(divergence_flags),
-        "missing_from_primary_count": len(secondary_only_words),
+        "missing_from_primary_count": len(true_secondary_gaps),
         "missing_from_secondary_count": sum(
             1
             for w in word_consensus
@@ -937,6 +1008,7 @@ def identify_rerun_windows(
     duration_sec,
     independent_speech_regions=None,
     excluded_indices=None,
+    primary_segments=None,
 ):
     """Windows worth a short, targeted secondary rerun.
 
@@ -955,8 +1027,9 @@ def identify_rerun_windows(
     # a whole, per spec 3A.1-3). Each underlying word still becomes its own
     # raw candidate so provenance/attribution below stays word-level and
     # does not collapse distinct words into one blurred span.
-    if secondary_only_words:
-        sorted_gap_words = sorted(secondary_only_words, key=lambda w: w["start"])
+    true_secondary_gaps = [w for w in secondary_only_words if is_true_secondary_gap(w)]
+    if true_secondary_gaps:
+        sorted_gap_words = sorted(true_secondary_gaps, key=lambda w: w["start"])
         gap_regions = merge_intervals(
             (w["start"], w["end"]) for w in sorted_gap_words
         )
@@ -1003,19 +1076,52 @@ def identify_rerun_windows(
         primary_spans = merge_intervals(
             (w["start"], w["end"]) for w in primary_words
         )
+        primary_content = primary_spans + [
+            (float(s["start"]), float(s["end"]))
+            for s in (primary_segments or [])
+        ]
         for region_start, region_end in independent_speech_regions:
-            has_primary = any(
-                min(region_end, b) - max(region_start, a) > 0.2
-                for a, b in primary_spans
+            # A VAD/diarization region can contain a tiny lexical insertion
+            # or alignment hole while the primary ASR segment is still active.
+            # That is not a coverage gap. Never create a rerun over any
+            # active primary word/segment; only genuinely uncovered speech may
+            # reach this trigger (3.6 follow-up).
+            overlaps_primary_content = any(
+                _interval_overlap(region_start, region_end, start, end) > 0.02
+                for start, end in primary_content
             )
-            if not has_primary:
-                raw_candidates.append({
-                    "start": region_start, "end": region_end,
-                    "reason": "independent_signal_gap",
-                    "trigger": "vad_or_diarization_speech_with_no_asr",
-                })
+            if overlaps_primary_content:
+                continue
+
+            raw_candidates.append({
+                "start": region_start, "end": region_end,
+                "reason": "independent_signal_gap",
+                "trigger": "vad_or_diarization_speech_with_no_asr",
+            })
 
     raw_candidates.sort(key=lambda c: c["start"])
+
+    # 3.6: if a candidate touches known primary speech, expand its source
+    # window to the complete word/segment boundary before padding. This keeps
+    # rerun provenance honest and prevents a clipped sub-word window from
+    # manufacturing text such as `Green. Green.` around confirmed `Noreen.`.
+    primary_intervals = [
+        (float(w["start"]), float(w["end"])) for w in primary_words
+    ] + [
+        (float(s["start"]), float(s["end"]))
+        for s in (primary_segments or [])
+    ]
+    for candidate in raw_candidates:
+        changed = True
+        while changed:
+            changed = False
+            for start, end in primary_intervals:
+                if _interval_overlap(candidate["start"], candidate["end"], start, end) > 0:
+                    new_start = min(candidate["start"], start)
+                    new_end = max(candidate["end"], end)
+                    if new_start != candidate["start"] or new_end != candidate["end"]:
+                        candidate["start"], candidate["end"] = new_start, new_end
+                        changed = True
 
     # 3A.1-2: merge candidates within MERGE_GAP_SEC into one window, keeping
     # each original candidate as a source_window for provenance.
@@ -1127,6 +1233,7 @@ def write_asr_consensus_evidence(
     primary_words, primary_segment_avg_logprob = load_primary_words(
         whisperx_json_path
     )
+    primary_segments = load_primary_segments(whisperx_json_path)
 
     started = time.time()
 
@@ -1158,7 +1265,7 @@ def write_asr_consensus_evidence(
         secondary_segments = secondary_full.get("segments", [])
 
         word_consensus, secondary_only_words = build_word_consensus(
-            primary_words, secondary_words
+            primary_words, secondary_words, primary_segments=primary_segments
         )
 
         # 3.6: multi-stream divergence gate. Runs of consecutive all-conflict
@@ -1182,6 +1289,7 @@ def write_asr_consensus_evidence(
             duration_sec,
             independent_speech_regions,
             excluded_indices=divergence_flags,
+            primary_segments=primary_segments,
         )
 
         # Words inside a divergence region are region-level, not word-level:

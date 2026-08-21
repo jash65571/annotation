@@ -363,6 +363,8 @@ def build_speaker_mapping_evidence(diarization, vad, face_evidence):
         "status": "complete",
         "speech_presence_source": speech_source,
         "face_worker_status": (face_evidence or {}).get("status", "unavailable"),
+        "face_worker_error": (face_evidence or {}).get("error"),
+        "face_worker_diagnostic_code": (face_evidence or {}).get("error_code"),
         "speaker_clusters": (
             diarization.get("speaker_labels", [])
             if diarization and diarization.get("status") == "complete"

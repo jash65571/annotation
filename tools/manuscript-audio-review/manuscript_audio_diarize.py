@@ -8,6 +8,26 @@ from whisperx.diarize import (
 )
 
 
+def _load_env_file(path=".env"):
+    """Best-effort .env loader so HF_TOKEN works when this script is run
+    directly (not only through the pipeline, which loads it first)."""
+    env_path = Path(path)
+    if not env_path.exists():
+        return
+    try:
+        for line in env_path.read_text(encoding="utf-8-sig").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and value:
+                os.environ.setdefault(key, value)
+    except OSError:
+        return
+
+
 ROOT = Path(__file__).resolve().parent
 
 AUDIO = ROOT / "analysis" / "audio.wav"
@@ -28,6 +48,8 @@ DIARIZED_TRANSCRIPT = (
 
 def main():
     print("=== OPTIONAL SPEAKER DIARIZATION ===")
+
+    _load_env_file()
 
     token = os.environ.get("HF_TOKEN")
 
