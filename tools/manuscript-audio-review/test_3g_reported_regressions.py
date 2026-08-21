@@ -76,6 +76,18 @@ Shot 1of 1
         target_classes == {"chewing", "wind_noise", "bottle_table_contact"},
         str(target_classes),
     )
+    no_wind = seed.parse_seed_text("""
+C1: narrator
+Wind noise
+no
+No wind noise is audible.
+Shot 1: 0-1
+""")
+    check(
+        "wind UI label and explicit no do not create a wind target",
+        no_wind["seed_meta"]["human_listening_targets"] == [],
+        json.dumps(no_wind["seed_meta"], indent=2),
+    )
 
     rendered = master.build_master_md(
         {}, {}, ui={"characters": {}, "sounds": [], "music": [], "policy": []}

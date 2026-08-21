@@ -140,15 +140,37 @@ def _description_after_bare_id(lines, start_index):
 
 def _seed_listening_targets(text):
     """Return seed-named non-speech checks, never machine confirmations."""
-    lower = text.lower()
+    lines = [line.strip().lower() for line in text.splitlines() if line.strip()]
+
+    def affirmative(pattern, subject):
+        for line in lines:
+            if not re.search(pattern, line):
+                continue
+            # UI answers such as "No wind noise is audible" are explicit
+            # rejections, not listening targets. Limit negation to the nearby
+            # phrase so unrelated "no clipping" text does not hide a target.
+            if re.search(
+                rf"\b(?:no|not|without)\b.{{0,30}}\b{subject}", line
+            ):
+                continue
+            return True
+        return False
+
     targets = []
-    if re.search(r"\b(?:chew|chewing|mastication|eating sound)\w*\b", lower):
+    if affirmative(
+        r"\b(?:chew\w*|mastication|eating sounds?)\b",
+        r"(?:chew\w*|mastication|eating sounds?)",
+    ):
         targets.append({"class": "chewing", "label": "chewing/eating sounds"})
-    if re.search(r"\bwind(?:\s+noise|\s+sound)?\b", lower):
+    if affirmative(
+        r"\b(?:obvious\s+wind|audible\s+wind|wind\s+(?:noise|sound)\s+(?:is\s+)?(?:audible|present|obvious)|wind\s+(?:noise|sound)\s+throughout)\b",
+        r"wind(?:\s+(?:noise|sound))?",
+    ):
         targets.append({"class": "wind_noise", "label": "wind noise"})
-    if (
-        re.search(r"\bbottles?\b", lower)
-        and re.search(r"\b(?:table|contact|hit|hitting|sat|set|clink)\w*\b", lower)
+    if affirmative(
+        r"\bbottles?\b.*\b(?:table|contact|hit\w*|sat|set|clink\w*)\b|"
+        r"\b(?:table|contact|hit\w*|sat|set|clink\w*)\b.*\bbottles?\b",
+        r"bottles?",
     ):
         targets.append({
             "class": "bottle_table_contact",
