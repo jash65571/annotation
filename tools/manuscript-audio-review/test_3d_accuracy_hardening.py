@@ -78,6 +78,27 @@ def run():
           all(c.get("center_distance_sec") is not None for c in consensus),
           json.dumps(consensus))
 
+    token_primary = [
+        word("Hey", 0.0, 0.2),
+        word("shitface,", 0.3, 0.8),
+        word("what", 0.9, 1.1),
+    ]
+    token_secondary = [
+        word("Hey", 0.0, 0.2),
+        word("shit", 0.34, 0.5, 0.6),
+        word("face.", 0.5, 0.8, 0.6),
+        word("what", 0.9, 1.1),
+    ]
+    token_consensus, token_only = a.build_word_consensus(
+        token_primary, token_secondary
+    )
+    check("concatenated ASR tokens become tokenization_equivalent",
+          token_consensus[1]["state"] == "tokenization_equivalent"
+          and token_consensus[1]["tokenization_equivalent"] is True
+          and a.build_conflicts(token_consensus) == []
+          and token_only == [],
+          json.dumps({"consensus": token_consensus, "only": token_only}))
+
     # A secondary token inside an active primary word/segment is an insertion,
     # not a missing-speech gap and must not trigger a targeted rerun.
     insertion = {
@@ -104,6 +125,26 @@ def run():
     check("lexical insertion inside primary segment gets no rerun",
           not insertion_reruns,
           json.dumps(insertion_reruns))
+
+    tail_primary = [word("hello", 1.0, 2.0)]
+    no_tail_speech = a.identify_rerun_windows(
+        tail_primary, [], [], duration_sec=4.0,
+        independent_speech_regions=[(0.0, 1.9)],
+    )
+    check("unsupported clip tail does not trigger an ASR rerun",
+          not any("clip_end_gap" in w["reasons"] for w in no_tail_speech),
+          json.dumps(no_tail_speech))
+    check("unsupported clip tail gets a listen-only check",
+          a.build_clip_tail_check(
+              tail_primary, 4.0, independent_speech_regions=[(0.0, 1.9)]
+          ) is not None)
+    supported_tail = a.identify_rerun_windows(
+        tail_primary, [], [], duration_sec=4.0,
+        independent_speech_regions=[(2.5, 3.8)],
+    )
+    check("speech-supported clip tail can trigger an ASR rerun",
+          any("clip_end_gap" in w["reasons"] for w in supported_tail),
+          json.dumps(supported_tail))
 
     # Different text at the same time is still a conflict.
     conflict_primary = [word("need", 13.0, 13.2, 0.9)]
@@ -210,7 +251,10 @@ def run():
             {"start": 8.6, "end": 9.9, "speaker": "SPEAKER_00"},
         ]}},
     )
-    during_speech = [e for e in fused_sp["transients"]["events"] if e["unexplained"]]
+    during_speech = [
+        e for e in fused_sp["transients"]["events"]
+        if e["unexplained"] and e["overlaps_speech"]
+    ]
     check("transient during speech stays STRONG and is not explained by speech",
           during_speech and during_speech[0]["tier"] == sf.STRONG
           and "speech" in during_speech[0]["explained_by"],
@@ -233,7 +277,7 @@ def run():
         speech_onset_raw,
         {
             "diarization": {"status": "complete", "turns": [
-                {"start": 8.4, "end": 9.9, "speaker": "SPEAKER_00"},
+                {"start": 8.4, "end": 10.5, "speaker": "SPEAKER_00"},
             ]},
             "asr_consensus": {"status": "complete", "word_consensus": [
                 {"word": "Sandy", "start": 8.5, "end": 8.9},
@@ -255,6 +299,33 @@ def run():
           not any(w["type"] == "transient_sfx_check"
                   for w in speech_onset_fused["review_windows"]),
           json.dumps(speech_onset_fused["review_windows"]))
+
+    mixed_onset_raw = dict(raw)
+    mixed_onset_raw["transient_feature_windows"] = quiet + [{
+        "start": 8.5, "end": 10.0, "rms_db": -20.0,
+        "crest_factor": 5.0, "spectral_flux": 0.04,
+        "onset_strength": 0.001, "energy_change_db": 8.0,
+    }]
+    mixed_onset_fused = se.build_sound_fusion_evidence(
+        mixed_onset_raw,
+        {
+            "diarization": {"status": "complete", "turns": [
+                {"start": 9.5, "end": 10.5, "speaker": "SPEAKER_00"},
+            ]},
+            "asr_consensus": {"status": "complete", "word_consensus": [
+                {"word": "try", "start": 9.6, "end": 9.9},
+            ]},
+        },
+    )
+    mixed_events = mixed_onset_fused["transients"]["events"]
+    check("mixed transient cluster splits before and during speech",
+          any(e.get("unexplained") and e["end"] <= 9.5 for e in mixed_events)
+          and any(e.get("speech_associated") for e in mixed_events),
+          json.dumps(mixed_events))
+    check("unexplained peak partition remains an SFX review candidate",
+          any(w["type"] == "transient_sfx_check"
+              for w in mixed_onset_fused["review_windows"]),
+          json.dumps(mixed_onset_fused["review_windows"]))
 
     # A transient overlapping a NAMED sound candidate IS explained -> demoted.
     named_raw = dict(raw)
@@ -288,6 +359,13 @@ def run():
           map_raw_label("Knock") == ("object_sfx", "door_knock"))
     check("generic door maps to door_open_close",
           map_raw_label("Door") == ("object_sfx", "door_open_close"))
+    check("chair scrape maps to chair_scrape",
+          map_raw_label("Chair scraping") == ("object_sfx", "chair_scrape"))
+    check("furniture scrape maps to furniture_scrape",
+          map_raw_label("Furniture scraping") == ("object_sfx", "furniture_scrape"))
+    check("CLAP prompts cover chair/furniture scrape",
+          {"chair_scrape", "furniture_scrape"}
+          <= {p["candidate_class"] for p in CLAP_PROMPTS})
     check("slam maps to door_open_close",
           map_raw_label("Slam") == ("object_sfx", "door_open_close"))
     door_prompts = [p for p in CLAP_PROMPTS if "door" in p["prompt"].lower()]
@@ -493,6 +571,41 @@ def run():
           and cov["words_in_divergence_regions"] == 6,
           json.dumps(cov))
 
+    metric_words = [
+        {"secondary_word": "a", "state": "confirmed"},
+        {"secondary_word": "b", "state": "probable"},
+        {"secondary_word": "c", "state": "tokenization_equivalent"},
+        {"secondary_word": "x", "state": "conflicting"},
+    ]
+    metric_cov = a.build_coverage_stats(
+        [{"start": 0.0, "end": 1.0, "word": "a"}], [],
+        metric_words, duration_sec=2.0,
+    )
+    check("coverage separates lexical agreement from confirmation rate",
+          metric_cov["lexical_agreement_pct"] == 0.75
+          and metric_cov["high_confidence_confirmation_pct"] == 0.25
+          and metric_cov["model_agreement_pct"] == 0.75,
+          json.dumps(metric_cov))
+    metric_asr = m.build_asr_consensus({
+        "status": "complete",
+        "coverage": metric_cov,
+        "word_consensus": [],
+        "secondary_only_words": [],
+        "conflicts": [],
+        "reruns_executed": [],
+        "rerun_windows": [],
+        "hallucination_risk_words": [],
+        "proper_noun_risk_words": [],
+    })
+    metric_claims = [f["claim"] for f in metric_asr["findings"]]
+    check("ASR report names both metrics without calling 51% agreement",
+          any("Lexical agreement" in claim for claim in metric_claims)
+          and any("High-confidence cross-model confirmation" in claim
+                  for claim in metric_claims)
+          and not any("Model agreement on matched words" in claim
+                      for claim in metric_claims),
+          json.dumps(metric_claims))
+
     # ------------------------------------------------------------------
     # 3.6b. Proper-noun filter: name-like tokens only.
     # ------------------------------------------------------------------
@@ -514,6 +627,11 @@ def run():
     check("lowercase pronoun-like common word is never flagged",
           a.compute_proper_noun_risk({
               "word": "him", "start": 1.0, "end": 1.4,
+              "sentence_initial": False,
+          }) is None)
+    check("first-person contraction is never a proper-noun candidate",
+          a.compute_proper_noun_risk({
+              "word": "I'm", "start": 1.0, "end": 1.4,
               "sentence_initial": False,
           }) is None)
 

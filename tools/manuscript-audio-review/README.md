@@ -203,6 +203,24 @@ Phase 3.6 fixes (from real-task failures):
 - **REVIEW_ME wording** -- STRONG findings are "HIGH PRIORITY — strong
   evidence", never "safe defaults".
 
+Real-task follow-up hardening:
+
+- **Tokenization-equivalent ASR matching** -- concatenated token groups such as
+  `shitface` versus `shit` + `face`, `goodbye` versus `good bye`, and similar
+  contractions are classified as `tokenization_equivalent`, not conflicts.
+- **Speech-gated clip tails** -- a long tail triggers an ASR rerun only when
+  VAD/diarization independently supports continued speech; otherwise it gets a
+  listen-only `clip_tail_check`.
+- **Separate ASR metrics** -- reports distinguish lexical agreement from
+  high-confidence cross-model confirmation; neither is presented as transcript
+  accuracy.
+- **Peak-level transient explanation** -- mixed detector regions split at
+  speech/source boundaries, preserving an unexplained chair scrape or impact
+  beside speech-associated energy. `chair_scrape` and `furniture_scrape` are
+  controlled sound classes with dedicated CLAP prompts.
+- **Contraction-safe proper nouns** -- first-person and common contractions such
+  as `I'm`, `We're`, and `You're` never become name-risk findings.
+
 ## Reviewer environment
 
 Pinned direct packages:

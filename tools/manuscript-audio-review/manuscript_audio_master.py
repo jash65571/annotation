@@ -482,6 +482,7 @@ def build_asr_consensus(asr_consensus, independent_speech_regions=None):
             "word_consensus": [],
             "conflicts": [],
             "rerun_windows": [],
+            "clip_tail_check": None,
             "findings": findings,
             "policy": "Fails soft: base packet is unaffected when the "
                       "secondary model cannot run.",
@@ -655,6 +656,20 @@ def build_asr_consensus(asr_consensus, independent_speech_regions=None):
             )
         )
 
+    tail_check = asr_consensus.get("clip_tail_check")
+    if tail_check:
+        findings.append(
+            finding(
+                "Clip-tail listen check: the primary transcript ends before "
+                f"the media tail ({tail_check['start']}-{tail_check['end']}s), "
+                "but independent speech evidence does not continue there.",
+                MEDIUM,
+                ["VAD/diarization: no speech support in the tail"],
+                tail_check["action"],
+                window=(tail_check["start"], tail_check["end"]),
+            )
+        )
+
     if asr_consensus.get("reruns_skipped_count", 0) > 0:
         findings.append(
             finding(
@@ -666,20 +681,51 @@ def build_asr_consensus(asr_consensus, independent_speech_regions=None):
             )
         )
 
-    agreement = coverage.get("model_agreement_pct")
+    lexical_agreement = coverage.get(
+        "lexical_agreement_pct", coverage.get("model_agreement_pct")
+    )
+    high_confidence_confirmation = coverage.get(
+        "high_confidence_confirmation_pct"
+    )
 
-    if agreement is not None:
-        tier = STRONG if agreement >= 0.85 else MEDIUM if agreement >= 0.6 else WEAK
+    if lexical_agreement is not None:
+        tier = (
+            STRONG if lexical_agreement >= 0.85
+            else MEDIUM if lexical_agreement >= 0.6
+            else WEAK
+        )
         findings.append(
             finding(
-                f"Model agreement on matched words: {agreement:.0%}.",
+                f"Lexical agreement between ASR models: {lexical_agreement:.0%}.",
                 tier,
                 [
                     f"primary words: {asr_consensus.get('primary_word_count')}",
                     f"secondary words: {asr_consensus.get('secondary_word_count')}",
+                    "tokenization-equivalent matches count as lexical agreement",
                 ],
-                "High agreement supports the transcript; it does not "
-                "replace listening to flagged windows.",
+                "Lexical agreement supports the wording comparison; still "
+                "listen to explicit conflicts and low-confidence words.",
+            )
+        )
+
+    if high_confidence_confirmation is not None:
+        tier = (
+            STRONG if high_confidence_confirmation >= 0.85
+            else MEDIUM if high_confidence_confirmation >= 0.6
+            else WEAK
+        )
+        findings.append(
+            finding(
+                "High-confidence cross-model confirmation: "
+                f"{high_confidence_confirmation:.0%}.",
+                tier,
+                [
+                    "same-text matches whose primary confidence meets the "
+                    "confirmation threshold",
+                ],
+                "This is an engineering confidence signal, not transcript "
+                "accuracy. Do not treat a low value as proof the words are "
+                "wrong; listen to the flagged windows.",
             )
         )
 
@@ -697,6 +743,7 @@ def build_asr_consensus(asr_consensus, independent_speech_regions=None):
         "conflicts": asr_consensus.get("conflicts", []),
         "divergence_regions": asr_consensus.get("divergence_regions", []),
         "rerun_windows": asr_consensus.get("rerun_windows", []),
+        "clip_tail_check": asr_consensus.get("clip_tail_check"),
         "reruns_executed": asr_consensus.get("reruns_executed", []),
         "hallucination_risk_words": asr_consensus.get("hallucination_risk_words", []),
         "proper_noun_risk_words": asr_consensus.get("proper_noun_risk_words", []),
@@ -1778,8 +1825,10 @@ def build_review_me(sections, evidence):
         add()
         add("## ASR CONSENSUS (secondary model cross-check)")
         add(
-            f"Model agreement on matched words: "
-            f"{asr_coverage.get('model_agreement_pct')}. "
+            f"Lexical agreement: "
+            f"{asr_coverage.get('lexical_agreement_pct', asr_coverage.get('model_agreement_pct'))}. "
+            f"High-confidence confirmation: "
+            f"{asr_coverage.get('high_confidence_confirmation_pct')}. "
             f"Word disagreements: {asr_coverage.get('word_disagreement_count')}. "
             f"Recovered gap (speech secondary caught, primary missed): "
             f"{asr_coverage.get('uncovered_speech_duration_sec')}s "

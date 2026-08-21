@@ -700,6 +700,28 @@ def build_review_queue():
                 ),
             })
 
+    # A long tail without independent speech is a listen-only safety check,
+    # not an automatic ASR rerun. The ASR stage writes this explicitly so the
+    # queue preserves the check without trusting a hallucinated tail transcript.
+    if ASR_CONSENSUS.exists():
+        try:
+            with ASR_CONSENSUS.open("r", encoding="utf-8-sig") as f:
+                asr_consensus = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            asr_consensus = {}
+        tail_check = asr_consensus.get("clip_tail_check")
+        if tail_check:
+            windows.append({
+                "priority": "medium",
+                "type": "clip_tail_check",
+                "start": round(clamp(float(tail_check["start"]), 0.0, duration), 3),
+                "end": round(clamp(float(tail_check["end"]), 0.0, duration), 3),
+                "description": tail_check.get(
+                    "action",
+                    "Confirm the clip tail is genuinely non-speech.",
+                ),
+            })
+
     for boundary in evidence.get("continuity_boundaries", []):
         if not boundary.get("manual_review_required"):
             continue

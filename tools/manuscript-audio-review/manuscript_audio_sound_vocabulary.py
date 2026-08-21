@@ -40,7 +40,7 @@ CANDIDATE_CLASSES = {
         # click, and a knock are different acoustic sources (O1 can be the
         # physical door while the chime is a different source).
         "door_open_close", "doorbell_chime", "door_latch_click", "door_knock",
-        "handling_noise",
+        "chair_scrape", "furniture_scrape", "handling_noise",
     ),
     MUSIC: (
         "music", "background_music", "instrumental_music",
@@ -129,6 +129,12 @@ RAW_LABEL_MAP = (
     ("machine", AMBIENCE, "machinery"),
 
     # --- object / SFX ---
+    ("chair scrape", OBJECT_SFX, "chair_scrape"),
+    ("chair scraping", OBJECT_SFX, "chair_scrape"),
+    ("scraping chair", OBJECT_SFX, "chair_scrape"),
+    ("furniture scrape", OBJECT_SFX, "furniture_scrape"),
+    ("furniture scraping", OBJECT_SFX, "furniture_scrape"),
+    ("scrape", OBJECT_SFX, "furniture_scrape"),
     ("metallic click", OBJECT_SFX, "metallic_click"),
     ("metallic", OBJECT_SFX, "metallic_impact"),
     ("clang", OBJECT_SFX, "metallic_impact"),
@@ -190,7 +196,7 @@ def map_raw_label(raw_label):
 # comparable across runs.
 # ---------------------------------------------------------------------------
 
-CLAP_PROMPT_SET_VERSION = "3c-prompts-v2"
+CLAP_PROMPT_SET_VERSION = "3c-prompts-v3-chair-scrape"
 
 CLAP_PROMPTS = (
     {"prompt": "people clapping", "group": HUMAN_NONVERBAL, "candidate_class": "clapping"},
@@ -211,6 +217,8 @@ CLAP_PROMPTS = (
     {"prompt": "a boat engine running", "group": AMBIENCE, "candidate_class": "boat_engine"},
     {"prompt": "a quiet indoor room tone", "group": AMBIENCE, "candidate_class": "room_ambience"},
     {"prompt": "a metallic click or clink", "group": OBJECT_SFX, "candidate_class": "metallic_click"},
+    {"prompt": "a chair scraping across a hard floor", "group": OBJECT_SFX, "candidate_class": "chair_scrape"},
+    {"prompt": "furniture scraping across the floor", "group": OBJECT_SFX, "candidate_class": "furniture_scrape"},
     {"prompt": "footsteps", "group": OBJECT_SFX, "candidate_class": "footsteps"},
     # 3.5: door classes are split -- the physical door open/close, the
     # electronic doorbell chime, a latch click, and a knock are separate

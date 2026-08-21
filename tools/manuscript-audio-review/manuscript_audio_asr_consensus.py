@@ -66,6 +66,8 @@ MATCH_SAME_TEXT_SCORE = 3.0
 MATCH_SAME_TEXT_DRIFTED_SCORE = 1.0
 MATCH_DIFF_TEXT_PENALTY = -0.5
 MATCH_FAR_PENALTY = -2.0
+TOKENIZATION_MAX_PARTS = 3
+TOKENIZATION_CENTER_TOLERANCE_SEC = 0.35
 # Two gaps (-1.6) must always beat one far/apart match (-2.0) so unrelated
 # words are never stretched into an alignment; a real match is still
 # strongly preferred over gapping.
@@ -550,6 +552,115 @@ def _align_word_sequences(primary_words, secondary_words):
     return aligned, primary_gapped, secondary_gapped
 
 
+def _find_tokenization_equivalences(primary_words, secondary_words, aligned,
+                                    primary_gapped, secondary_gapped):
+    """Find safe one-to-many/many-to-one lexical tokenization matches.
+
+    ASR systems commonly emit `shitface` versus `shit` + `face`, or
+    `goodbye` versus `good` + `bye`. These are not semantic disagreements when
+    normalized neighboring tokens concatenate exactly and their timed spans
+    overlap/plausibly align. The returned mapping is deliberately narrow:
+    only adjacent groups of two or three tokens are considered, and a group
+    must be represented in the global alignment or be entirely gapped.
+    """
+    aligned_by_primary = {}
+    for primary_index, secondary_index in aligned:
+        aligned_by_primary.setdefault(primary_index, set()).add(secondary_index)
+
+    candidates = []
+
+    def add_candidate(primary_indices, secondary_indices, kind):
+        primary_start = min(float(primary_words[i]["start"]) for i in primary_indices)
+        primary_end = max(float(primary_words[i]["end"]) for i in primary_indices)
+        secondary_start = min(float(secondary_words[j]["start"]) for j in secondary_indices)
+        secondary_end = max(float(secondary_words[j]["end"]) for j in secondary_indices)
+        center_distance = abs(
+            (primary_start + primary_end) / 2.0
+            - (secondary_start + secondary_end) / 2.0
+        )
+        if (
+            _interval_overlap(primary_start, primary_end, secondary_start, secondary_end) <= 0
+            and center_distance > TOKENIZATION_CENTER_TOLERANCE_SEC
+        ):
+            return
+
+        aligned_hits = sum(
+            1
+            for i in primary_indices
+            for j in aligned_by_primary.get(i, set())
+            if j in secondary_indices
+        )
+        all_secondary_gapped = all(j in secondary_gapped for j in secondary_indices)
+        if not aligned_hits and not all_secondary_gapped:
+            return
+
+        candidates.append({
+            "primary_indices": tuple(primary_indices),
+            "secondary_indices": tuple(secondary_indices),
+            "kind": kind,
+            "aligned_hits": aligned_hits,
+            "center_distance": center_distance,
+        })
+
+    for primary_index, primary in enumerate(primary_words):
+        target = normalize_word(primary["word"])
+        if not target:
+            continue
+        for part_count in range(2, TOKENIZATION_MAX_PARTS + 1):
+            for secondary_start in range(0, len(secondary_words) - part_count + 1):
+                secondary_indices = tuple(
+                    range(secondary_start, secondary_start + part_count)
+                )
+                joined = "".join(
+                    normalize_word(secondary_words[j]["word"])
+                    for j in secondary_indices
+                )
+                if joined == target:
+                    add_candidate(
+                        (primary_index,), secondary_indices, "one_to_many"
+                    )
+
+    for secondary_index, secondary in enumerate(secondary_words):
+        target = normalize_word(secondary["word"])
+        if not target:
+            continue
+        for part_count in range(2, TOKENIZATION_MAX_PARTS + 1):
+            for primary_start in range(0, len(primary_words) - part_count + 1):
+                primary_indices = tuple(
+                    range(primary_start, primary_start + part_count)
+                )
+                joined = "".join(
+                    normalize_word(primary_words[i]["word"])
+                    for i in primary_indices
+                )
+                if joined == target:
+                    add_candidate(
+                        primary_indices, (secondary_index,), "many_to_one"
+                    )
+
+    selected = {}
+    used_primary = set()
+    used_secondary = set()
+    for candidate in sorted(
+        candidates,
+        key=lambda item: (
+            -item["aligned_hits"],
+            item["center_distance"],
+            -len(item["primary_indices"]) - len(item["secondary_indices"]),
+        ),
+    ):
+        if set(candidate["primary_indices"]) & used_primary:
+            continue
+        if set(candidate["secondary_indices"]) & used_secondary:
+            continue
+        for primary_index in candidate["primary_indices"]:
+            selected[primary_index] = candidate
+        used_primary.update(candidate["primary_indices"])
+        used_secondary.update(candidate["secondary_indices"])
+
+    return selected, used_secondary
+
+
 def build_word_consensus(primary_words, secondary_words, primary_segments=None):
     """Classify each primary word by whether the secondary pass agrees.
 
@@ -571,6 +682,19 @@ def build_word_consensus(primary_words, secondary_words, primary_segments=None):
     aligned, primary_gapped, secondary_gapped = _align_word_sequences(
         primary_words, secondary_words
     )
+    tokenization_equivalences, tokenization_secondary_indices = (
+        _find_tokenization_equivalences(
+            primary_words,
+            secondary_words,
+            aligned,
+            primary_gapped,
+            secondary_gapped,
+        )
+    )
+    aligned_by_primary = {
+        primary_index: secondary_index
+        for primary_index, secondary_index in aligned
+    }
 
     sentence_initial = _sentence_initial_indices(primary_words)
 
@@ -579,10 +703,42 @@ def build_word_consensus(primary_words, secondary_words, primary_segments=None):
     for i, pw in enumerate(primary_words):
         primary_score = pw["score"] if pw["score"] is not None else 1.0
 
-        matched = next(
-            (j for pi, j in aligned if pi == i),
-            None,
-        )
+        tokenization = tokenization_equivalences.get(i)
+        matched = aligned_by_primary.get(i)
+
+        if tokenization:
+            secondary_indices = tokenization["secondary_indices"]
+            secondary_group = [secondary_words[j] for j in secondary_indices]
+            secondary_start = min(w["start"] for w in secondary_group)
+            secondary_end = max(w["end"] for w in secondary_group)
+            consensus.append({
+                "word": pw["word"],
+                "start": pw["start"],
+                "end": pw["end"],
+                "segment": pw.get("segment"),
+                "primary_score": pw["score"],
+                "state": "tokenization_equivalent",
+                "secondary_word": " ".join(w["word"] for w in secondary_group),
+                "secondary_words": [w["word"] for w in secondary_group],
+                "secondary_score": min(
+                    w.get("score", 0.0) for w in secondary_group
+                ),
+                "overlap_ratio": round(
+                    overlap_ratio(
+                        pw["start"], pw["end"], secondary_start, secondary_end
+                    ),
+                    3,
+                ),
+                "center_distance_sec": round(
+                    abs(_word_center(pw) - (secondary_start + secondary_end) / 2.0),
+                    3,
+                ),
+                "sentence_initial": i in sentence_initial,
+                "tokenization_equivalent": True,
+                "tokenization_kind": tokenization["kind"],
+                "needs_listen": False,
+            })
+            continue
 
         if matched is None:
             state = (
@@ -603,6 +759,7 @@ def build_word_consensus(primary_words, secondary_words, primary_segments=None):
                 "center_distance_sec": None,
                 "missing_from": "secondary",
                 "needs_listen": True,
+                "tokenization_equivalent": False,
             })
             continue
 
@@ -635,6 +792,7 @@ def build_word_consensus(primary_words, secondary_words, primary_segments=None):
                 abs(_word_center(pw) - _word_center(sw)), 3
             ),
             "sentence_initial": i in sentence_initial,
+            "tokenization_equivalent": False,
             "needs_listen": state in ("conflicting", "probable"),
         }
 
@@ -642,7 +800,7 @@ def build_word_consensus(primary_words, secondary_words, primary_segments=None):
 
     secondary_only_words = []
     for j, sw in enumerate(secondary_words):
-        if j not in secondary_gapped:
+        if j not in secondary_gapped or j in tokenization_secondary_indices:
             continue
         classification = _classify_secondary_only_word(
             sw, primary_words, primary_segments=primary_segments
@@ -858,6 +1016,15 @@ def build_hallucination_risk(
 # that are not names. Keep the proper-noun detector honest by never
 # flagging them on capitalization alone (3.6).
 _MID_SENTENCE_CAPITALIZED_COMMON = frozenset({"happy", "merry"})
+_CONTRACTION_PROPER_NOUN_EXCLUSIONS = frozenset({
+    "i'm", "i've", "i'll", "i'd",
+    "we're", "we've", "we'll", "we'd",
+    "they're", "they've", "they'll", "they'd",
+    "you're", "you've", "you'll", "you'd",
+    "he's", "he'll", "he'd",
+    "she's", "she'll", "she'd",
+    "it's", "it'll", "it'd",
+})
 
 
 def compute_proper_noun_risk(word_entry):
@@ -873,7 +1040,11 @@ def compute_proper_noun_risk(word_entry):
     """
     norm = normalize_word(word_entry["word"])
 
-    if len(norm) < PROPER_NOUN_MIN_LENGTH or norm in _STOPWORDS:
+    if (
+        len(norm) < PROPER_NOUN_MIN_LENGTH
+        or norm in _STOPWORDS
+        or norm in _CONTRACTION_PROPER_NOUN_EXCLUSIONS
+    ):
         return None
     if norm in _MID_SENTENCE_CAPITALIZED_COMMON:
         return None
@@ -929,7 +1100,13 @@ def build_coverage_stats(
     uncovered_recovered = sum(b - a for a, b in secondary_only_spans)
 
     matched = [w for w in word_consensus if w["secondary_word"] is not None]
-    agreeing = [w for w in matched if w["state"] == "confirmed"]
+    lexically_agreeing = [
+        w for w in matched
+        if w["state"] in ("confirmed", "probable", "tokenization_equivalent")
+    ]
+    high_confidence_confirmed = [
+        w for w in matched if w["state"] == "confirmed"
+    ]
 
     # 3.6: words inside a MULTI_STREAM_ASR_DIVERGENCE region are region-level
     # disagreement, not N separate per-word conflicts -- the count the
@@ -955,8 +1132,19 @@ def build_coverage_stats(
         ),
         "uncovered_speech_duration_sec": round(uncovered_recovered, 3),
         "longest_uncovered_region_sec": longest_uncovered,
+        # `model_agreement_pct` is retained as a machine-level compatibility
+        # alias, but reports must use the explicit metrics below. Lexical
+        # agreement means normalized words/tokenizations match; high-confidence
+        # confirmation additionally requires the primary score threshold.
+        "lexical_agreement_pct": (
+            round(len(lexically_agreeing) / len(matched), 3) if matched else None
+        ),
+        "high_confidence_confirmation_pct": (
+            round(len(high_confidence_confirmed) / len(matched), 3)
+            if matched else None
+        ),
         "model_agreement_pct": (
-            round(len(agreeing) / len(matched), 3) if matched else None
+            round(len(lexically_agreeing) / len(matched), 3) if matched else None
         ),
         "word_disagreement_count": per_word_conflicts,
         "words_in_divergence_regions": len(divergence_flags),
@@ -975,6 +1163,39 @@ def build_coverage_stats(
 # ---------------------------------------------------------------------------
 # Rerun-window identification (spec 3A-E/F, hardened in 3A.1-2/3)
 # ---------------------------------------------------------------------------
+
+def build_clip_tail_check(primary_words, duration_sec, independent_speech_regions=None):
+    """Return a listen-only tail check when no independent speech continues.
+
+    A long media tail is not evidence that speech continues. It becomes an ASR
+    rerun candidate only when VAD/diarization independently reaches the tail;
+    otherwise the reviewer gets a conservative non-speech confirmation cue.
+    """
+    if not primary_words or not duration_sec:
+        return None
+
+    last_end = max(float(w["end"]) for w in primary_words)
+    if float(duration_sec) - last_end <= 0.5:
+        return None
+
+    has_independent_tail_speech = any(
+        max(0.0, min(float(duration_sec), float(r_end)) - max(last_end, float(r_start))) > 0.05
+        for r_start, r_end in (independent_speech_regions or [])
+    )
+    if has_independent_tail_speech:
+        return None
+
+    return {
+        "start": round(last_end, 3),
+        "end": round(float(duration_sec), 3),
+        "reason": "no_independent_speech_after_primary_transcript",
+        "action": (
+            "Listen to confirm the clip tail is genuinely non-speech. "
+            "No targeted ASR rerun was executed because VAD/diarization "
+            "did not support continued speech."
+        ),
+    }
+
 
 def _secondary_only_trigger(start, end, independent_speech_regions, duration_sec):
     """Is this secondary-only gap worth an automatic model rerun?
@@ -1065,11 +1286,15 @@ def identify_rerun_windows(
 
     if primary_words and duration_sec:
         last_end = max(w["end"] for w in primary_words)
-        if duration_sec - last_end > 0.5:
+        tail_speech = any(
+            max(0.0, min(float(duration_sec), float(r_end)) - max(last_end, float(r_start))) > 0.05
+            for r_start, r_end in (independent_speech_regions or [])
+        )
+        if duration_sec - last_end > 0.5 and tail_speech:
             raw_candidates.append({
                 "start": last_end, "end": duration_sec,
                 "reason": "clip_end_gap",
-                "trigger": "speech_may_continue_past_transcript_end",
+                "trigger": "independent_speech_reaches_clip_tail",
             })
 
     if independent_speech_regions:
@@ -1209,6 +1434,7 @@ def _unavailable_result(error):
         "reruns_executed": [],
         "hallucination_risk_words": [],
         "proper_noun_risk_words": [],
+        "clip_tail_check": None,
         "policy": (
             "Secondary ASR pass did not complete; the base packet still "
             "generates. Transcript was NOT cross-checked. Treat every "
@@ -1291,6 +1517,9 @@ def write_asr_consensus_evidence(
             excluded_indices=divergence_flags,
             primary_segments=primary_segments,
         )
+        clip_tail_check = build_clip_tail_check(
+            primary_words, duration_sec, independent_speech_regions
+        )
 
         # Words inside a divergence region are region-level, not word-level:
         # they never produce individual hallucination / proper-noun risks.
@@ -1356,6 +1585,7 @@ def write_asr_consensus_evidence(
             "reruns_skipped_count": max(0, skipped),
             "hallucination_risk_words": hallucination_risk_words,
             "proper_noun_risk_words": proper_noun_risk_words,
+            "clip_tail_check": clip_tail_check,
             "policy": (
                 "Cross-model comparison is evidence, not a transcript edit. "
                 "Never auto-insert [uncertain]/[unintelligible]/[inaudible] "
@@ -1374,7 +1604,7 @@ def write_asr_consensus_evidence(
         f"model_load={model_load_sec}s |",
         f"primary={len(primary_words)} words |",
         f"secondary={len(secondary_words)} words |",
-        f"agreement={coverage['model_agreement_pct']} |",
+        f"lexical_agreement={coverage.get('lexical_agreement_pct')} |",
         f"conflicts={len(conflicts)} |",
         f"recovered_gap_sec={coverage['uncovered_speech_duration_sec']} |",
         f"reruns={len(reruns_executed)}/{len(rerun_windows)}",

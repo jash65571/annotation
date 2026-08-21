@@ -175,6 +175,119 @@ def _speech_onset_match(event, onset_times, tolerance_sec=0.2):
     return False
 
 
+def _split_transient_events(feature_events, speech_windows, sound_candidates, speech_onsets):
+    """Split a merged transient wherever its explanation changes.
+
+    Detector windows intentionally overlap to avoid missing impacts. A merged
+    region can therefore contain a chair scrape followed by speech. Partition
+    at speech/named-source boundaries, clip peak provenance to each partition,
+    and classify each partition independently instead of letting any overlap
+    explain the whole merged event.
+    """
+    split_events = []
+
+    for event in feature_events:
+        boundaries = {float(event["start"]), float(event["end"])}
+        for start, end in speech_windows:
+            if event["start"] < end and event["end"] > start:
+                boundaries.add(max(float(event["start"]), float(start)))
+                boundaries.add(min(float(event["end"]), float(end)))
+        for candidate in sound_candidates:
+            if event["start"] < candidate["end"] and event["end"] > candidate["start"]:
+                boundaries.add(max(float(event["start"]), float(candidate["start"])))
+                boundaries.add(min(float(event["end"]), float(candidate["end"])))
+
+        ordered = sorted(boundaries)
+        partitions = []
+        for start, end in zip(ordered, ordered[1:]):
+            if end <= start:
+                continue
+            peaks = []
+            for peak in event.get("peaks", []):
+                peak_start = float(peak["start"])
+                peak_end = float(peak["end"])
+                if peak_end <= start or peak_start >= end:
+                    continue
+                clipped = dict(peak)
+                clipped["start"] = round(max(peak_start, start), 3)
+                clipped["end"] = round(min(peak_end, end), 3)
+                if clipped["end"] > clipped["start"]:
+                    peaks.append(clipped)
+            if not peaks:
+                continue
+
+            named_overlaps = [
+                candidate for candidate in sound_candidates
+                if _overlap(start, end, candidate["start"], candidate["end"]) > 0.05
+                and candidate["tier"] in (STRONG, MEDIUM)
+            ]
+            has_speech = any(
+                _overlap(start, end, speech_start, speech_end) > 0.05
+                for speech_start, speech_end in speech_windows
+            )
+            speech_associated = (
+                has_speech
+                and not named_overlaps
+                and _speech_onset_match(
+                    {"start": start, "end": end, "peaks": peaks},
+                    speech_onsets,
+                )
+            )
+            labels = tuple(sorted({c["semantic_label"] for c in named_overlaps}))
+            key = (labels, has_speech, speech_associated)
+
+            if partitions and partitions[-1]["key"] == key:
+                partitions[-1]["end"] = end
+                partitions[-1]["peaks"].extend(peaks)
+                partitions[-1]["named_overlaps"] = named_overlaps
+            else:
+                partitions.append({
+                    "start": start,
+                    "end": end,
+                    "peaks": peaks,
+                    "key": key,
+                    "named_overlaps": named_overlaps,
+                    "has_speech": has_speech,
+                    "speech_associated": speech_associated,
+                })
+
+        mixed_explanation = (
+            len(partitions) > 1
+            and any(p["has_speech"] for p in partitions)
+            and any(not p["has_speech"] for p in partitions)
+        )
+        for partition in partitions:
+            partition.pop("key", None)
+            peaks = partition["peaks"]
+            partition_tier = (
+                STRONG
+                if any(p.get("tier") == STRONG for p in peaks)
+                else MEDIUM
+            )
+            if mixed_explanation and not partition["has_speech"]:
+                # A strong merged score may be driven by the neighboring
+                # speech portion. Keep the non-speech partition as a real SFX
+                # lead, but do not overstate it as STRONG without separation.
+                partition_tier = MEDIUM
+            partition_event = {
+                **event,
+                "start": round(partition["start"], 3),
+                "end": round(partition["end"], 3),
+                "score": round(max(p["score"] for p in peaks), 3),
+                "tier": partition_tier,
+                "peaks": peaks,
+                "kind": (
+                    "high_energy_acoustic_region"
+                    if partition["end"] - partition["start"] > 1.0
+                    else "transient"
+                ),
+                "_transient_context": partition,
+            }
+            split_events.append(partition_event)
+
+    return split_events
+
+
 def _shot_containing(event_start, event_end, shots):
     best = None
     best_overlap = 0.0
@@ -774,6 +887,12 @@ def _build_transients(
         return {"events": [], "findings": [], "status": "no_features"}
 
     events = build_transient_events(feature_windows)
+    events = _split_transient_events(
+        events,
+        speech_windows,
+        sound_candidates,
+        speech_onsets or [],
+    )
     out = []
     findings = []
 
@@ -782,15 +901,20 @@ def _build_transients(
         # WEAK/CONFLICT/UNKNOWN sound evidence must never explain or demote
         # a transient -- a WEAK cheering guess (CLAP 0.218) must not turn a
         # real impact into "explained". Speech overlap remains pure context.
-        named_overlaps = [
-            c for c in sound_candidates
-            if c["tier"] in (STRONG, MEDIUM)
-            and _overlap(e["start"], e["end"], c["start"], c["end"]) > 0.05
-        ]
-        has_speech = any(
-            _overlap(e["start"], e["end"], s, t) > 0.05
-            for s, t in speech_windows
-        )
+        context = e.pop("_transient_context", None) or {}
+        named_overlaps = context.get("named_overlaps")
+        if named_overlaps is None:
+            named_overlaps = [
+                c for c in sound_candidates
+                if c["tier"] in (STRONG, MEDIUM)
+                and _overlap(e["start"], e["end"], c["start"], c["end"]) > 0.05
+            ]
+        has_speech = context.get("has_speech")
+        if has_speech is None:
+            has_speech = any(
+                _overlap(e["start"], e["end"], s, t) > 0.05
+                for s, t in speech_windows
+            )
 
         # 3.5: only a NAMED sound candidate truly explains a transient.
         # Co-occurring speech is context, not an explanation -- a punch
@@ -802,11 +926,13 @@ def _build_transients(
             explained_by.append("speech")
 
         explained = bool(named_overlaps)
-        speech_associated = (
-            has_speech
-            and not named_overlaps
-            and _speech_onset_match(e, speech_onsets or [])
-        )
+        speech_associated = context.get("speech_associated")
+        if speech_associated is None:
+            speech_associated = (
+                has_speech
+                and not named_overlaps
+                and _speech_onset_match(e, speech_onsets or [])
+            )
         if speech_associated:
             explained_by.append("speech_onset")
 
