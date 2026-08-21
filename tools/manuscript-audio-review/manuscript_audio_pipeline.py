@@ -32,7 +32,7 @@ from manuscript_audio_queue import merge_transcript_review_windows
 from manuscript_audio_ui import enrich_evidence_with_ui_candidates
 from manuscript_audio_voice import enrich_evidence_with_voice_profiles
 from manuscript_audio_optional import run_optional_evidence
-from manuscript_audio_task_identity import write_video_identity
+from manuscript_audio_task_identity import load_bound_json, write_video_identity
 from manuscript_audio_seed import parse_seed_text, write_task_context
 from manuscript_audio_asr_consensus import write_asr_consensus_evidence
 from manuscript_audio_face_worker import write_face_track_evidence
@@ -122,11 +122,48 @@ def transcribe_boosted_primary(whisperx_python, audio_path):
     }
 
 
+def parse_source_streams(streams):
+    """Normalize ffprobe audio/video streams without inventing metadata."""
+    out = {}
+    for stream in streams or []:
+        stream_type = stream.get("codec_type")
+        if stream_type == "audio":
+            if stream.get("sample_rate"):
+                out["source_sample_rate"] = int(stream["sample_rate"])
+            if stream.get("channels") is not None:
+                out["audio_channels"] = int(stream["channels"])
+            if stream.get("codec_name"):
+                out["audio_codec"] = stream["codec_name"]
+        elif stream_type == "video":
+            width = stream.get("width")
+            height = stream.get("height")
+            if width is not None and height is not None:
+                out["resolution"] = f"{int(width)}x{int(height)}"
+            rate = stream.get("avg_frame_rate") or stream.get("r_frame_rate")
+            if rate and rate != "0/0":
+                numerator, separator, denominator = str(rate).partition("/")
+                try:
+                    value = float(numerator)
+                    if separator:
+                        value /= float(denominator)
+                    out["fps"] = round(value, 6)
+                except (TypeError, ValueError, ZeroDivisionError):
+                    pass
+            if stream.get("nb_frames") not in (None, "N/A"):
+                try:
+                    out["frame_count"] = int(stream["nb_frames"])
+                except (TypeError, ValueError):
+                    pass
+            if stream.get("codec_name"):
+                out["video_codec"] = stream["codec_name"]
+    return out
+
+
 def probe_source_audio(video_path):
-    """Best-effort ffprobe of the ORIGINAL video's audio stream. Returns
-    {"source_sample_rate", "audio_channels", "audio_codec"} or {} when
-    ffprobe cannot read the stream. Never raises -- the master must still
-    generate when this is unavailable.
+    """Best-effort ffprobe of the ORIGINAL source media streams.
+
+    The historic function name is retained for compatibility, but it now
+    captures video integrity metadata too. It never raises.
     """
     try:
         result = subprocess.run(
@@ -134,10 +171,9 @@ def probe_source_audio(video_path):
                 "ffprobe",
                 "-v",
                 "error",
-                "-select_streams",
-                "a:0",
                 "-show_entries",
-                "stream=sample_rate,channels,codec_name",
+                "stream=codec_type,codec_name,sample_rate,channels,width,height,"
+                "avg_frame_rate,r_frame_rate,nb_frames",
                 "-of",
                 "json",
                 str(video_path),
@@ -149,18 +185,7 @@ def probe_source_audio(video_path):
         )
         if result.returncode != 0:
             return {}
-        streams = json.loads(result.stdout).get("streams", [])
-        if not streams:
-            return {}
-        stream = streams[0]
-        out = {}
-        if stream.get("sample_rate"):
-            out["source_sample_rate"] = int(stream["sample_rate"])
-        if stream.get("channels") is not None:
-            out["audio_channels"] = int(stream["channels"])
-        if stream.get("codec_name"):
-            out["audio_codec"] = stream["codec_name"]
-        return out
+        return parse_source_streams(json.loads(result.stdout).get("streams", []))
     except Exception:  # noqa: BLE001 -- best-effort, never break the pipeline
         return {}
 
@@ -204,6 +229,27 @@ def run_seed_ingestion(seed_path):
 
     print("Task context:", CONTEXT)
     return result
+
+
+def require_current_task_context(current_video_sha256):
+    """Return the current task context or fail closed on stale state.
+
+    This is intentionally called even when task_context.json exists. File
+    existence alone is not provenance: the workspace is reused between
+    clips, so an unbound or differently-bound seed must never reach analysis.
+    """
+    bound_context = load_bound_json(
+        CONTEXT,
+        current_video_sha256,
+        "TASK SEED",
+    )
+    if bound_context is None:
+        raise RuntimeError(
+            "No task seed is bound to this video. Pass the current "
+            "locked task seed as the second argument; a task_context.json "
+            "from another clip is never reused."
+        )
+    return bound_context
 
 
 def preprocess_source_video(video=None):
@@ -441,6 +487,7 @@ def preprocess_source_video(video=None):
         )
 
     print("SOURCE PREPROCESSING: PASS")
+    return identity
 
 
 def run_analyzer():
@@ -1203,14 +1250,15 @@ def main():
     video_arg = sys.argv[1] if len(sys.argv) >= 2 else None
     seed_arg = sys.argv[2] if len(sys.argv) >= 3 else None
 
-    preprocess_source_video(video_arg)
+    identity = preprocess_source_video(video_arg)
 
     if seed_arg:
         run_seed_ingestion(seed_arg)
-    elif CONTEXT.exists():
+    else:
+        require_current_task_context(identity["video_sha256"])
         print(
-            "\nTASK SEED: using existing task_context.json "
-            "(no seed.txt argument was passed).\n"
+            "\nTASK SEED: using task_context.json verified against "
+            "the current video fingerprint.\n"
         )
 
     run_analyzer()
@@ -1271,10 +1319,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
 
 
 

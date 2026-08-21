@@ -514,4 +514,33 @@ stay UNKNOWN, late speech is recovered). Run it any time — no video, no models
 .\.venv-review\Scripts\python.exe test_3b_diarization_face_mapping.py
 .\.venv-review\Scripts\python.exe test_3c_sound_fusion.py
 .\.venv-review\Scripts\python.exe test_3e_accuracy_gate.py
+.\.venv-review\Scripts\python.exe test_3f_run_provenance.py
 ```
+
+### Run provenance safeguards
+
+The working directory is reused, so every clip-specific human input is bound
+to the source video's SHA-256 fingerprint. If no seed argument is supplied,
+the pipeline only accepts an existing `task_context.json` whose fingerprint
+matches the current video; otherwise it stops and asks for the current locked
+task seed. `speaker_map.json`, the evidence ledger, and the Cast audit follow
+the same rule. This prevents Cast, Objects, shots, or confirmed decisions from
+leaking from a previous clip.
+
+The accuracy ledger contains atomic, listenable claims. Grouped report prose
+and engineering-only ASR metrics remain useful in `REVIEW_ME.md`, but they do
+not become delivery blockers.
+
+### Browser-grid and speech-confusion safeguards
+
+Face detection retries browser captures, collages, and picture-in-picture
+layouts as independent still frames and overlapping tiles, then removes
+duplicate detections before tracking. This improves recall without promoting
+mouth motion into a character identity or STRONG active-speaker claim.
+
+Long cough/laughter/reaction classifications that are mostly covered by
+independent speech evidence are kept as CONFLICT listening leads instead of
+UI Sound suggestions. Likewise, long non-impact energy regions dominated by
+speech stay in the evidence packet as `speech_associated_energy`, not as
+independent transient/SFX review items. Impact-shaped peaks remain reviewable
+even when dialogue overlaps them.

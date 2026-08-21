@@ -9,6 +9,8 @@ Pure standard library. No model dependency -- fully unit-testable without
 PANNs/CLAP installed.
 """
 
+import re
+
 # ---------------------------------------------------------------------------
 # Controlled vocabulary groups (spec 3C.1)
 # ---------------------------------------------------------------------------
@@ -65,8 +67,8 @@ DEFAULT_UI_SOURCE = "Unidentified sound"
 # ---------------------------------------------------------------------------
 # Raw label -> candidate class mapping (spec 3C.2)
 #
-# Each entry: (substring-to-match-in-lowercased-raw-label, group, class).
-# Order matters: first match wins, so more specific substrings are listed
+# Each entry: (token/phrase-to-match-in-lowercased-raw-label, group, class).
+# Order matters: first match wins, so more specific phrases are listed
 # before broader ones (e.g. "background music" before "music").
 # ---------------------------------------------------------------------------
 
@@ -183,8 +185,18 @@ def map_raw_label(raw_label):
 
     name = raw_label.strip().lower()
 
-    for substring, group, candidate_class in RAW_LABEL_MAP:
-        if substring in name:
+    for phrase, group, candidate_class in RAW_LABEL_MAP:
+        # Whole-token boundaries are essential. The former substring match
+        # turned the AudioSet label ``Train`` into ``rain`` and ``human``
+        # labels could match ``hum``. Punctuation between words remains
+        # flexible so labels such as ``Inside, small room`` still match.
+        tokens = re.findall(r"[a-z0-9]+", phrase.lower())
+        if not tokens:
+            continue
+        pattern = r"(?<![a-z0-9])" + r"[^a-z0-9]+".join(
+            re.escape(token) for token in tokens
+        ) + r"(?![a-z0-9])"
+        if re.search(pattern, name):
             return (group, candidate_class)
 
     return None

@@ -109,6 +109,49 @@ def _overlap(a_start, a_end, b_start, b_end):
     return max(0.0, min(a_end, b_end) - max(a_start, b_start))
 
 
+def _speech_overlap_ratio(start, end, speech_windows):
+    """Unioned speech coverage for one acoustic window."""
+    duration = max(0.0, float(end) - float(start))
+    if duration <= 0:
+        return 0.0
+    clipped = sorted(
+        (max(float(start), float(left)), min(float(end), float(right)))
+        for left, right in speech_windows
+        if min(float(end), float(right)) > max(float(start), float(left))
+    )
+    merged = []
+    for left, right in clipped:
+        if merged and left <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], right))
+        else:
+            merged.append((left, right))
+    return min(1.0, sum(right - left for left, right in merged) / duration)
+
+
+def _speech_dominated_energy_match(event, speech_windows):
+    """True for long, non-impact-shaped energy mostly covered by speech."""
+    duration = float(event["end"]) - float(event["start"])
+    if duration < 0.75:
+        return False
+    if _speech_overlap_ratio(event["start"], event["end"], speech_windows) < 0.70:
+        return False
+    raw_peaks = [
+        peak.get("raw_features", {}) or {}
+        for peak in event.get("peaks", [])
+        if peak.get("raw_features")
+    ]
+    if not raw_peaks:
+        return False
+    # Retain impact-like regions for high-priority listening. The real false
+    # positives found in speech had low crest and small energy jumps despite
+    # high spectral flux; impacts showed a high crest or large broadband jump.
+    return all(
+        float(raw.get("crest_factor", 0.0)) <= 10.0
+        and float(raw.get("energy_change_db", 0.0)) <= 20.0
+        for raw in raw_peaks
+    )
+
+
 def _asr_words_lost_in_window(asr_consensus, start, end):
     """None (unknown / not evaluated), False (coverage stayed intact), or
     True (words disappeared/disagreed during the overlap)."""
@@ -228,9 +271,15 @@ def _split_transient_events(feature_events, speech_windows, sound_candidates, sp
             speech_associated = (
                 has_speech
                 and not named_overlaps
-                and _speech_onset_match(
-                    {"start": start, "end": end, "peaks": peaks},
-                    speech_onsets,
+                and (
+                    _speech_onset_match(
+                        {"start": start, "end": end, "peaks": peaks},
+                        speech_onsets,
+                    )
+                    or _speech_dominated_energy_match(
+                        {"start": start, "end": end, "peaks": peaks},
+                        speech_windows,
+                    )
                 )
             )
             labels = tuple(sorted({c["semantic_label"] for c in named_overlaps}))
@@ -249,6 +298,9 @@ def _split_transient_events(feature_events, speech_windows, sound_candidates, sp
                     "named_overlaps": named_overlaps,
                     "has_speech": has_speech,
                     "speech_associated": speech_associated,
+                    "speech_overlap_ratio": round(
+                        _speech_overlap_ratio(start, end, speech_windows), 3
+                    ),
                 })
 
         mixed_explanation = (
@@ -515,6 +567,25 @@ def _enrich_sound_candidate(cand, index, supporting, panns_windows):
     if candidate_class not in UI_SOURCE_MAP and ui_source == DEFAULT_UI_SOURCE:
         source_candidate = DEFAULT_UI_SOURCE
 
+    evidence = [
+        f"{s['source']} {candidate_class} score {s['score']}"
+        for s in cand["signals"]
+    ]
+    speech_contamination = cand.get("speech_contamination_conflict", False)
+    if speech_contamination:
+        evidence.append(
+            "candidate overlaps independently detected speech for "
+            f"{round(100 * cand.get('speech_overlap_ratio', 0.0), 1)}% "
+            "of its window"
+        )
+        reviewer_action = (
+            "Vocal classifier evidence conflicts with speech coverage. "
+            "Listen for a separate non-speech vocalization; do not create "
+            "a Sound event from this candidate alone."
+        )
+    else:
+        reviewer_action = _reviewer_action_for(tier, source_candidate)
+
     return {
         "id": cand_id,
         "semantic_label": _semantic_label(candidate_class),
@@ -527,10 +598,7 @@ def _enrich_sound_candidate(cand, index, supporting, panns_windows):
         "shots": shots_list,
         "tier": tier,
         "signals": cand["signals"],
-        "evidence": [
-            f"{s['source']} {candidate_class} score {s['score']}"
-            for s in cand["signals"]
-        ],
+        "evidence": evidence,
         "raw_labels": cand["raw_labels"],
         "provenance": {
             "panns": [
@@ -543,7 +611,7 @@ def _enrich_sound_candidate(cand, index, supporting, panns_windows):
             ],
             "raw_source_file": "analysis/sound_events_raw.json",
         },
-        "reviewer_action": _reviewer_action_for(tier, source_candidate),
+        "reviewer_action": reviewer_action,
         "ui_source_candidate": ui_source,
         "description_candidate": description,
         "recorded_level_candidate": level["level"] if level else None,
@@ -551,6 +619,8 @@ def _enrich_sound_candidate(cand, index, supporting, panns_windows):
         "mix_role_candidate": mix_role,
         "relationship_candidates": relationships,
         "overlaps_speech": cand.get("overlaps_speech", False),
+        "speech_overlap_ratio": cand.get("speech_overlap_ratio", 0.0),
+        "speech_contamination_conflict": speech_contamination,
         "is_nonverbal": cand.get("is_nonverbal", False),
     }
 
@@ -958,6 +1028,7 @@ def _build_transients(
             "explained_by": explained_by,
             "unexplained": not explained and not speech_associated,
             "speech_associated": speech_associated,
+            "speech_overlap_ratio": context.get("speech_overlap_ratio", 0.0),
             "overlaps_speech": has_speech,
             "explained_by_named_sound": explained,
             "shot": primary_shot,

@@ -21,6 +21,8 @@ import json
 import re
 
 from manuscript_audio_accuracy_gate import build_accuracy_gate
+from manuscript_audio_task_identity import load_bound_json
+from manuscript_audio_voice import load_speaker_map
 
 
 ROOT = Path(__file__).resolve().parent
@@ -178,6 +180,10 @@ def build_media(evidence, identity):
         "source_sample_rate": identity.get("source_sample_rate"),
         "audio_channels": identity.get("audio_channels"),
         "audio_codec": identity.get("audio_codec"),
+        "resolution": identity.get("resolution"),
+        "fps": identity.get("fps"),
+        "frame_count": identity.get("frame_count"),
+        "video_codec": identity.get("video_codec"),
     }
 
     not_yet = [
@@ -187,7 +193,7 @@ def build_media(evidence, identity):
             "fps",
             "frame_count",
         )
-        if key not in media
+        if present.get(key) is None
     ]
 
     return {
@@ -372,7 +378,10 @@ def build_character_mapping(evidence, coverage, diarization, speaker_map):
     findings = []
 
     profiles = evidence.get("character_voice_profiles", {})
-    mapping = speaker_map.get("segments", {}) if speaker_map else {}
+    if speaker_map and "segments" in speaker_map:
+        mapping = speaker_map.get("segments", {})
+    else:
+        mapping = speaker_map or {}
 
     for character, profile in sorted(profiles.items()):
         findings.append(
@@ -397,8 +406,8 @@ def build_character_mapping(evidence, coverage, diarization, speaker_map):
 
     character_cluster = {}
 
-    for seg_str, character in mapping.items():
-        cluster = segment_speakers.get(int(seg_str))
+    for seg_key, character in mapping.items():
+        cluster = segment_speakers.get(int(seg_key))
         if cluster:
             character_cluster.setdefault(character, set()).add(cluster)
 
@@ -1282,7 +1291,14 @@ def build_clip_boundaries(evidence, coverage):
 
         trailing = duration - last_end
 
-        if coverage.get("untranscribed_regions"):
+        late_regions = [
+            region
+            for region in coverage.get("untranscribed_regions", []) or []
+            if float(region.get("end", 0.0)) > last_end
+            and float(region.get("start", 0.0)) < duration
+        ]
+
+        if late_regions and trailing > 0.05:
             findings.append(
                 finding(
                     "Speech continues after the last ASR word; the clip does "
@@ -1291,7 +1307,11 @@ def build_clip_boundaries(evidence, coverage):
                     [
                         f"last ASR end {last_end}s",
                         f"media duration {duration}s",
-                        "untranscribed speech regions present",
+                        "late untranscribed speech region present: "
+                        + ", ".join(
+                            f"{region['start']}-{region['end']}s"
+                            for region in late_regions
+                        ),
                     ],
                     "Transcribe the late speech. A visual cut is not an audio "
                     "cutoff.",
@@ -1628,8 +1648,12 @@ def build_packet():
     queue = load(QUEUE, [])
     validator = load(VALIDATOR, {})
     identity = load(VIDEO_IDENTITY, {})
-    context = load(CONTEXT, {})
-    speaker_map = load(SPEAKER_MAP, {})
+    video_sha256 = identity.get("video_sha256")
+    context = (
+        load_bound_json(CONTEXT, video_sha256, "MASTER TASK CONTEXT")
+        if video_sha256 else None
+    ) or {"characters": [], "objects": [], "shots": []}
+    speaker_map = load_speaker_map(SPEAKER_MAP, video_sha256)
     vad = load(VAD, {})
     asr_consensus = load(ASR_CONSENSUS, {"status": "unavailable"})
     speaker_face_mapping = load(SPEAKER_FACE_MAPPING, {"status": "unavailable"})
@@ -1711,10 +1735,19 @@ def build_packet():
     sections["ranked_findings"] = deduped_findings
     sections["raw_findings"] = all_findings
 
+    previous_claims = (
+        load_bound_json(CLAIM_LEDGER, video_sha256, "CLAIM LEDGER")
+        if video_sha256 else None
+    )
+    previous_cast = (
+        load_bound_json(CAST_AUDIT, video_sha256, "CAST AUDIT")
+        if video_sha256 else None
+    )
     sections["accuracy_gate"] = build_accuracy_gate(
         sections,
-        previous_claims=load(CLAIM_LEDGER, {}),
-        previous_cast=load(CAST_AUDIT, {}),
+        previous_claims=previous_claims,
+        previous_cast=previous_cast,
+        video_sha256=video_sha256,
     )
 
     return sections, evidence

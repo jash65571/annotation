@@ -57,11 +57,11 @@ def diagnostic_code_for_exception(exc):
     return "worker_failed"
 
 
-def _bbox_from_landmarks(landmarks, width, height):
+def _bbox_from_landmarks(landmarks, width, height, x_offset=0, y_offset=0):
     xs = [p.x for p in landmarks]
     ys = [p.y for p in landmarks]
-    x0, x1 = min(xs) * width, max(xs) * width
-    y0, y1 = min(ys) * height, max(ys) * height
+    x0, x1 = min(xs) * width + x_offset, max(xs) * width + x_offset
+    y0, y1 = min(ys) * height + y_offset, max(ys) * height + y_offset
     return [round(x0, 1), round(y0, 1), round(x1 - x0, 1), round(y1 - y0, 1)]
 
 
@@ -94,6 +94,35 @@ def _mouth_aspect_ratio(landmarks, width, height):
     return round(vertical / horizontal, 4) if horizontal > 0 else 0.0
 
 
+def _dedupe_face_detections(faces, threshold=0.45):
+    """Remove duplicate faces created by overlapping fallback crops."""
+    kept = []
+    for face in sorted(
+        faces,
+        key=lambda item: item["bbox"][2] * item["bbox"][3],
+        reverse=True,
+    ):
+        if any(_iou(face["bbox"], prior["bbox"]) >= threshold for prior in kept):
+            continue
+        kept.append(face)
+    return kept
+
+
+def _faces_from_result(result, width, height, x_offset=0, y_offset=0):
+    faces = []
+    if not result.multi_face_landmarks:
+        return faces
+    for face_landmarks in result.multi_face_landmarks:
+        landmarks = face_landmarks.landmark
+        faces.append({
+            "bbox": _bbox_from_landmarks(
+                landmarks, width, height, x_offset=x_offset, y_offset=y_offset
+            ),
+            "mar": _mouth_aspect_ratio(landmarks, width, height),
+        })
+    return faces
+
+
 def _extract_frame_faces(video_path, fps, max_num_faces=4, min_detection_confidence=0.5):
     import cv2
     import mediapipe as mp
@@ -114,13 +143,21 @@ def _extract_frame_faces(video_path, fps, max_num_faces=4, min_detection_confide
     frames = []
     mp_face_mesh = mp.solutions.face_mesh
 
+    fallback_frame_count = 0
+
     with mp_face_mesh.FaceMesh(
         static_image_mode=False,
         max_num_faces=max_num_faces,
         refine_landmarks=True,
         min_detection_confidence=min_detection_confidence,
         min_tracking_confidence=min_detection_confidence,
-    ) as face_mesh:
+    ) as face_mesh, mp_face_mesh.FaceMesh(
+        static_image_mode=True,
+        max_num_faces=max_num_faces,
+        refine_landmarks=True,
+        min_detection_confidence=min(0.35, min_detection_confidence),
+        min_tracking_confidence=min(0.35, min_detection_confidence),
+    ) as fallback_mesh:
         frame_index = 0
 
         while True:
@@ -138,14 +175,34 @@ def _extract_frame_faces(video_path, fps, max_num_faces=4, min_detection_confide
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 result = face_mesh.process(rgb)
 
-                faces = []
-                if result.multi_face_landmarks:
-                    for face_landmarks in result.multi_face_landmarks:
-                        landmarks = face_landmarks.landmark
-                        faces.append({
-                            "bbox": _bbox_from_landmarks(landmarks, width, height),
-                            "mar": _mouth_aspect_ratio(landmarks, width, height),
-                        })
+                faces = _faces_from_result(result, width, height)
+
+                # Browser captures, collages, and picture-in-picture layouts
+                # often defeat FaceMesh's video tracker even when large faces
+                # are plainly visible. Retry as independent still images, then
+                # use overlapping tiles so each embedded face occupies more
+                # pixels. This changes only detection recall; downstream C#
+                # identity and active-speaker caps remain unchanged.
+                if len(faces) < 2:
+                    fallback_frame_count += 1
+                    retry_faces = _faces_from_result(
+                        fallback_mesh.process(rgb), width, height
+                    )
+                    x_ranges = ((0, int(width * 0.60)), (int(width * 0.40), width))
+                    y_ranges = ((0, int(height * 0.65)), (int(height * 0.35), height))
+                    for x0, x1 in x_ranges:
+                        for y0, y1 in y_ranges:
+                            crop = rgb[y0:y1, x0:x1]
+                            if crop.size == 0:
+                                continue
+                            retry_faces.extend(_faces_from_result(
+                                fallback_mesh.process(crop),
+                                x1 - x0,
+                                y1 - y0,
+                                x_offset=x0,
+                                y_offset=y0,
+                            ))
+                    faces = _dedupe_face_detections(faces + retry_faces)
 
                 frames.append({"time": t, "faces": faces})
 
@@ -160,6 +217,8 @@ def _extract_frame_faces(video_path, fps, max_num_faces=4, min_detection_confide
         "width": width,
         "height": height,
         "frames_sampled": len(frames),
+        "fallback_frames": fallback_frame_count,
+        "detector_passes": ["tracking_full", "static_full", "static_tiles"],
     }
 
 

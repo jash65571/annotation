@@ -66,6 +66,11 @@ EVENT_SECTIONS = {
     "clip_boundaries": "clip_boundary_candidate",
 }
 
+NON_MEDIA_METRIC_PREFIXES = (
+    "lexical agreement between asr models:",
+    "high-confidence cross-model confirmation:",
+)
+
 
 def _stable_id(prefix, payload):
     raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
@@ -118,11 +123,39 @@ def build_claim_ledger(sections, previous=None):
     """Build stable claim rows from normalized findings and review windows."""
     prior = _prior_rows(previous)
     rows = []
+    seen = set()
 
-    for finding in sections.get("ranked_findings", []) or []:
+    # The ranked report deliberately groups nearby signals for readability.
+    # A grouped sentence such as "9 related signals in one window" is not a
+    # fact a reviewer can confirm or reject. The ledger therefore consumes
+    # the atomic raw findings when available and only falls back to ranked
+    # findings for older packets/tests.
+    findings = sections.get("raw_findings")
+    if not isinstance(findings, list):
+        findings = sections.get("ranked_findings", []) or []
+
+    for finding in findings:
         section = finding.get("section", "unknown")
         claim = str(finding.get("claim") or "")
         window = _window(finding.get("window"))
+        if (
+            section == "asr_consensus"
+            and window is None
+            and claim.strip().lower().startswith(NON_MEDIA_METRIC_PREFIXES)
+        ):
+            # Useful report diagnostics, but not media claims and therefore
+            # never human-verification blockers.
+            continue
+        dedupe_key = (
+            section,
+            claim,
+            tuple(window or []),
+            finding.get("shot"),
+            tuple(finding.get("shots", []) or []),
+        )
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
         payload = {
             "section": section,
             "claim": claim,
@@ -284,7 +317,12 @@ def build_cast_audit(sections, claim_rows, previous=None):
     return output
 
 
-def build_accuracy_gate(sections, previous_claims=None, previous_cast=None):
+def build_accuracy_gate(
+    sections,
+    previous_claims=None,
+    previous_cast=None,
+    video_sha256=None,
+):
     claims = build_claim_ledger(sections, previous_claims)
     cast = build_cast_audit(sections, claims, previous_cast)
     unresolved_claims = [row["id"] for row in claims if row.get("stop_ship")]
@@ -303,8 +341,16 @@ def build_accuracy_gate(sections, previous_claims=None, previous_cast=None):
             "delivery_blocked_by_unresolved_high_or_medium_claims": True,
             "delivery_blocked_by_incomplete_cast_audit": True,
         },
-        "claim_ledger": {"rows": claims},
-        "cast_vocalization_audit": {"characters": cast},
+        "claim_ledger": {
+            "schema_version": 2,
+            "video_sha256": video_sha256,
+            "rows": claims,
+        },
+        "cast_vocalization_audit": {
+            "schema_version": 2,
+            "video_sha256": video_sha256,
+            "characters": cast,
+        },
         "unresolved_stop_ship_claim_ids": unresolved_claims,
         "incomplete_cast_characters": incomplete_cast,
         "summary": {

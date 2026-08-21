@@ -231,11 +231,47 @@ def build_sound_event_candidates(panns_windows, clap_windows, speech_windows=Non
 
     tracks = collect_candidate_tracks(panns_entries, clap_entries)
 
+    # Long vocal-class windows that mostly coincide with known speech are a
+    # common classifier failure: loud or rough speech can look like coughing,
+    # throat clearing, laughter, or another vocal reaction to both models.
+    # Preserve the lead as CONFLICT, but never let it become a UI default.
+    speech_confusable_vocals = {
+        "laughter", "chuckle", "giggle", "gasp", "sigh", "groan",
+        "scream", "cough", "throat_clearing", "humming",
+        "wordless_vocalization", "speech_babble",
+    }
+
+    def speech_overlap_ratio(start, end):
+        duration = max(0.0, float(end) - float(start))
+        if duration <= 0:
+            return 0.0
+        clipped = sorted(
+            (max(float(start), float(s)), min(float(end), float(e)))
+            for s, e in speech_windows
+            if min(float(end), float(e)) > max(float(start), float(s))
+        )
+        merged = []
+        for left, right in clipped:
+            if merged and left <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], right))
+            else:
+                merged.append((left, right))
+        return min(1.0, sum(right - left for left, right in merged) / duration)
+
     candidates = []
     for candidate_class, entries in tracks.items():
         group = entries[0]["group"]
         for event in merge_track_to_events(entries):
             tier = fuse_confidence(event["panns_max"], event["clap_max"])
+            overlap_ratio = speech_overlap_ratio(event["start"], event["end"])
+            speech_contaminated = (
+                candidate_class in speech_confusable_vocals
+                and event["end"] - event["start"] >= 1.0
+                and overlap_ratio >= 0.55
+                and tier in (STRONG, MEDIUM)
+            )
+            if speech_contaminated:
+                tier = CONFLICT
 
             overlaps_speech = any(
                 _overlap(event["start"], event["end"], s, e) > 0.05
@@ -258,6 +294,8 @@ def build_sound_event_candidates(panns_windows, clap_windows, speech_windows=Non
                 "signals": signals,
                 "raw_labels": event["raw_labels"],
                 "overlaps_speech": overlaps_speech,
+                "speech_overlap_ratio": round(overlap_ratio, 3),
+                "speech_contamination_conflict": speech_contaminated,
                 "is_nonverbal": candidate_class in NONVERBAL_CLASSES,
             })
 
