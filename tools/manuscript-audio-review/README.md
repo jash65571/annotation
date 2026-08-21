@@ -437,15 +437,30 @@ Phase 7). It reads every per-stage evidence file and writes:
 ```text
 analysis\manuscript_audio_review_packet.json   # master: all sections + ranked findings
 analysis\REVIEW_ME.md                          # human-readable summary
+analysis\MASTER.md                             # full one-file evidence packet
 analysis\manuscript_audio_ui_suggestions.json  # sparse, MEDIUM+ UI field suggestions
+analysis\manuscript_audio_evidence_ledger.json # editable claim decisions, stable IDs
+analysis\manuscript_audio_cast_audit.json      # mandatory per-C# sound audit
 ```
 
 Every conclusion carries one shared confidence tier — STRONG / MEDIUM / WEAK /
-CONFLICT / UNKNOWN — plus the signals it came from. `REVIEW_ME.md` groups
-findings into "STRONG (safe defaults)", "NEEDS REVIEW", and "DO NOT
-AUTO-ASSERT". UI suggestions stay sparse on purpose: a field appears only with
-MEDIUM+ evidence; pitch, tone, clarity, texture, and speaking level are left
-blank for human listening.
+CONFLICT / UNKNOWN — plus the signals it came from. STRONG means high-priority
+evidence to verify, never a safe final default. UI suggestions stay sparse on
+purpose: a field appears only with MEDIUM+ evidence; pitch, tone, clarity,
+texture, and speaking level are left blank for human listening.
+
+### Human accuracy gate
+
+The master stage also writes two editable artifacts. The evidence ledger has
+one stable row per ranked claim and targeted review window. Mark each row
+`checked`, then choose `confirmed_included`, `heard_uncertain_marked`,
+`checked_rejected`, or `not_applicable`. Decisions survive reruns while the
+underlying claim remains unchanged.
+
+The Cast audit creates separate checks for speech, laughter, chuckles, gasps,
+sighs, screams, cheers, coughs, humming, audible breaths, wordless reactions,
+other vocalizations, and physical sounds for every carried-over C#. A Voice
+state must not be finalized while any category remains `pending`.
 
 ### Untranscribed-speech detection
 
@@ -481,6 +496,12 @@ character used as a Speech source, a silent object used as a sound source,
 deletion of original cast, numeric timestamps or past tense in Final Audio
 Text, and dialogue missing from the final prose.
 
+For the strict final pass, set `"require_accuracy_gate": true` in the pasted
+state. Each event must then include `"manual_verified": true`; every Speech
+event must include `"tone_reviewed": true`; and `cast_vocalization_audit` must
+contain a completed row for every current C#. The QA blocks `Not observed`
+when the audit confirms an audible vocalization.
+
 ### Regression lock
 
 `test_regression_clip.py` locks the reference applause clip's ground truth and
@@ -489,4 +510,8 @@ stay UNKNOWN, late speech is recovered). Run it any time — no video, no models
 
 ```powershell
 .\.venv-review\Scripts\python.exe test_regression_clip.py
+.\.venv-review\Scripts\python.exe test_3d_accuracy_hardening.py
+.\.venv-review\Scripts\python.exe test_3b_diarization_face_mapping.py
+.\.venv-review\Scripts\python.exe test_3c_sound_fusion.py
+.\.venv-review\Scripts\python.exe test_3e_accuracy_gate.py
 ```

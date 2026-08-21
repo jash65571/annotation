@@ -42,6 +42,8 @@ import json
 import re
 import sys
 
+from manuscript_audio_accuracy_gate import VOCALIZATION_CATEGORIES
+
 
 ROOT = Path(__file__).resolve().parent
 CONTEXT = ROOT / "task_context.json"
@@ -89,6 +91,14 @@ def issue(level, code, message, event=None):
 
 def _blank(value):
     return value is None or (isinstance(value, str) and not value.strip())
+
+
+def _cast_audit_rows(value):
+    if isinstance(value, dict):
+        value = value.get("characters", [])
+    if not isinstance(value, list):
+        return []
+    return [row for row in value if isinstance(row, dict)]
 
 
 def _prose_value(text, vocabulary):
@@ -171,6 +181,7 @@ def run_qa(state, baseline=None):
     cast_current = state.get("cast_current", [])
     objects_current = state.get("objects_current", [])
     silent_objects = {o.upper() for o in state.get("silent_objects", [])}
+    require_accuracy_gate = bool(state.get("require_accuracy_gate"))
 
     problems = []
 
@@ -200,6 +211,19 @@ def run_qa(state, baseline=None):
 
         # Spec 36: required structured fields for a Speech event.
         if etype == "speech":
+            if event.get("tone_reviewed") is False or (
+                require_accuracy_gate and event.get("tone_reviewed") is not True
+            ):
+                problems.append(
+                    issue(
+                        "blocker" if require_accuracy_gate else "review",
+                        "tone_not_reviewed",
+                        f"Speech event {event_id} has not received the required "
+                        "Tone listening check.",
+                        event_id,
+                    )
+                )
+
             if _blank(event.get("transcript")):
                 problems.append(
                     issue(
@@ -209,6 +233,7 @@ def run_qa(state, baseline=None):
                         event_id,
                     )
                 )
+
             for field, label in (
                 ("recorded_level", "recorded level"),
                 ("mix_role", "mix role"),
@@ -249,6 +274,19 @@ def run_qa(state, baseline=None):
                         event_id,
                     )
                 )
+
+        if event.get("manual_verified") is False or (
+            require_accuracy_gate and event.get("manual_verified") is not True
+        ):
+            problems.append(
+                issue(
+                    "blocker" if require_accuracy_gate else "review",
+                    "event_not_manually_verified",
+                    f"Event {event_id} has not been checked against the "
+                    "original audio.",
+                    event_id,
+                )
+            )
 
         # Spec 16/40: a silent object must not be a sounding source.
         if source.upper() in silent_objects:
@@ -330,6 +368,63 @@ def run_qa(state, baseline=None):
                     f"{added} was added but is never the source of an event.",
                 )
             )
+
+    # --- Per-character speech and vocalization audit --------------------
+    audit_rows = _cast_audit_rows(state.get("cast_vocalization_audit"))
+    audit_by_character = {
+        str(row.get("character") or "").upper(): row
+        for row in audit_rows
+        if row.get("character")
+    }
+    voice_states = {
+        str(key).upper(): str(value).strip().lower()
+        for key, value in (state.get("cast_voice_states", {}) or {}).items()
+    }
+    if require_accuracy_gate or audit_rows:
+        for character in sorted(current_cast):
+            row = audit_by_character.get(character)
+            if row is None:
+                problems.append(
+                    issue(
+                        "blocker" if require_accuracy_gate else "review",
+                        "cast_audit_missing",
+                        f"{character} has no per-character vocalization audit.",
+                    )
+                )
+                continue
+
+            checks = row.get("checks", {}) if isinstance(row.get("checks"), dict) else {}
+            pending = []
+            confirmed_vocal = []
+            for category in VOCALIZATION_CATEGORIES:
+                value = checks.get(category, {})
+                status = value.get("status") if isinstance(value, dict) else value
+                if status in (None, "", "pending"):
+                    pending.append(category)
+                if category != "physical_sound" and status == "confirmed_heard":
+                    confirmed_vocal.append(category)
+
+            if pending:
+                problems.append(
+                    issue(
+                        "blocker" if require_accuracy_gate else "review",
+                        "cast_audit_incomplete",
+                        f"{character} still needs checks for: {', '.join(pending)}.",
+                    )
+                )
+
+            if (
+                voice_states.get(character) == "not observed"
+                and confirmed_vocal
+            ):
+                problems.append(
+                    issue(
+                        "blocker",
+                        "not_observed_has_vocalization",
+                        f"{character} is marked Not observed, but the Cast audit "
+                        f"confirms: {', '.join(confirmed_vocal)}.",
+                    )
+                )
 
     # --- Final Audio Text semantic QA (spec 39, 40) ---------------------
     if final_text:

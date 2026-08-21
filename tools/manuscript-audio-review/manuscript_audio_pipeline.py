@@ -1265,6 +1265,8 @@ def main():
     print("Master packet:", ROOT / "analysis" / "manuscript_audio_review_packet.json")
     print("Human summary:", ROOT / "analysis" / "REVIEW_ME.md")
     print("UI suggestions:", ROOT / "analysis" / "manuscript_audio_ui_suggestions.json")
+    print("Evidence ledger:", ROOT / "analysis" / "manuscript_audio_evidence_ledger.json")
+    print("Cast audit:", ROOT / "analysis" / "manuscript_audio_cast_audit.json")
 
 
 if __name__ == "__main__":

@@ -20,6 +20,8 @@ from pathlib import Path
 import json
 import re
 
+from manuscript_audio_accuracy_gate import build_accuracy_gate
+
 
 ROOT = Path(__file__).resolve().parent
 ANALYSIS = ROOT / "analysis"
@@ -47,6 +49,8 @@ PACKET = ANALYSIS / "manuscript_audio_review_packet.json"
 REVIEW_ME = ANALYSIS / "REVIEW_ME.md"
 MASTER = ANALYSIS / "MASTER.md"
 UI_SUGGESTIONS = ANALYSIS / "manuscript_audio_ui_suggestions.json"
+CLAIM_LEDGER = ANALYSIS / "manuscript_audio_evidence_ledger.json"
+CAST_AUDIT = ANALYSIS / "manuscript_audio_cast_audit.json"
 
 
 # ---------------------------------------------------------------------------
@@ -1707,6 +1711,12 @@ def build_packet():
     sections["ranked_findings"] = deduped_findings
     sections["raw_findings"] = all_findings
 
+    sections["accuracy_gate"] = build_accuracy_gate(
+        sections,
+        previous_claims=load(CLAIM_LEDGER, {}),
+        previous_cast=load(CAST_AUDIT, {}),
+    )
+
     return sections, evidence
 
 
@@ -1753,6 +1763,17 @@ def build_review_me(sections, evidence):
             f"Speech coverage by ASR: **{coverage['coverage_ratio']:.0%}** "
             f"(source: {coverage['speech_presence_source']})."
         )
+
+    accuracy = sections.get("accuracy_gate", {})
+    accuracy_summary = accuracy.get("summary", {})
+    add(
+        "Accuracy gate: "
+        f"**{accuracy.get('status', 'UNKNOWN')}**; "
+        f"{accuracy_summary.get('stop_ship_claim_count', 0)} unresolved "
+        "high/medium claim(s); "
+        f"{accuracy_summary.get('incomplete_character_count', 0)} incomplete "
+        "Cast audit(s)."
+    )
 
     add()
     add("## MEDIA")
@@ -2511,6 +2532,28 @@ def build_master_md(sections, evidence):
         add("(empty — no regions flagged for review)")
     blank()
 
+    # 11A. Human accuracy gate ---------------------------------------------
+    add("## 11A. Human Accuracy Gate")
+    accuracy = sections.get("accuracy_gate", {}) or {}
+    summary = accuracy.get("summary", {}) or {}
+    add(f"- Status: **{accuracy.get('status', 'UNKNOWN')}**")
+    add(
+        f"- Claims: {summary.get('claim_count', 0)} total; "
+        f"{summary.get('stop_ship_claim_count', 0)} unresolved high/medium."
+    )
+    add(
+        f"- Cast: {summary.get('character_count', 0)} characters; "
+        f"{summary.get('incomplete_character_count', 0)} incomplete audits."
+    )
+    incomplete = accuracy.get("incomplete_cast_characters", []) or []
+    if incomplete:
+        add(f"- Incomplete Cast audit: {', '.join(incomplete)}")
+    add(
+        "- Complete the separate claim-ledger and Cast-audit JSON files. "
+        "Machine leads never become final facts without listening."
+    )
+    blank()
+
     # 12. Validator predictions ---------------------------------------------
     add("## 12. Validator Predictions (export blockers)")
     validator = sections.get("validator_predictions", {}) or {}
@@ -2604,6 +2647,22 @@ def main():
     with PACKET.open("w", encoding="utf-8") as f:
         json.dump(sections, f, indent=2, ensure_ascii=False)
 
+    accuracy = sections.get("accuracy_gate", {})
+    with CLAIM_LEDGER.open("w", encoding="utf-8") as f:
+        json.dump(
+            accuracy.get("claim_ledger", {"rows": []}),
+            f,
+            indent=2,
+            ensure_ascii=False,
+        )
+    with CAST_AUDIT.open("w", encoding="utf-8") as f:
+        json.dump(
+            accuracy.get("cast_vocalization_audit", {"characters": []}),
+            f,
+            indent=2,
+            ensure_ascii=False,
+        )
+
     review_me = build_review_me(sections, evidence)
     REVIEW_ME.write_text(review_me, encoding="utf-8")
 
@@ -2623,6 +2682,9 @@ def main():
     print("Human summary:", REVIEW_ME)
     print("Master file:", MASTER)
     print("UI suggestions:", UI_SUGGESTIONS)
+    print("Evidence ledger:", CLAIM_LEDGER)
+    print("Cast audit:", CAST_AUDIT)
+    print("Accuracy gate:", sections.get("accuracy_gate", {}).get("status"))
     print(
         f"Findings: {summary['total_findings']} "
         f"(STRONG {counts[STRONG]}, MEDIUM {counts[MEDIUM]}, "
