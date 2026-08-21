@@ -50,6 +50,8 @@ DIARIZATION_QC = ROOT / "analysis" / "diarization_cluster_review.json"
 DEFECT_EVIDENCE = ROOT / "analysis" / "recording_defect_evidence.json"
 MASKING_EVIDENCE = ROOT / "analysis" / "masking_overlap_evidence.json"
 AUDIO = ROOT / "analysis" / "audio.wav"
+LOUDNORM_AUDIO = ROOT / "analysis" / "audio_loudnorm.wav"
+ASR_WORKER = ROOT / "manuscript_audio_asr_worker.py"
 CLIP_DIR = ROOT / "analysis" / "review_clips"
 MANIFEST = CLIP_DIR / "review_clips_manifest.json"
 CONTEXT = ROOT / "task_context.json"
@@ -70,6 +72,54 @@ VIDEO_PATH = None
 
 def run(cmd):
     subprocess.run(cmd, cwd=ROOT, check=True)
+
+
+def transcribe_boosted_primary(whisperx_python, audio_path):
+    """Primary ASR on the loudness-normalized WAV with VAD disabled.
+
+    whisperx's CLI pipeline gates transcription behind a pyannote VAD that
+    silently drops very quiet speech -- real clips have measured 20+ dB
+    below a normal dialogue mix, taking primary coverage from ~100% to
+    single digits. The worker (`manuscript_audio_asr_worker.py`) transcribes
+    with faster-whisper `vad_filter=False` over the WHOLE clip in strict
+    anti-hallucination mode (no conditioning on previous text + repetition
+    penalty), so quiet but real dialogue is captured without hallucinated
+    continuations. Returns a whisperx-compatible transcript dict, or None on
+    any failure so callers can fall back to the CLI.
+    """
+    try:
+        result = subprocess.run(
+            [
+                str(whisperx_python),
+                str(ASR_WORKER),
+                str(audio_path),
+                "--model",
+                "large-v3",
+                "--compute-type",
+                "int8",
+                "--strict",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=1800,
+        )
+        payload = json.loads(result.stdout)
+    except Exception:  # noqa: BLE001 -- fail soft, caller falls back
+        return None
+
+    if not isinstance(payload, dict) or payload.get("status") != "complete":
+        return None
+
+    segments = payload.get("segments") or []
+    if not segments:
+        return None
+
+    return {
+        "segments": segments,
+        "language": payload.get("language"),
+        "boosted_primary": True,
+    }
 
 
 def probe_source_audio(video_path):
@@ -256,7 +306,32 @@ def preprocess_source_video(video=None):
         )
 
     print("Analysis WAV:", AUDIO)
-    print("\n[2/2] Running WhisperX large-v3...")
+    print("\n[2/2] Running WhisperX large-v3 (loudness-normalized, no VAD)...")
+
+    # Boost quiet dialogue before ASR: many real clips sit 20+ dB below a
+    # normal dialogue mix, and whisperx's VAD-gated pipeline then misses the
+    # speech entirely (measured 2% coverage on a real task clip). Normalize
+    # loudness, then transcribe with vad_filter=False over the whole clip.
+    print("Loudness-normalizing analysis WAV for ASR...")
+    run(
+        [
+            "ffmpeg",
+            "-y",
+            "-loglevel",
+            "error",
+            "-i",
+            str(AUDIO),
+            "-af",
+            "loudnorm=I=-16:TP=-1.5:LRA=11",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-c:a",
+            "pcm_s16le",
+            str(LOUDNORM_AUDIO),
+        ]
+    )
 
     for stale_json in {
         generated_whisperx_json,
@@ -265,37 +340,83 @@ def preprocess_source_video(video=None):
         if stale_json.exists():
             stale_json.unlink()
 
-    run(
-        [
-            str(whisperx_python),
-            "-m",
-            "whisperx",
-            str(video),
-            "--model",
-            "large-v3",
-            "--device",
-            "cpu",
-            "--compute_type",
-            "int8",
-            "--output_format",
-            "json",
-            "--output_dir",
-            str(output_dir),
-        ]
-    )
+    transcript = transcribe_boosted_primary(whisperx_python, LOUDNORM_AUDIO)
 
-    if not generated_whisperx_json.exists():
-        raise FileNotFoundError(
-            "WhisperX did not create the expected source JSON: "
-            f"{generated_whisperx_json}"
+    if transcript is None:
+        # Fallback 1: original whisperx CLI, but on the normalized WAV so it
+        # still benefits from the loudness boost.
+        print(
+            "Boosted primary unavailable; falling back to whisperx CLI "
+            "on the normalized WAV..."
+        )
+        loudnorm_stem_json = output_dir / f"{LOUDNORM_AUDIO.stem}.json"
+        if loudnorm_stem_json.exists():
+            loudnorm_stem_json.unlink()
+        run(
+            [
+                str(whisperx_python),
+                "-m",
+                "whisperx",
+                str(LOUDNORM_AUDIO),
+                "--model",
+                "large-v3",
+                "--device",
+                "cpu",
+                "--compute_type",
+                "int8",
+                "--output_format",
+                "json",
+                "--output_dir",
+                str(output_dir),
+            ]
+        )
+        if loudnorm_stem_json.exists():
+            with loudnorm_stem_json.open("r", encoding="utf-8") as f:
+                transcript = json.load(f)
+
+    if transcript is None:
+        # Fallback 2: original whisperx CLI on the source video (legacy path).
+        print(
+            "CLI-on-normalized unavailable; falling back to whisperx CLI "
+            "on the source video..."
+        )
+        run(
+            [
+                str(whisperx_python),
+                "-m",
+                "whisperx",
+                str(video),
+                "--model",
+                "large-v3",
+                "--device",
+                "cpu",
+                "--compute_type",
+                "int8",
+                "--output_format",
+                "json",
+                "--output_dir",
+                str(output_dir),
+            ]
+        )
+        if generated_whisperx_json.exists():
+            with generated_whisperx_json.open("r", encoding="utf-8") as f:
+                transcript = json.load(f)
+
+    if transcript is None or not isinstance(transcript, dict):
+        raise RuntimeError(
+            "WhisperX produced no transcript (boosted worker, CLI on "
+            "normalized WAV, and CLI on source video all failed)."
         )
 
-    whisperx_json.write_bytes(
-        generated_whisperx_json.read_bytes()
+    # Normalize into the stable output/VIDEO.json plus the source-named copy.
+    whisperx_json.write_text(
+        json.dumps(transcript, ensure_ascii=False),
+        encoding="utf-8",
     )
-
-    with whisperx_json.open("r", encoding="utf-8") as f:
-        transcript = json.load(f)
+    generated_whisperx_json.write_text(
+        json.dumps(transcript, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
     segments = transcript.get("segments", [])
 

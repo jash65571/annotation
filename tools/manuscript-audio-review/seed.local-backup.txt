@@ -1,0 +1,691 @@
+Overview
+Cast and global descriptors
+
+Audio-only task. Visual text is locked and carried over as-is. You edit the Voice statement on every character, a Sound statement on objects that make a sound, the overview Audio summary, each shot's Audio events, and Audio concerns.
+Cast
+Descriptions are locked — add the Voice / Sound statements
+Add off-screen speaker
+Add sound source
+Every character needs a Voice statement — missing on C1, C2, C3.
+
+Characters
+3
+· Voice statement required on every C#
+descriptions locked
+C1
+A young male 3D blocky video game avatar of white/Caucasian appearance with a blocky build. He has short brown hair and wears a blue long-sleeved top with white cuffs, white pants, blue shoes, and a long red cape.
+
+C1 has no Voice statement — required for every character.
+Add Voice
+Add a Sound statement
+C2
+A young male 2D animated cartoon character of white/Caucasian appearance with a slim build. He has brown hair and wears a blue tunic with white sleeves, a red scarf, a brown shoulder strap, and a brown belt with a square buckle. Lower body and shoes are not visible.
+
+C2 has no Voice statement — required for every character.
+Add Voice
+Add a Sound statement
+C3
+A male 3D blocky video game avatar with a blocky build. Age and ethnicity are unclear from the available frames. He has dark blue hair and wears a dark grey outfit with glowing purple accents on the arms, dark pants, and white shoes.
+
+C3 has no Voice statement — required for every character.
+Add Voice
+Add a Sound statement
+
+Objects
+0
+· Sound statement only when the object is audible
+descriptions locked
+None.
+Scene
+A Roblox-style 3D obstacle course viewed from a high trailing or POV angle. The course runs across raised checkered platforms in purple, red, tan, pink, and green, connected by ramps and narrow bridges. Obstacles include swinging red spheres, sweeping red cylindrical barriers, and a large red panel on a pole. Checkpoint rings appear at intervals as colored circles on the ground with thin vertical poles. A dark multi-tiered tower structure sits on one platform. Gap holes flank narrow bridge sections. The game HUD overlays the full screen with a player name tag at upper left, progress bar at top center, in-game timer, icon buttons along the left side, vehicle/item icons on the right, season countdown badge, and a gift box timer. A "SALE! Royale Bike" animated promotional overlay sits at bottom center.
+
+Style
+Bright, saturated video game render with a blocky low-poly aesthetic consistent with Roblox. Colors are vivid and flat with strong platform-sky contrast. No film grain or depth of field. Lighting is uniform and diffused with no directional shadows. The 2D animated overlay of C2 uses a distinct cartoon style with clean outlines and flat color fills, separate from the 3D environment. Standard 16:9 aspect ratio.
+
+Visual concerns
+Game HUD elements and a promotional sale overlay are burnt into the screen throughout. Player name tags are visible on-screen.
+
+Audio
+Summarize the whole soundscape: the kind of speech, principal and secondary speakers, overall clarity, important overlap or masking, music/ambience, and how non-speech sounds sit under the voices. Don't restate the C#/O# properties.
+
+C1 and C3 speak across multiple shots in a fast, energetic, conversational tone consistent with live gameplay commentary. C2 speaks in a smug, playful tone via an animated overlay. Upbeat electronic video game background music plays continuously, non-diegetic. In-game sound effects including chimes and whooshes accompany gameplay in shots 1 through 4.
+Audio concerns
+Answer the five recording-defect questions below — the sentence is written for you. Add any other genuine intelligibility or clip-boundary problem by editing the text.
+
+Recording defects
+Obvious clipping
+no
+yes
+Distortion
+no
+yes
+Excessive echo
+no
+yes
+Wind noise
+no
+yes
+Other recording defect
+no
+yes
+Answer every row — the Audio concerns sentence is written from these answers.
+None.
+Shots
+3 shots · 0 reviewed · click a shot to play it on loop
+
+Collapse all
+Every cut is a hard cut — double-check before submitting. Real footage often mixes in cross dissolves, fades, match/jump cuts, whip pans, etc.
+
+Shot 1of 3
+00:00:00.0–00:00:10.1
+(10.1s)
+shot & visuals locked
+Cut into this shot
+Opening shot
+
+Camera
+POV-style third-person shot, high angle, brisk tracking forward. / Third-person trailing shot, high angle, brisk tracking forward behind C1.
+
+Scene
+Roblox-style 3D obstacle course. C1 runs on a purple checkered platform. A raised red checkered platform sits ahead, connected by a ramp. Two large red spheres hang above the platform on thin lines, swinging across the path. A red circular target ring with a thin vertical pole sits at the center of the raised platform. Game HUD overlays the full screen: player name tag "Steve" with a cartoon avatar icon at upper left, timer "3:43.96" below, progress bar at top center reading "PROGRESS: 12%" in green with Skip and Config buttons, Sonic 3 Event logo at upper right. Left-side circular icon buttons (Store, World, Reset, Modes, Bike, Daily, Spin, Items), right-side HUD showing FREE vehicle thumbnail, Season 9 countdown badge, Motorcycle icon, Gravity Coil icon, Teleport Gun icon, and a gift box timer "00:44". "SALE! Royale Bike" animated promotional overlay at bottom center with a golden explosion graphic. / Platform surface transitions from red checkered to tan/brown checkered blocks. A green circular checkpoint ring appears on the red platform near the start, with a grey pole beside it. Progress bar reads 14% then 15%. In-game timer reads 3:46 at start and advances. Gift box countdown timer on the right reads 00:42 then 00:35. C3, labeled "Twisted_JEG", is visible far ahead on the platform riding a bicycle. C2 appears as a 2D animated overlay on the left side of the screen partway through the shot, growing larger across keyframes.
+
+Movements
+C1 runs forward at a steady pace across the purple checkered platform, cape trailing behind. C1 speaks while running, words coming fast as he moves toward the ramp leading up to the raised platform. The two red spheres swing back and forth above the path. The shot ends mid-sentence as C1 approaches the ramp. C1 runs forward along the platform, cape trailing. He passes over the green checkpoint ring at the start of the shot. He mounts a blue dirt bike and continues riding forward as the platform changes to tan checkered blocks. C2 appears on the left side of the screen, arms crossed, and speaks. C2's expression shifts across keyframes from wide-mouthed open to squinting smug. Then to a wide grin with one hand extended outward, timed to the final line. C3 is visible far ahead on the platform, riding a bicycle and moving forward away from C1.
+
+Playback speed
+regular
+
+Audio
+editable
+Describe every audible event in the order it happens — speech with an exact transcription in double quotes, plus non-speech sounds. No sub-shot timestamps.
+
+Speech
+#1
+Make Sound
+
+
+
+Source
+
+C1
+A young male 3D blocky video game avatar of white/Caucasian appearance with a blocky build. He has short brown hair and wears a blue long-sleeved top with white cuffs, white pants, blue shoes, and a long red cape.
+Tone (optional)
+
+Select one…
+Does this character speak the same as in the overview?
+C1 has no usable Voice statement in the Overview yet — describe the voice here, or complete the Overview statement to reuse it.
+
+Describe:
+Pitch
+Speaking level
+Speed
+Delivery
+Recorded level
+Mix role
+Clarity
+Speaking level
+
+Select one…
+Recorded level
+
+Select one…
+Mix role
+
+Select one…
+Clarity
+
+Select one…
+Transcription — the words actually heard
+What? Okay, let me just. There we go. Through the
+Mark, never guess:
+[unintelligible]
+[inaudible]
+[uncertain: word]
+Voice changes during this event
+Relationship / ordering (optional)
+beneath C1's speech without masking him; near the end of the shot…
+
+Quick add:
+Off-screen
+at the beginning of the shot
+near the end of the shot
+throughout the shot
+Caption sentence · edited
+Regenerate
+C1 says in a fast, energetic, slightly reactive tone: "What? Okay, let me just. There we go. Through the".
+Sound
+#2
+Make Speech
+
+
+
+Source
+
+Who / what…
+Recorded level
+
+Select one…
+Mix role
+
+Select one…
+What the sound is like
+recurring chip clinks; a door closing; quiet room ambience…
+
+Relationship / ordering (optional)
+beneath C1's speech without masking him; near the end of the shot…
+
+Quick add:
+Off-screen
+at the beginning of the shot
+near the end of the shot
+throughout the shot
+Caption sentence · edited
+Regenerate
+Imported — this sentence was not built from the fields above. Regenerating will rewrite it from the selections; you can undo with “Restore my wording”.
+
+Upbeat electronic video game background music plays continuously, non-diegetic.
+Sound
+#3
+Make Speech
+
+
+
+Source
+
+Who / what…
+Recorded level
+
+Select one…
+Mix role
+
+Select one…
+What the sound is like
+recurring chip clinks; a door closing; quiet room ambience…
+
+Relationship / ordering (optional)
+beneath C1's speech without masking him; near the end of the shot…
+
+Quick add:
+Off-screen
+at the beginning of the shot
+near the end of the shot
+throughout the shot
+Caption sentence · edited
+Regenerate
+Imported — this sentence was not built from the fields above. Regenerating will rewrite it from the selections; you can undo with “Restore my wording”.
+
+In-game sound effects, including chimes and whooshes, play throughout.
+Speech
+#4
+Make Sound
+
+
+
+Source
+
+C2
+A young male 2D animated cartoon character of white/Caucasian appearance with a slim build. He has brown hair and wears a blue tunic with white sleeves, a red scarf, a brown shoulder strap, and a brown belt with a square buckle. Lower body and shoes are not visible.
+Tone (optional)
+
+playful
+Does this character speak the same as in the overview?
+C2 has no usable Voice statement in the Overview yet — describe the voice here, or complete the Overview statement to reuse it.
+
+Describe:
+Pitch
+Speaking level
+Speed
+Delivery
+Recorded level
+Mix role
+Clarity
+Speaking level
+
+Select one…
+Recorded level
+
+Select one…
+Mix role
+
+Select one…
+Clarity
+
+Select one…
+Transcription — the words actually heard
+red ball. Now, Chris, you may be wondering where I got this motorbike from, and guess what? I'm not gonna tell you.
+Mark, never guess:
+[unintelligible]
+[inaudible]
+[uncertain: word]
+Voice changes during this event
+Relationship / ordering (optional)
+beneath C1's speech without masking him; near the end of the shot…
+
+Quick add:
+Off-screen
+at the beginning of the shot
+near the end of the shot
+throughout the shot
+Caption sentence · edited
+Regenerate
+C2 says in a smug, playful tone: "red ball. Now, Chris, you may be wondering where I got this motorbike from, and guess what? I'm not gonna tell you."
+Sound
+#5
+Make Speech
+
+
+
+Source
+
+Who / what…
+Recorded level
+
+Select one…
+Mix role
+
+Select one…
+What the sound is like
+recurring chip clinks; a door closing; quiet room ambience…
+
+Relationship / ordering (optional)
+beneath C1's speech without masking him; near the end of the shot…
+
+Quick add:
+Off-screen
+at the beginning of the shot
+near the end of the shot
+throughout the shot
+Caption sentence · edited
+Regenerate
+Imported — this sentence was not built from the fields above. Regenerating will rewrite it from the selections; you can undo with “Restore my wording”.
+
+Upbeat electronic video game background music plays continuously, non-diegetic.
+Sound
+#6
+Make Speech
+
+
+
+Source
+
+Who / what…
+Recorded level
+
+Select one…
+Mix role
+
+Select one…
+What the sound is like
+recurring chip clinks; a door closing; quiet room ambience…
+
+Relationship / ordering (optional)
+beneath C1's speech without masking him; near the end of the shot…
+
+Quick add:
+Off-screen
+at the beginning of the shot
+near the end of the shot
+throughout the shot
+Caption sentence · edited
+Regenerate
+Imported — this sentence was not built from the fields above. Regenerating will rewrite it from the selections; you can undo with “Restore my wording”.
+
+In-game sound effects include a chime on checkpoint activation and whoosh sounds as C1 moves forward.
+Speech
+Other sound
+Draft from events (the Final Audio text below is what ships)
+C1 says in a fast, energetic, slightly reactive tone: "What? Okay, let me just. There we go. Through the". Upbeat electronic video game background music plays continuously, non-diegetic. In-game sound effects, including chimes and whooshes, play throughout. C2 says in a smug, playful tone: "red ball. Now, Chris, you may be wondering where I got this motorbike from, and guess what? I'm not gonna tell you." Upbeat electronic video game background music plays continuously, non-diegetic. In-game sound effects include a chime on checkpoint activation and whoosh sounds as C1 moves forward.
+
+Final Audio text
+Regenerate from events
+C1 says in a fast, energetic, slightly reactive tone: "What? Okay, let me just. There we go. Through the". Upbeat electronic video game background music plays continuously, non-diegetic. In-game sound effects, including chimes and whooshes, play throughout. C2 says in a smug, playful tone: "red ball. Now, Chris, you may be wondering where I got this motorbike from, and guess what? I'm not gonna tell you." Upbeat electronic video game background music plays continuously, non-diegetic. In-game sound effects include a chime on checkpoint activation and whoosh sounds as C1 moves forward.
+
+Shot 2of 3
+00:00:10.1–00:00:13.0
+(2.9s)
+shot & visuals locked
+Cut into this shot
+Hard cut
+
+Camera
+POV shot, high angle, brisk tracking forward.
+
+Scene
+Path surface is pink-red checkered blocks. A checkpoint ring, a red circle on the ground with a thin vertical pole, sits ahead. A raised tan/beige checkered platform holds a dark multi-tiered tower structure with a small red block and red flag at the top. Gap holes cut into the path on either side of the narrow bridge leading to the platform. Player name tag at top left reads "Chris" with a cartoon avatar icon. "Royale Bike - SALE!" promotional overlay with a flame graphic at bottom center.
+
+Movements
+C3 rides a bicycle forward at a steady pace along the pink checkered path, body upright, facing away from camera. C3 passes through the checkpoint ring, the red circle sweeping past as the bicycle continues forward without slowing. C3 speaks while riding, words delivered as he moves toward the narrow bridge leading up to the platform. By final keyframes C3 has crossed onto the tan platform and approaches the red target circle at its center. C2's avatar overlay is visible at top left throughout, expression set in a flat, slightly annoyed look.
+
+Playback speed
+regular
+
+Audio
+editable
+Describe every audible event in the order it happens — speech with an exact transcription in double quotes, plus non-speech sounds. No sub-shot timestamps.
+
+Speech
+#1
+Make Sound
+
+
+
+Source
+
+C3
+A male 3D blocky video game avatar with a blocky build. Age and ethnicity are unclear from the available frames. He has dark blue hair and wears a dark grey outfit with glowing purple accents on the arms, dark pants, and white shoes.
+Tone (optional)
+
+Select one…
+Does this character speak the same as in the overview?
+C3 has no usable Voice statement in the Overview yet — describe the voice here, or complete the Overview statement to reuse it.
+
+Describe:
+Pitch
+Speaking level
+Speed
+Delivery
+Recorded level
+Mix role
+Clarity
+Speaking level
+
+Select one…
+Recorded level
+
+Select one…
+Mix role
+
+Select one…
+Clarity
+
+Select one…
+Transcription — the words actually heard
+You have to share information, Steve.
+Mark, never guess:
+[unintelligible]
+[inaudible]
+[uncertain: word]
+Voice changes during this event
+Relationship / ordering (optional)
+beneath C1's speech without masking him; near the end of the shot…
+
+Quick add:
+Off-screen
+at the beginning of the shot
+near the end of the shot
+throughout the shot
+Caption sentence · edited
+Regenerate
+C3 says in a firm, slightly demanding tone: "You have to share information, Steve."
+Sound
+#2
+Make Speech
+
+
+
+Source
+
+Who / what…
+Recorded level
+
+Select one…
+Mix role
+
+Select one…
+What the sound is like
+recurring chip clinks; a door closing; quiet room ambience…
+
+Relationship / ordering (optional)
+beneath C1's speech without masking him; near the end of the shot…
+
+Quick add:
+Off-screen
+at the beginning of the shot
+near the end of the shot
+throughout the shot
+Caption sentence · edited
+Regenerate
+Imported — this sentence was not built from the fields above. Regenerating will rewrite it from the selections; you can undo with “Restore my wording”.
+
+Upbeat electronic video game background music plays continuously, non-diegetic.
+Sound
+#3
+Make Speech
+
+
+
+Source
+
+Who / what…
+Recorded level
+
+Select one…
+Mix role
+
+Select one…
+What the sound is like
+recurring chip clinks; a door closing; quiet room ambience…
+
+Relationship / ordering (optional)
+beneath C1's speech without masking him; near the end of the shot…
+
+Quick add:
+Off-screen
+at the beginning of the shot
+near the end of the shot
+throughout the shot
+Caption sentence · edited
+Regenerate
+Imported — this sentence was not built from the fields above. Regenerating will rewrite it from the selections; you can undo with “Restore my wording”.
+
+In-game sound effects, chimes and whooshes, play throughout.
+Speech
+Other sound
+Draft from events (the Final Audio text below is what ships)
+C3 says in a firm, slightly demanding tone: "You have to share information, Steve." Upbeat electronic video game background music plays continuously, non-diegetic. In-game sound effects, chimes and whooshes, play throughout.
+
+Final Audio text
+Regenerate from events
+C3 says in a firm, slightly demanding tone: "You have to share information, Steve." Upbeat electronic video game background music plays continuously, non-diegetic. In-game sound effects, chimes and whooshes, play throughout.
+
+Shot 3of 3
+00:00:13.0–00:00:16.0
+(3.0s)
+shot & visuals locked
+Cut into this shot
+Hard cut
+
+Camera
+POV third-person follow shot, high angle, brisk tracking forward.
+
+Scene
+Path transitions from green checkered flat platform onto a narrowing green checkered ramp leading up to a large purple checkered raised platform. Two large red cylindrical obstacles sweep across the path from either side. A red circular target ring sits at the center of the purple platform with a dark vertical pole. HUD name tag reads "Steve". Progress bar reads 17%, ticking up to 18%. "Royale Bike" sale prompt with a gold burst graphic at bottom center. In-game timer reads approximately 3:58 to 4:00. / Platform surface has changed to a purple checkered circular disc. A second, smaller purple checkered disc sits above it, with a dark cylindrical multi-tiered tower rising from the center of the upper disc. A red circular target ring with a thin vertical pole sits on the upper disc surface. Progress bar reads 18%. Gift box countdown timer reads 00:27. In-game timer reads approximately 4:00-4:01.
+
+Movements
+C1 runs forward at a steady pace along the green checkered path, cape trailing behind. C1 speaks while continuing to run, arms pumping slightly at the sides. He moves up the ramp toward the purple platform as the two large red cylindrical obstacles sweep past on either side. By final keyframe C1 has reached the red target ring on the purple platform and a large red panel obstacle swings down from the pole, nearly filling the view. C1 runs forward across the lower purple circular disc, cape trailing behind, arms pumping at the sides. C1 speaks and continues forward as the camera tracks behind, closing the distance to the tower structure ahead across the five keyframes. No other characters are visible.
+
+Playback speed
+regular
+
+Audio
+editable
+Describe every audible event in the order it happens — speech with an exact transcription in double quotes, plus non-speech sounds. No sub-shot timestamps.
+
+Speech
+#1
+Make Sound
+
+
+
+Source
+
+C1
+A young male 3D blocky video game avatar of white/Caucasian appearance with a blocky build. He has short brown hair and wears a blue long-sleeved top with white cuffs, white pants, blue shoes, and a long red cape.
+Tone (optional)
+
+Select one…
+Does this character speak the same as in the overview?
+C1 has no usable Voice statement in the Overview yet — describe the voice here, or complete the Overview statement to reuse it.
+
+Describe:
+Pitch
+Speaking level
+Speed
+Delivery
+Recorded level
+Mix role
+Clarity
+Speaking level
+
+Select one…
+Recorded level
+
+Select one…
+Mix role
+
+Select one…
+Clarity
+
+Select one…
+Transcription — the words actually heard
+Never. Instead, I'm just gonna charge straight ahead.
+Mark, never guess:
+[unintelligible]
+[inaudible]
+[uncertain: word]
+Voice changes during this event
+Relationship / ordering (optional)
+beneath C1's speech without masking him; near the end of the shot…
+
+Quick add:
+Off-screen
+at the beginning of the shot
+near the end of the shot
+throughout the shot
+Caption sentence · edited
+Regenerate
+C1 says in a defiant, energetic tone: "Never. Instead, I'm just gonna charge straight ahead.".
+Sound
+#2
+Make Speech
+
+
+
+Source
+
+Who / what…
+Recorded level
+
+Select one…
+Mix role
+
+Select one…
+What the sound is like
+recurring chip clinks; a door closing; quiet room ambience…
+
+Relationship / ordering (optional)
+beneath C1's speech without masking him; near the end of the shot…
+
+Quick add:
+Off-screen
+at the beginning of the shot
+near the end of the shot
+throughout the shot
+Caption sentence · edited
+Regenerate
+Imported — this sentence was not built from the fields above. Regenerating will rewrite it from the selections; you can undo with “Restore my wording”.
+
+Upbeat electronic video game background music plays continuously, non-diegetic.
+Sound
+#3
+Make Speech
+
+
+
+Source
+
+Who / what…
+Recorded level
+
+Select one…
+Mix role
+
+Select one…
+What the sound is like
+recurring chip clinks; a door closing; quiet room ambience…
+
+Relationship / ordering (optional)
+beneath C1's speech without masking him; near the end of the shot…
+
+Quick add:
+Off-screen
+at the beginning of the shot
+near the end of the shot
+throughout the shot
+Caption sentence · edited
+Regenerate
+Imported — this sentence was not built from the fields above. Regenerating will rewrite it from the selections; you can undo with “Restore my wording”.
+
+In-game sound effects including chimes and whooshes are audible throughout.
+Speech
+#4
+Make Sound
+
+
+
+Source
+
+C1
+A young male 3D blocky video game avatar of white/Caucasian appearance with a blocky build. He has short brown hair and wears a blue long-sleeved top with white cuffs, white pants, blue shoes, and a long red cape.
+Tone (optional)
+
+casual
+Does this character speak the same as in the overview?
+C1 has no usable Voice statement in the Overview yet — describe the voice here, or complete the Overview statement to reuse it.
+
+Describe:
+Pitch
+Speaking level
+Speed
+Delivery
+Recorded level
+Mix role
+Clarity
+Speaking level
+
+Select one…
+Recorded level
+
+Select one…
+Mix role
+
+Select one…
+Clarity
+
+Select one…
+Transcription — the words actually heard
+Here. Go through.
+Mark, never guess:
+[unintelligible]
+[inaudible]
+[uncertain: word]
+Voice changes during this event
+Relationship / ordering (optional)
+beneath C1's speech without masking him; near the end of the shot…
+
+Quick add:
+Off-screen
+at the beginning of the shot
+near the end of the shot
+throughout the shot
+Caption sentence · edited
+Regenerate
+C1 says in a brief, casual, directive tone: "Here. Go through."
+Speech
+Other sound
+Draft from events (the Final Audio text below is what ships)
+C1 says in a defiant, energetic tone: "Never. Instead, I'm just gonna charge straight ahead.". Upbeat electronic video game background music plays continuously, non-diegetic. In-game sound effects including chimes and whooshes are audible throughout. C1 says in a brief, casual, directive tone: "Here. Go through."
+
+Final Audio text
+Regenerate from events
+C1 says in a defiant, energetic tone: "Never. Instead, I'm just gonna charge straight ahead.". Upbeat electronic video game background music plays continuously, non-diegetic. In-game sound effects including chimes and whooshes are audible throughout. C1 says in a brief, casual, directive tone: "Here. Go through."

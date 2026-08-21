@@ -318,11 +318,20 @@ class AsrWorkerClient:
         except Exception:  # noqa: BLE001
             return ""
 
-    def transcribe(self, audio_path, start=None, end=None, timeout=WORKER_REQUEST_TIMEOUT_SEC):
+    def transcribe(
+        self,
+        audio_path,
+        start=None,
+        end=None,
+        timeout=WORKER_REQUEST_TIMEOUT_SEC,
+        options=None,
+    ):
         request = {"audio_path": str(audio_path)}
         if start is not None and end is not None:
             request["start"] = float(start)
             request["end"] = float(end)
+        if options:
+            request["options"] = options
 
         started = time.time()
 
@@ -1539,9 +1548,22 @@ def write_asr_consensus_evidence(
 
         reruns_executed = []
 
+        # Reruns run in anti-hallucination mode: no conditioning on previous
+        # text + a repetition penalty. Whisper's default conditioning is the
+        # classic source of long fluent hallucination chains on quiet or
+        # degraded audio (e.g. a fake multi-line continuation after the real
+        # speech ends); reruns must never manufacture that.
+        rerun_options = {
+            "condition_on_previous_text": False,
+            "repetition_penalty": 1.15,
+        }
+
         for window in rerun_windows[:max_auto_reruns]:
             rerun_result = client.transcribe(
-                audio_path, start=window["start"], end=window["end"]
+                audio_path,
+                start=window["start"],
+                end=window["end"],
+                options=rerun_options,
             )
             per_source = (
                 map_rerun_to_source_windows(
@@ -1568,6 +1590,44 @@ def write_asr_consensus_evidence(
 
         skipped = len(rerun_windows) - len(reruns_executed)
 
+        # Accuracy audit block: a reviewer (or LLM) can see at a glance how
+        # trustworthy the transcript is instead of trusting it blindly.
+        primary_scores = [
+            w["score"] for w in primary_words if w.get("score") is not None
+        ]
+        primary_logprobs = [
+            v for v in primary_segment_avg_logprob.values()
+            if v is not None
+        ]
+        transcript_quality = {
+            "primary_word_count": len(primary_words),
+            "mean_primary_word_score": (
+                round(sum(primary_scores) / len(primary_scores), 3)
+                if primary_scores else None
+            ),
+            "low_confidence_word_count": sum(
+                1 for s in primary_scores if s < 0.50
+            ),
+            "low_confidence_word_ratio": (
+                round(
+                    sum(1 for s in primary_scores if s < 0.50) / len(primary_scores),
+                    3,
+                )
+                if primary_scores else None
+            ),
+            "mean_primary_segment_logprob": (
+                round(sum(primary_logprobs) / len(primary_logprobs), 4)
+                if primary_logprobs else None
+            ),
+            "hallucination_risk_word_count": len(hallucination_risk_words),
+            "proper_noun_risk_word_count": len(proper_noun_risk_words),
+            "secondary_only_word_count": len(secondary_only_words),
+            "conflict_count": len(conflicts),
+            "divergence_region_count": len(divergence_regions),
+            "uncovered_speech_sec": coverage.get("uncovered_speech_duration_sec", 0),
+            "lexical_agreement_pct": coverage.get("lexical_agreement_pct"),
+        }
+
         result = {
             "status": "complete",
             "secondary_model": SECONDARY_MODEL,
@@ -1585,6 +1645,7 @@ def write_asr_consensus_evidence(
             "reruns_skipped_count": max(0, skipped),
             "hallucination_risk_words": hallucination_risk_words,
             "proper_noun_risk_words": proper_noun_risk_words,
+            "transcript_quality": transcript_quality,
             "clip_tail_check": clip_tail_check,
             "policy": (
                 "Cross-model comparison is evidence, not a transcript edit. "
@@ -1607,7 +1668,8 @@ def write_asr_consensus_evidence(
         f"lexical_agreement={coverage.get('lexical_agreement_pct')} |",
         f"conflicts={len(conflicts)} |",
         f"recovered_gap_sec={coverage['uncovered_speech_duration_sec']} |",
-        f"reruns={len(reruns_executed)}/{len(rerun_windows)}",
+        f"reruns={len(reruns_executed)}/{len(rerun_windows)} |",
+        f"mean_word_score={transcript_quality['mean_primary_word_score']}",
     )
 
     if skipped > 0:

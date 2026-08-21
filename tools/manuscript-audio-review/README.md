@@ -221,6 +221,32 @@ Real-task follow-up hardening:
 - **Contraction-safe proper nouns** -- first-person and common contractions such
   as `I'm`, `We're`, and `You're` never become name-risk findings.
 
+Accuracy hardening (quiet/degraded audio):
+
+- **Loudness-normalized primary ASR** -- the analysis WAV is normalized
+  (`loudnorm I=-16:TP=-1.5:LRA=11`) before transcription, then the primary
+  pass runs with `vad_filter=False` over the WHOLE clip. Real clips that sit
+  20+ dB below a normal dialogue mix went from ~1% to ~60% coverage with
+  zero uncovered speech.
+- **Strict anti-hallucination mode** -- the primary pass and every rerun run
+  with `condition_on_previous_text=False` and `repetition_penalty=1.15`,
+  suppressing the long fluent hallucination chains whisper emits on quiet
+  audio (the classic fake "recovered" continuation after real speech ends).
+- **Independent cross-model consensus** -- primary `large-v3` vs secondary
+  `large-v3-turbo`: agreement is a genuinely independent second opinion.
+- **Transcript Quality Audit** -- every run reports a quality block in the
+  packet and `MASTER.md`: word count, mean word score, low-confidence
+  count/ratio, mean segment log-prob, hallucination-risk and proper-noun-
+  risk counts, conflicts, divergence regions, uncovered speech, and lexical
+  agreement. Trust the transcript only as far as those numbers say to.
+- **`MASTER.md`** -- the aggregator now also writes `analysis/MASTER.md`, a
+  single markdown file with everything: media, locked cast (full character
+  descriptions), objects, shot ranges, the complete word-level transcript,
+  the quality audit, coverage, sounds/music/ambience/transients, speaker +
+  face leads, defects, masking, review queue, validator predictions, UI
+  suggestions, and every ranked finding. One file to feed a reviewer or an
+  LLM.
+
 ## Reviewer environment
 
 Pinned direct packages:

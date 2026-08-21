@@ -914,6 +914,43 @@ def run():
           and media_sec["present"]["audio_codec"] == "aac",
           json.dumps(media_sec))
 
+    # ------------------------------------------------------------------
+    # Accuracy-hardening extras: independent models, strict reruns, and
+    # a visible transcript-quality audit.
+    # ------------------------------------------------------------------
+    check("secondary ASR model differs from the primary (independent opinion)",
+          a.SECONDARY_MODEL != "large-v3",
+          f"secondary={a.SECONDARY_MODEL}")
+
+    import inspect
+    import manuscript_audio_asr_worker as worker_mod
+    check("asr worker run_one_shot accepts strict anti-hallucination mode",
+          "strict" in inspect.signature(worker_mod.run_one_shot).parameters)
+
+    asr_section = m.build_asr_consensus({
+        "status": "complete",
+        "coverage": {},
+        "word_consensus": [],
+        "secondary_only_words": [],
+        "conflicts": [],
+        "divergence_regions": [],
+        "rerun_windows": [],
+        "reruns_executed": [],
+        "hallucination_risk_words": [],
+        "proper_noun_risk_words": [],
+        "transcript_quality": {
+            "primary_word_count": 5,
+            "mean_primary_word_score": 0.84,
+            "low_confidence_word_count": 1,
+            "hallucination_risk_word_count": 2,
+            "conflict_count": 0,
+        },
+    }, independent_speech_regions=None)
+    check("master packet section carries transcript_quality",
+          asr_section.get("transcript_quality", {}).get("primary_word_count") == 5
+          and asr_section["transcript_quality"]["conflict_count"] == 0,
+          json.dumps(asr_section.get("transcript_quality")))
+
     print("\n=== ALL 3.5 ACCURACY HARDENING CHECKS PASSED ===\n")
 
 

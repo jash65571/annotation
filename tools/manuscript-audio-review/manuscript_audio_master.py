@@ -45,6 +45,7 @@ SPEAKER_MAP = ROOT / "speaker_map.json"
 # Outputs.
 PACKET = ANALYSIS / "manuscript_audio_review_packet.json"
 REVIEW_ME = ANALYSIS / "REVIEW_ME.md"
+MASTER = ANALYSIS / "MASTER.md"
 UI_SUGGESTIONS = ANALYSIS / "manuscript_audio_ui_suggestions.json"
 
 
@@ -747,6 +748,7 @@ def build_asr_consensus(asr_consensus, independent_speech_regions=None):
         "reruns_executed": asr_consensus.get("reruns_executed", []),
         "hallucination_risk_words": asr_consensus.get("hallucination_risk_words", []),
         "proper_noun_risk_words": asr_consensus.get("proper_noun_risk_words", []),
+        "transcript_quality": asr_consensus.get("transcript_quality"),
         "secondary_model": asr_consensus.get("secondary_model"),
         "findings": findings,
         "policy": "Cross-model comparison is evidence, not a transcript "
@@ -2109,6 +2111,483 @@ def build_review_me(sections, evidence):
     return "\n".join(lines) + "\n"
 
 
+def build_master_md(sections, evidence):
+    """One markdown file with literally everything a reviewer (or an LLM)
+    needs in a single read: media, locked cast/objects/shots, the full
+    word-level transcript, ASR coverage, sounds/music/ambience/transients,
+    speaker+face leads, defects, masking, review queue, validator
+    predictions, UI suggestions, and every ranked finding with its
+    confidence tier."""
+    lines = []
+    add = lines.append
+    blank = lambda: add("")
+
+    def fnum(value, digits=3):
+        try:
+            return f"{float(value):.{digits}f}"
+        except (TypeError, ValueError):
+            return str(value)
+
+    def fmt_window(window):
+        if not window:
+            return ""
+        if len(window) == 2:
+            return f"[{fnum(window[0])}-{fnum(window[1])}s]"
+        return f"[{', '.join(fnum(x) for x in window)}]"
+
+    context = load(CONTEXT, {})
+    primary = load(ROOT / "output" / "VIDEO.json", {})
+    ui = load(UI_SUGGESTIONS, {})
+
+    add("# MASTER — Complete Audio Review")
+    blank()
+    add("> Machine evidence only. Actual audio and video remain the truth.")
+    add("> Numeric times are review aids. Never copy them into Final Audio Text.")
+    blank()
+
+    # 1. Media --------------------------------------------------------------
+    media = sections.get("media", {})
+    add("## 1. Media")
+    present = media.get("present", {})
+    for key in (
+        "video_name", "video_sha256", "duration_sec", "source_sample_rate",
+        "analysis_sample_rate", "audio_channels", "audio_codec",
+    ):
+        if present.get(key) is not None:
+            add(f"- **{key}**: `{present[key]}`")
+    missing = media.get("not_yet_extracted", [])
+    if missing:
+        add(f"- Not extracted: {', '.join(missing)}")
+    blank()
+
+    # 2. Locked task structure ---------------------------------------------
+    lts = sections.get("locked_task_structure", {})
+    add("## 2. Locked Task Structure")
+    char_ids = lts.get("characters", []) or []
+    obj_ids = lts.get("objects", []) or []
+    shots = lts.get("shots", []) or []
+    add(f"- Characters: {', '.join(char_ids) if char_ids else '(none)'}")
+    add(f"- Objects: {', '.join(obj_ids) if obj_ids else '(none)'}")
+    if shots:
+        add("- Shots:")
+        for shot in shots:
+            add(
+                f"  - Shot {shot.get('shot')}: "
+                f"{fnum(shot.get('start', 0))}-{fnum(shot.get('end', 0))}s"
+            )
+    if lts.get("note"):
+        add(f"- Note: {lts['note']}")
+    blank()
+
+    # 3. Cast (characters) -------------------------------------------------
+    add("## 3. Cast (Characters)")
+    ctx_chars = {
+        c.get("id"): c
+        for c in (context.get("seed_meta", {}).get("characters") or [])
+        if isinstance(c, dict) and c.get("id")
+    }
+    voice_profiles = sections.get("voice_profiles", {}) or {}
+    char_mapping_findings = sections.get("character_mapping", {}).get("findings", []) or []
+    if char_ids:
+        for cid in char_ids:
+            add(f"### {cid}")
+            desc = ctx_chars.get(cid, {}).get("description", "")
+            if desc:
+                add(f"Locked description: {desc}")
+            else:
+                add("Locked description: (none in seed)")
+            profile = voice_profiles.get(cid)
+            if profile:
+                add(f"Voice profile: {json.dumps(profile, ensure_ascii=False)}")
+            leads = [
+                f for f in char_mapping_findings
+                if f"{cid}" in f.get("claim", "")
+            ]
+            for lead in leads:
+                add(
+                    f"- Mapping lead ({lead['tier']}) "
+                    f"{fmt_window(lead.get('window'))}: {lead['claim']}"
+                )
+                add(f"  - Action: {lead['action']}")
+            if not profile and not leads:
+                add("- No voice or speaker leads (needs human listening).")
+            blank()
+    else:
+        add("(no characters in locked task)")
+    blank()
+
+    # 4. Objects ------------------------------------------------------------
+    add("## 4. Objects")
+    ctx_objs = {
+        o.get("id"): o
+        for o in (context.get("seed_meta", {}).get("objects") or [])
+        if isinstance(o, dict) and o.get("id")
+    }
+    object_sound_status = sections.get("object_sound_status", {})
+    if isinstance(object_sound_status, dict):
+        rows = object_sound_status.get("rows", object_sound_status)
+    else:
+        rows = {}
+    if obj_ids:
+        for oid in obj_ids:
+            add(f"### {oid}")
+            desc = ctx_objs.get(oid, {}).get("description", "")
+            if desc:
+                add(f"Locked description: {desc}")
+            status = rows.get(oid) if isinstance(rows, dict) else None
+            if status:
+                add(f"Sound status: {json.dumps(status, ensure_ascii=False)}")
+            else:
+                add("Sound status: no acoustic evidence attributed (default Silent unless heard).")
+            blank()
+    else:
+        add("(no objects in locked task)")
+    blank()
+
+    # 5. Full transcript ----------------------------------------------------
+    add("## 5. Full Transcript (word-level)")
+    segs = primary.get("segments", []) or []
+    if primary.get("boosted_primary"):
+        add(
+            "*Primary ASR ran on the loudness-normalized WAV with VAD "
+            "disabled, so quiet dialogue is captured.*"
+        )
+    if segs:
+        add("| Seg | Start | End | Text |")
+        add("|-----|-------|-----|------|")
+        for i, seg in enumerate(segs):
+            add(
+                f"| {i} | {fnum(seg.get('start'))} | {fnum(seg.get('end'))} | "
+                f"{str(seg.get('text', '')).strip()}"
+            )
+        blank()
+        add("**Words (with times and scores):**")
+        for i, seg in enumerate(segs):
+            words = seg.get("words", []) or []
+            if not words:
+                continue
+            add(f"- Segment {i}: " + " ".join(
+                f"**{w.get('word', '')}**"
+                + f" ({fnum(w.get('start'))}-{fnum(w.get('end'))}"
+                + (f", score {fnum(w.get('score'), 2)}" if w.get("score") is not None else "")
+                + ")"
+                for w in words
+            ))
+    else:
+        add("(no primary transcript segments)")
+    blank()
+
+    # 5b. Transcript quality audit -----------------------------------------
+    asr = sections.get("asr_consensus", {}) or {}
+    tq = asr.get("transcript_quality") or {}
+    if tq:
+        add("## 5b. Transcript Quality Audit")
+        add(
+            f"- Words: **{tq.get('primary_word_count')}** "
+            f"| mean word score: **{tq.get('mean_primary_word_score')}** "
+            f"| low-confidence (<0.50): "
+            f"**{tq.get('low_confidence_word_count')}** "
+            f"({tq.get('low_confidence_word_ratio')} ratio)"
+        )
+        add(
+            f"- Mean segment log-prob: {tq.get('mean_primary_segment_logprob')} "
+            f"| hallucination-risk words: "
+            f"**{tq.get('hallucination_risk_word_count')}** "
+            f"| proper-noun-risk: {tq.get('proper_noun_risk_word_count')}"
+        )
+        add(
+            f"- Secondary-only words: {tq.get('secondary_only_word_count')} "
+            f"| conflicts: **{tq.get('conflict_count')}** "
+            f"| divergence regions: {tq.get('divergence_region_count')} "
+            f"| uncovered speech: {tq.get('uncovered_speech_sec')}s "
+            f"| lexical agreement: {tq.get('lexical_agreement_pct')}"
+        )
+        add(
+            "- Rule: trust the transcript only as far as these numbers say "
+            "to. Every low-confidence or risk-flagged word still needs a "
+            "human listen."
+        )
+        blank()
+
+    # 6. ASR consensus & coverage ------------------------------------------
+    asr_coverage = asr.get("coverage") or {}
+    add("## 6. ASR Consensus & Coverage")
+    if asr_coverage:
+        add(
+            f"- ASR coverage: {fnum(asr_coverage.get('asr_coverage_pct', 0) * 100, 1)}% "
+            f"of {fnum(asr_coverage.get('duration_sec'))}s clip"
+        )
+        add(
+            f"- Lexical agreement: {asr_coverage.get('lexical_agreement_pct')} "
+            f"| High-confidence confirmation: "
+            f"{asr_coverage.get('high_confidence_confirmation_pct')} "
+            f"| Word disagreements: {asr_coverage.get('word_disagreement_count')}"
+        )
+        if asr_coverage.get("uncovered_speech_duration_sec"):
+            add(
+                f"- Recovered gap (secondary-only speech): "
+                f"{fnum(asr_coverage['uncovered_speech_duration_sec'])}s "
+                f"(longest {fnum(asr_coverage.get('longest_uncovered_region_sec', 0))}s)"
+            )
+    gaps = asr.get("secondary_only_words", []) or []
+    if gaps:
+        add("- Secondary-only words (primary missed):")
+        for g in gaps[:40]:
+            add(
+                f"  - {fnum(g.get('start'))}-{fnum(g.get('end'))}s "
+                f"**{g.get('word', '')}** (score {fnum(g.get('secondary_score'), 2)}, "
+                f"{g.get('classification', 'secondary_only_speech')})"
+            )
+        if len(gaps) > 40:
+            add(f"  - ... and {len(gaps) - 40} more")
+    for label, key in (
+        ("Hallucination-risk words", "hallucination_risk_words"),
+        ("Proper-noun-risk words", "proper_noun_risk_words"),
+    ):
+        items = asr.get(key, []) or []
+        if items:
+            add(f"- {label}:")
+            for item in items[:20]:
+                add(
+                    f"  - {fnum(item.get('start'))}-{fnum(item.get('end'))}s "
+                    f"**{item.get('word', '')}** (score {item.get('score')}, "
+                    f"{item.get('tier')})"
+                )
+    reruns = asr.get("reruns_executed", []) or []
+    for rerun in reruns:
+        text = rerun.get("recovered_text") or rerun.get("text")
+        if text:
+            add(
+                f"- Targeted rerun hypothesis "
+                f"{fmt_window(rerun.get('window'))}: "
+                f"\"{text}\""
+            )
+            add(
+                "  - Hypothesis only, not recovered truth — confirm by listening."
+            )
+    for div in (asr.get("divergence_regions", []) or []):
+        add(
+            f"- MULTI-STREAM ASR divergence region "
+            f"{fmt_window(div.get('window', div.get('start', div)))}: "
+            f"{div.get('reason', 'models followed different vocal content')}"
+        )
+    blank()
+
+    # 7. Coverage gaps ------------------------------------------------------
+    coverage = sections.get("coverage_gaps", {}) or {}
+    untranscribed = coverage.get("untranscribed_regions", []) or []
+    add("## 7. Untranscribed-Speech Regions")
+    if untranscribed:
+        for r in untranscribed:
+            add(
+                f"- {fnum(r.get('start'))}-{fnum(r.get('end'))}s "
+                f"({fnum(r.get('duration_sec', 0))}s) "
+                f"clusters: {', '.join(r.get('clusters', [])) or 'n/a'}"
+            )
+    else:
+        add("(none)")
+    blank()
+
+    # 8. Sounds / music / ambience / transients -----------------------------
+    add("## 8. Sound Events, Music, Ambience & Transients")
+    sound = sections.get("sound_events", {}) or {}
+    candidates = sound.get("candidates", []) or []
+    if candidates:
+        add("**Sound-event candidates:**")
+        for c in candidates:
+            sigs = ", ".join(
+                f"{s.get('source')} {fnum(s.get('score'), 2)}"
+                for s in (c.get("signals") or [])
+            ) or "n/a"
+            add(
+                f"- **{c.get('semantic_label', c.get('label', '?'))}** "
+                f"[{c.get('tier')}] {fnum(c.get('start'))}-{fnum(c.get('end'))}s "
+                f"(shot {c.get('shot')}, signals: {sigs})"
+            )
+    else:
+        add("**Sound-event candidates:** (none above threshold)")
+    music = sections.get("music", {}) or {}
+    music_regions = music.get("regions", []) or []
+    if music_regions:
+        add("**Music regions:**")
+        for r in music_regions:
+            add(f"- {fnum(r.get('start'))}-{fnum(r.get('end'))}s ({r.get('tier')})")
+    else:
+        add(f"**Music:** {music.get('overall_confidence', 'no supported music candidate')}")
+    ambience = sections.get("ambience", {}) or {}
+    amb_candidates = ambience.get("candidates", []) or []
+    if amb_candidates:
+        add("**Ambience candidates:**")
+        for c in amb_candidates:
+            add(
+                f"- **{c.get('semantic_label', c.get('label', '?'))}** "
+                f"[{c.get('tier')}] {fnum(c.get('start'))}-{fnum(c.get('end'))}s"
+            )
+    else:
+        add("**Ambience:** (none)")
+    transients = sections.get("transients", {}) or {}
+    trans_events = transients.get("events", []) or []
+    if trans_events:
+        add("**Transients:**")
+        for t in trans_events:
+            add(
+                f"- **{t.get('tier')}** {fnum(t.get('start'))}-{fnum(t.get('end'))}s "
+                f"{t.get('kind', 'transient')} "
+                f"(peaks: {', '.join(fnum(p) for p in (t.get('peaks') or []))})"
+            )
+    else:
+        add("**Transients:** (none)")
+    blank()
+
+    # 9. Speaker & face -----------------------------------------------------
+    add("## 9. Speakers, Diarization & Face Mapping")
+    clusters_sec = sections.get("speaker_clusters", {}) or {}
+    for cluster in (clusters_sec.get("clusters", []) or []):
+        add(
+            f"- **{cluster.get('speaker_cluster')}**: "
+            f"{cluster.get('turn_count')} turns, "
+            f"{fnum(cluster.get('total_duration_sec', 0))}s, "
+            f"{cluster.get('assigned_word_count')} assigned words, "
+            f"overlap {fnum(cluster.get('overlap_with_other_speakers_sec', 0), 2)}s"
+        )
+        if cluster.get("overlap_only_cluster"):
+            add(f"  - Overlap-only cluster: do NOT invent dialogue for it.")
+    sfm = sections.get("speaker_face_mapping", {}) or {}
+    if sfm.get("face_worker_status") != "complete":
+        add(
+            f"- Face tracking: {sfm.get('face_worker_status')} "
+            f"({sfm.get('face_worker_diagnostic_code') or sfm.get('face_worker_error') or 'unavailable'})"
+        )
+    for track in (sfm.get("face_tracks", []) or []):
+        add(
+            f"- Face track **{track.get('face_id')}**: "
+            f"{fnum(track.get('first_seen', 0))}-{fnum(track.get('last_seen', 0))}s, "
+            f"{track.get('frame_count')} frames, "
+            f"mean mouth-open {track.get('mean_mar')}"
+        )
+    for cand in (sfm.get("cluster_to_face_candidates", []) or []):
+        add(
+            f"- Cluster→face lead ({cand.get('tier')}): "
+            f"{cand.get('speaker_cluster')} → {cand.get('face_id')} "
+            f"({cand.get('consistency_ratio')} consistency)"
+        )
+    for cand in (sfm.get("face_to_character_candidates", []) or []):
+        add(
+            f"- Face→character lead ({cand.get('tier')}): "
+            f"{cand.get('face_id')} → {cand.get('character_id', cand.get('character'))}"
+        )
+    blank()
+
+    # 10. Defects & masking -------------------------------------------------
+    add("## 10. Recording Defects & Masking")
+    defect_rows = sections.get("recording_defects", {}).get("rows", {}) or {}
+    if isinstance(defect_rows, dict):
+        for defect, row in defect_rows.items():
+            add(
+                f"- **{defect}**: machine evidence = "
+                f"`{row.get('evidence_candidate', 'unknown')}` "
+                f"(human listening required: {row.get('human_listening_required', True)})"
+            )
+    overlap = sections.get("overlap_masking", {}) or {}
+    for region in (overlap.get("overlap_regions", []) or []):
+        add(
+            f"- Overlap {fnum(region.get('start'))}-{fnum(region.get('end'))}s "
+            f"(speakers {', '.join(region.get('speakers', []))}) "
+            f"masking_confirmed={region.get('masking_confirmed')}"
+        )
+    blank()
+
+    # 11. Review queue ------------------------------------------------------
+    add("## 11. Review Queue (listen-first)")
+    queue = sections.get("review_queue", []) or []
+    if queue:
+        for item in queue:
+            add(
+                f"- **{item.get('priority')}** {item.get('type')} "
+                f"{fnum(item.get('start'))}-{fnum(item.get('end'))}s "
+                f"(shot {item.get('shot')}): {item.get('description')}"
+            )
+    else:
+        add("(empty — no regions flagged for review)")
+    blank()
+
+    # 12. Validator predictions ---------------------------------------------
+    add("## 12. Validator Predictions (export blockers)")
+    validator = sections.get("validator_predictions", {}) or {}
+    add(
+        f"- Status: {validator.get('status')} | blockers: "
+        f"{validator.get('blocker_count')} | review items: "
+        f"{validator.get('review_item_count')}"
+    )
+    for issue in (validator.get("issues", []) or []):
+        add(f"- [{issue.get('level')}] {issue.get('code')}: {issue.get('message')}")
+    blank()
+
+    # 13. UI suggestions ----------------------------------------------------
+    add("## 13. UI Suggestions (MEDIUM+ only)")
+    ui_chars = ui.get("characters", {}) or {}
+    if isinstance(ui_chars, dict) and ui_chars:
+        add(f"- Characters: {json.dumps(ui_chars, ensure_ascii=False)}")
+    for s in (ui.get("sounds", []) or []):
+        add(f"- Sound: {json.dumps(s, ensure_ascii=False)}")
+    for m in (ui.get("music", []) or []):
+        add(f"- Music: {json.dumps(m, ensure_ascii=False)}")
+    for policy in (ui.get("policy", []) or []):
+        add(f"- Policy: {policy}")
+    blank()
+
+    # 14. All findings ------------------------------------------------------
+    add("## 14. All Findings (ranked by confidence)")
+    ranked = sections.get("ranked_findings", []) or []
+    if ranked:
+        for tier, label in (
+            (STRONG, "HIGH PRIORITY — strong evidence"),
+            (CONFLICT, "CONFLICT"),
+            (MEDIUM, "MEDIUM — needs review"),
+            (WEAK, "WEAK"),
+            (UNKNOWN, "UNKNOWN — do not auto-assert"),
+        ):
+            tier_items = [f for f in ranked if f.get("tier") == tier]
+            if not tier_items:
+                continue
+            add(f"### {label} ({len(tier_items)})")
+            for f in tier_items:
+                add(
+                    f"- **{f.get('tier')}** "
+                    f"[{f.get('section')}] "
+                    f"{fmt_window(f.get('window'))} "
+                    f"{f.get('claim')}"
+                )
+                evidence_list = f.get("evidence", []) or []
+                if evidence_list:
+                    add(f"  - Evidence: {', '.join(str(e) for e in evidence_list)}")
+                add(f"  - Action: {f.get('action')}")
+            blank()
+    else:
+        add("(no findings)")
+
+    # 15. Confidence summary ------------------------------------------------
+    add("## 15. Confidence Summary")
+    summary = sections.get("confidence_summary", {}) or {}
+    by_tier = summary.get("by_tier", {}) or {}
+    add(
+        f"- Total findings: {summary.get('total_findings')} "
+        f"(from {summary.get('raw_finding_count')} raw signals) "
+        f"| human review items: {summary.get('human_review_finding_count')}"
+    )
+    if by_tier:
+        add(
+            f"- STRONG {by_tier.get(STRONG, 0)} · "
+            f"MEDIUM {by_tier.get(MEDIUM, 0)} · "
+            f"WEAK {by_tier.get(WEAK, 0)} · "
+            f"CONFLICT {by_tier.get(CONFLICT, 0)} · "
+            f"UNKNOWN {by_tier.get(UNKNOWN, 0)}"
+        )
+    blank()
+
+    return "\n".join(lines) + "\n"
+
+
 def main():
     print("=== MANUSCRIPT AUDIO MASTER AGGREGATOR ===")
 
@@ -2128,6 +2607,9 @@ def main():
     review_me = build_review_me(sections, evidence)
     REVIEW_ME.write_text(review_me, encoding="utf-8")
 
+    master_md = build_master_md(sections, evidence)
+    MASTER.write_text(master_md, encoding="utf-8")
+
     ui = build_ui_suggestions(evidence, sound_fusion)
 
     with UI_SUGGESTIONS.open("w", encoding="utf-8") as f:
@@ -2139,6 +2621,7 @@ def main():
     print("MASTER PACKET: PASS")
     print("Packet:", PACKET)
     print("Human summary:", REVIEW_ME)
+    print("Master file:", MASTER)
     print("UI suggestions:", UI_SUGGESTIONS)
     print(
         f"Findings: {summary['total_findings']} "

@@ -8,11 +8,11 @@ Add off-screen speaker
 Add sound source
 
 Characters
-8
+4
 · Voice statement required on every C#
 descriptions locked
 C1
-A mid-teens white male of average build with short wavy brown hair and rectangular glasses. He wears a bright blue short-sleeved polo shirt with a small yellow logo on the chest, a white wristband on his left wrist, and grey and white plaid shorts. Lower body and shoes are not visible.
+A cartoon character. Full appearance details unavailable. Wears an orange jumpsuit, orange and yellow helmet, multicolored socks, and white gloves. Seen seated on O1 in multiple shots and standing beside it. Lower body and shoes are not visible in some shots.
 
 Voice
 Observed
@@ -22,22 +22,22 @@ Describe the predominant setting — how C1 mostly sounds. If the voice changes 
 
 Pitch
 
-Mid
+High
 Speaking level
 
-Normal
+Raised
 Speed
 
 Normal
 Delivery
 
-Flat
+Dramatic
 Recorded level
 
-Moderate
+Loud
 Mix role
 
-Foreground
+Supporting
 Clarity
 
 Clear
@@ -52,17 +52,61 @@ Nasal
 Squeaky
 Note (optional)
 Accent (only if confidently identifiable), masking caveat…
-Voice: Observed. Mid pitch; ordinary texture; normal speaking level; normal speed; flat delivery; moderate recorded level; foreground in the mix; clear. Confidence: high.
+Voice: Observed. High pitch; breathy texture; raised speaking level; normal speed; dramatic delivery; loud recorded level; supporting in the mix; clear. Confidence: high.
 
 Add a Sound statement
 C2
-A mid-teens white male of tall, lean build with short dark brown hair. He wears a black and white sleeveless jersey with "BACARDI GOLD" on the front over a white short-sleeved t-shirt, and grey pants. Lower body and shoes are not visible.
+A cartoon character. Full appearance details unavailable. Wears a dark hat, has a heavy brow and expressive eyes. Seen seated on O2 in Shot 1 and standing in Shots 2-4.
 
 Voice
 Observed
 Observed briefly
 Not observed
 Describe the predominant setting — how C2 mostly sounds. If the voice changes during the clip (a whisper, a shout), describe that on the shot's audio event with “Voice changes during this event”.
+
+Pitch
+
+Mid
+Speaking level
+
+Normal
+Speed
+
+Normal
+Delivery
+
+Ordinary
+Recorded level
+
+Quiet
+Mix role
+
+Supporting
+Clarity
+
+Clear
+Confidence
+
+High
+Texture (more than one only when both are clearly audible)
+Ordinary
+Breathy
+Rough
+Nasal
+Squeaky
+Note (optional)
+Accent (only if confidently identifiable), masking caveat…
+Voice: Observed. Mid pitch; ordinary texture; normal speaking level; normal speed; ordinary delivery; quiet recorded level; supporting in the mix; clear. Confidence: high.
+
+Add a Sound statement
+C3
+A cartoon character. Full appearance details unavailable. Square-headed figure in a black suit with colorful polka dots on a white face and large sunglasses. Appears in Shot 5.
+
+Voice
+Observed
+Observed briefly
+Not observed
+Describe the predominant setting — how C3 mostly sounds. If the voice changes during the clip (a whisper, a shout), describe that on the shot's audio event with “Voice changes during this event”.
 
 Pitch
 
@@ -96,36 +140,36 @@ Nasal
 Squeaky
 Note (optional)
 Accent (only if confidently identifiable), masking caveat…
-Voice: Observed. Mid pitch; ordinary texture; raised speaking level; normal speed; ordinary delivery; moderate recorded level; supporting in the mix; clear. Confidence: high.
+Voice: Observed. Mid pitch; breathy texture; raised speaking level; normal speed; ordinary delivery; moderate recorded level; supporting in the mix; clear. Confidence: high.
 
 Add a Sound statement
-C3
-A mid-teens white male of tall, lean build with short light brown hair. He wears a red and white vertically striped short-sleeved jersey with "Santo" on the front, and dark shorts. Lower body and shoes are not visible.
+C4
+A cartoon character. Full appearance details unavailable. Round pale yellow head, black spiky hair, large oval eyes, both hands pressed to the sides of the face, wearing a dark red top. Appears in Shot 10.
 
 Voice
 Observed
 Observed briefly
 Not observed
-Describe the predominant setting — how C3 mostly sounds. If the voice changes during the clip (a whisper, a shout), describe that on the shot's audio event with “Voice changes during this event”.
+Describe the predominant setting — how C4 mostly sounds. If the voice changes during the clip (a whisper, a shout), describe that on the shot's audio event with “Voice changes during this event”.
 
 Pitch
 
-Mid
+High
 Speaking level
 
-Shouted
+Normal
 Speed
 
 Normal
 Delivery
 
-Dramatic
+Ordinary
 Recorded level
 
 Loud
 Mix role
 
-Foreground
+Supporting
 Clarity
 
 Clear
@@ -140,95 +184,33 @@ Nasal
 Squeaky
 Note (optional)
 Accent (only if confidently identifiable), masking caveat…
-Voice: Observed. Mid pitch; ordinary and squeaky texture; shouted speaking level; normal speed; dramatic delivery; loud recorded level; foreground in the mix; clear. Confidence: high.
-
-Add a Sound statement
-C4
-A mid-teens white male of average build with short light brown hair. He wears a green and white jersey with "EAGLES" on the front and grey shorts. He carries a red backpack. Lower body and shoes are not visible.
-
-Voice
-Observed
-Observed briefly
-Not observed
-Reason (optional)
-no audible speech or vocalization is confidently attributed to this character
-Leave empty to export the standard sentence shown below.
-
-Voice: Not observed; no audible speech or vocalization is confidently attributed to this character.
-
-Add a Sound statement
-C5
-A mid-teens white male of average build with short light brown hair. He wears a yellow jersey with a white number 6 on the back, and dark shorts. Lower body and shoes are not visible.
-
-Voice
-Observed
-Observed briefly
-Not observed
-Reason (optional)
-no audible speech or vocalization is confidently attributed to this character
-Leave empty to export the standard sentence shown below.
-
-Voice: Not observed; no audible speech or vocalization is confidently attributed to this character.
-
-Add a Sound statement
-C6
-A mid-teens white male of average build with short dark hair. He wears a dark sleeveless shirt with a white number 14 on the back, and khaki shorts. Lower body and shoes are not visible.
-
-Voice
-Observed
-Observed briefly
-Not observed
-Reason (optional)
-no audible speech or vocalization is confidently attributed to this character
-Leave empty to export the standard sentence shown below.
-
-Voice: Not observed; no audible speech or vocalization is confidently attributed to this character.
-
-Add a Sound statement
-C7
-A mid-teens white male of average build with short dark hair. He wears a white t-shirt and dark shorts, carrying a black backpack. Lower body and shoes are not visible.
-
-Voice
-Observed
-Observed briefly
-Not observed
-Reason (optional)
-no audible speech or vocalization is confidently attributed to this character
-Leave empty to export the standard sentence shown below.
-
-Voice: Not observed; no audible speech or vocalization is confidently attributed to this character.
-
-Add a Sound statement
-C8
-A mid-teens white male of average build with short dark hair. He wears green jacket with grey sweatpants. Lower body and shoes are not visible.
-
-Voice
-Observed
-Observed briefly
-Not observed
-Reason (optional)
-no audible speech or vocalization is confidently attributed to this character
-Leave empty to export the standard sentence shown below.
-
-Voice: Not observed; no audible speech or vocalization is confidently attributed to this character.
+Voice: Observed. High pitch; ordinary texture; normal speaking level; normal speed; ordinary delivery; loud recorded level; supporting in the mix; clear. Confidence: high.
 
 Add a Sound statement
 
 Objects
-3
+2
 · Sound statement only when the object is audible
 descriptions locked
 O1
-A piece of white paper.
+A large red cartoon bicycle or tricycle, seen from multiple angles across shots.
 
 Sound
 Makes a sound
 Silent
-O1 makes no meaningful sound — no Sound statement is exported.
+Recorded level
+
+Quiet
+Mix role
+
+Background
+What the sound is like
+teeth chattering sound
+Sound: Observed. Quiet recorded level; background in the mix; teeth chattering sound.
 
 Add a Voice statement
 O2
-A red pencil or pen.
+A smaller cartoon bicycle or tricycle, seen in Shot 1 to C1's right.
 
 Sound
 Makes a sound
@@ -236,28 +218,19 @@ Silent
 O2 makes no meaningful sound — no Sound statement is exported.
 
 Add a Voice statement
-O3
-A black plastic trash can with a black liner bag.
-
-Sound
-Makes a sound
-Silent
-O3 makes no meaningful sound — no Sound statement is exported.
-
-Add a Voice statement
 Scene
-School cafeteria. Cream-colored painted cinder block walls. Pale green speckled linoleum floor. Long grey laminate rectangular tables with green plastic stackable chairs. Along the left wall, a white open-shelf unit holds a white microwave. O3 sits on the floor beside it. A yellow sign reading "FA" and a framed black-and-white photograph are mounted above the shelf unit. A grid of open cubbyholes is on the far wall. A green door is at the far end. A fluorescent ceiling light panel overhead. O1 lies flat on the near table. O2 rests on the table near O1.
+An outdoor cartoon environment. A dirt clearing sits beside a narrow paved road running left to right. Tall brown tree trunks with green foliage clusters fill the background in outdoor shots. A bright blue sky sits above. Some shots shift to a flat grey or warm beige-grey gradient background with no road or trees visible. Soft circular shadow pools appear under characters in the grey-background shots. A dark road surface and brown dirt ground strip appear in low-angle shots. Rounded green treetops and brown tree trunks are visible in background scenery throughout.
 
 Style
-Naturalistic handheld-style video, though the camera is locked static. Flat, even fluorescent lighting from overhead, diffused and cool. Shallow depth of field is not in use, the full scene is in focus. Colors are muted and institutional. No visible color grading or film stock treatment. Standard aspect ratio.
+Animated cartoon visual style with bold flat colors and thick outlines. Color palette is saturated, bright reds, oranges, blues, and yellows dominate. Backgrounds shift between detailed outdoor environments and plain gradient or flat-color backdrops. Lighting is flat and even with no directional shadow modeling on characters. Depth of field is shallow in close-up shots and wide in establishing shots. Text overlays appear throughout in bold red, white, or pink/magenta letters with contrasting outlines, synced loosely to the narration. Standard aspect ratio.
 
 Visual concerns
-Heavy motion blur in the final frames during the physical contact.
+None.
 
 Audio
 Summarize the whole soundscape: the kind of speech, principal and secondary speakers, overall clarity, important overlap or masking, music/ambience, and how non-speech sounds sit under the voices. Don't restate the C#/O# properties.
 
-C1, C2, and C3 speak in a confrontational exchange. C2 initiates with a mocking taunt, C1 responds twice in a flat and defiant tone, and C3 delivers a threat. There is ambience sound throughout the video of chattering people off screen. A chair scrapes sharply across the hard floor at around 9-10 seconds. An unidentified sound produces big boom, heard at a moderate recorded level in the supporting.
+C1 Speaks throughout in a casual, matter-of-fact to emphatic tone. C2 Speaks in shots 2 and 4 in a flat, explanatory tone. C3 Speaks in shots 6 and 7 in an animated, strained tone. Speaker attribution in several shots is uncertain due to off-screen delivery and no confirmable lip syncs.
 Audio concerns
 Answer the five recording-defect questions below — the sentence is written for you. Add any other genuine intelligibility or clip-boundary problem by editing the text.
 
@@ -279,25 +252,277 @@ no
 yes
 No obvious clipping, distortion, excessive echo, wind noise, or other recording defect is audible.
 Shots
-1 shot · 0 reviewed · click a shot to play it on loop
+7 shots · 0 reviewed · click a shot to play it on loop
 
 Collapse all
+Every cut is a hard cut — double-check before submitting. Real footage often mixes in cross dissolves, fades, match/jump cuts, whip pans, etc.
 
-Shot 1of 1
-00:00:00.0–00:00:14.1
-(14.1s)
+Shot 1of 7
+00:00:00.0–00:00:01.4
+(1.4s)
 shot & visuals locked
 Cut into this shot
 Opening shot
 
 Camera
-Medium-wide shot, eye-level, locked static.
+Wide shot, eye-level, locked static.
 
 Scene
-No changes from overview.
+Outdoor dirt clearing beside a narrow paved road running left to right across the middle distance. Tall brown tree trunks with green foliage clusters fill the background. Light blue sky above. O1 is to the left, O2 is to the right. Text overlay at bottom center reads "THE ADULT BIKE" in bold red letters with white outline at shot open, then changes to "NOT THE BABY BIKE" as the line continues.
 
 Movements
-C1 sits at the near table, head down, writing on O1 with O2 held in his right hand. His left hand rests flat on the table, white wristband visible. C2 stands to C1's right, leaning in over the table, chin angled down toward C1, and speaks. C1 stops writing, lifts his head, pushes his glasses up with his left hand, and looks toward C2. His jaw tightens. C3 stands to C1's left, leaning in close, and speaks. C1's eyes stay level, his mouth firms. He slaps both hands flat on the table surface. He pushes the chair back, the chair scraping loudly across the floor, and stands up to face the group. His chin lifts and he speaks. C3 steps back slightly. C2 raises both arms briefly. C4 stands behind the group, grinning, arms rising as C1 stands. C5 is seated at the table behind C1, partially obscured by the standing figures. C3 then grabs C1 by the upper body and shoves him forward and downward. The final frame is heavily motion-blurred as C1 is forced toward the table surface. C6 is visible near the far right doorway in early frames, watching, then moves out of view. C7 walks across the background from left to right and exits through the green door.
+C4 sits upright on O1 with both hands gripping the handlebars, body still, facing left. No visible jaw or lip movement due to the full-face helmet. C2 sits on O2 to C4's right, both hands on the handlebars. C2's expression is neutral with a slight smile at shot open. As C4 speaks, C2's smile drops, eyes widen, then the brows pull down and together into a hard squint, teeth clenching. C2 holds the handlebar grip throughout and does not move from the seat.
+
+Playback speed
+regular
+
+Audio
+editable
+Describe every audible event in the order it happens — speech with an exact transcription in double quotes, plus non-speech sounds. No sub-shot timestamps.
+
+Speech
+#1
+Make Sound
+
+
+
+Source
+
+C4
+A cartoon character. Full appearance details unavailable. Round pale yellow head, black spiky hair, large oval eyes, both hands pressed to the sides of the face, wearing a dark red top. Appears in Shot 10.
+Tone (optional)
+
+serious
+Does this character speak the same as in the overview?
+Same as overview
+It changes here
+What is different here:
+Pitch
+Speaking level
+Speed
+Delivery
+Recorded level
+Mix role
+Clarity
+Pitch
+
+Mid
+Speaking level
+
+Raised
+Speed
+
+Normal
+Delivery
+
+Ordinary
+Recorded level
+
+Loud
+Mix role
+
+Foreground
+Clarity
+
+Clear
+Transcription — the words actually heard
+Adult bike, not a baby bike.
+Mark, never guess:
+[unintelligible]
+[inaudible]
+[uncertain: word]
+Voice changes during this event
+Relationship / ordering (optional)
+at the beginning of the shot
+Quick add:
+Off-screen
+at the beginning of the shot
+near the end of the shot
+throughout the shot
+Caption sentence · edited
+Regenerate
+At the beginning of the shot, C4 speaks in a serious tone at a raised speaking level, with a mid pitch, heard clearly at a loud recorded level in the foreground: "Adult bike, not a baby bike."
+Speech
+Other sound
+Draft from events (the Final Audio text below is what ships)
+At the beginning of the shot, C4 speaks in a serious tone at a raised speaking level, with a mid pitch, heard clearly at a loud recorded level in the foreground: "Adult bike, not a baby bike."
+
+Final Audio text · edited by hand
+Regenerate from events
+At the beginning of the shot, C4 speaks in a serious tone at a raised speaking level, with a mid pitch, heard clearly at a loud recorded level in the foreground: "Adult bike, not a baby bike."
+
+Shot 2of 7
+00:00:01.4–00:00:03.0
+(1.6s)
+shot & visuals locked
+Cut into this shot
+Hard cut
+
+Camera
+Medium shot, eye-level, locked static.
+
+Scene
+Background shifts to a flat grey. No road or trees visible. Soft circular shadow pools sit under each character. O2 is not visible. Text overlay at bottom center reads "NOT THE BABY BIKE" at shot open. Then transitions to "IT'S A BIG BIKE IT'S" in bold white letters with black outline as the speech begins.
+
+Movements
+C2 sits to the left, arms crossed tight over the chest, eyes narrowed to an angry squint, brow furrowed, mouth set flat with teeth just visible. C1 holds this pose without moving. C1 stands to C2's left, arms slightly out from the sides, feet planted, eyes wide and round. As the voice speaks, C2's mouth opens and the jaw drops, expression shifting from neutral to distressed, teeth showing in a grimace.
+
+Playback speed
+regular
+
+Audio
+editable
+Describe every audible event in the order it happens — speech with an exact transcription in double quotes, plus non-speech sounds. No sub-shot timestamps.
+
+Speech
+#1
+Make Sound
+
+
+
+Source
+
+C1
+A cartoon character. Full appearance details unavailable. Wears an orange jumpsuit, orange and yellow helmet, multicolored socks, and white gloves. Seen seated on O1 in multiple shots and standing beside it. Lower body and shoes are not visible in some shots.
+Tone (optional)
+
+serious
+Does this character speak the same as in the overview?
+Same as overview
+It changes here
+What is different here:
+Pitch
+Speaking level
+Speed
+Delivery
+Recorded level
+Mix role
+Clarity
+Pitch
+
+High
+Speaking level
+
+Raised
+Speed
+
+Normal
+Delivery
+
+Dramatic
+Recorded level
+
+Loud
+Mix role
+
+Supporting
+Clarity
+
+Clear
+Transcription — the words actually heard
+It's a big bike. It's
+Mark, never guess:
+[unintelligible]
+[inaudible]
+[uncertain: word]
+Voice changes during this event
+Relationship / ordering (optional)
+beneath C1's speech without masking him; near the end of the shot…
+
+Quick add:
+Off-screen
+at the beginning of the shot
+near the end of the shot
+throughout the shot
+Caption sentence
+Regenerate
+C1 speaks in a serious tone at a raised speaking level, heard clearly at a loud recorded level in the supporting: "It's a big bike. It's".
+Speech
+#2
+Make Sound
+
+
+
+Source
+
+C2
+A cartoon character. Full appearance details unavailable. Wears a dark hat, has a heavy brow and expressive eyes. Seen seated on O2 in Shot 1 and standing in Shots 2-4.
+Tone (optional)
+
+irritated
+Does this character speak the same as in the overview?
+Same as overview
+It changes here
+What is different here:
+Pitch
+Speaking level
+Speed
+Delivery
+Recorded level
+Mix role
+Clarity
+Pitch
+
+Mid
+Speaking level
+
+Normal
+Speed
+
+Normal
+Delivery
+
+Flat
+Recorded level
+
+Moderate
+Mix role
+
+Supporting
+Clarity
+
+Clear
+Transcription — the words actually heard
+yeah because
+Mark, never guess:
+[unintelligible]
+[inaudible]
+[uncertain: word]
+Voice changes during this event
+Relationship / ordering (optional)
+[mid-sentence cut].
+Quick add:
+Off-screen
+at the beginning of the shot
+near the end of the shot
+throughout the shot
+Caption sentence
+Regenerate
+C2 speaks in a irritated tone at a normal speaking level, with a flat delivery, heard clearly at a moderate recorded level in the supporting, [mid-sentence cut]: "yeah because".
+Speech
+Other sound
+Draft from events (the Final Audio text below is what ships)
+C1 speaks in a serious tone at a raised speaking level, heard clearly at a loud recorded level in the supporting: "It's a big bike. It's". C2 speaks in a irritated tone at a normal speaking level, with a flat delivery, heard clearly at a moderate recorded level in the supporting, [mid-sentence cut]: "yeah because".
+
+Final Audio text
+Regenerate from events
+C1 speaks in a serious tone at a raised speaking level, heard clearly at a loud recorded level in the supporting: "It's a big bike. It's". C2 speaks in a irritated tone at a normal speaking level, with a flat delivery, heard clearly at a moderate recorded level in the supporting, [mid-sentence cut]: "yeah because".
+
+Shot 3of 7
+00:00:03.0–00:00:05.0
+(2.0s)
+shot & visuals locked
+Cut into this shot
+Hard cut
+
+Camera
+Medium two-shot, eye-level, locked static.
+
+Scene
+Text overlay at bottom center reads "YEAH BECAUSE IT'S" in bold pink/magenta letters with white outline at shot start, then changes to "BIG PEOPLE LIKE HIM" in the same style. The overlay text does not match the verbatim. / Warm beige-grey gradient background. C2 is partially visible at the right edge, cropped from roughly the nose up, one arm extending toward C4. Text overlay at bottom center reads "BIG PEOPLE LIKE HIM" in bold pink/magenta letters with white outline.
+
+Movements
+C2 faces toward C4, brow lines heavy and drawn down, one eye narrowed with thick lash marks indicating a squint. C2's hand is raised near the chin. C4 stands to C2's left, eyes blank and oval, mouth a flat line, no visible reaction. C4 stands facing the camera, arms at sides, eyes half-closed, expression flat and still. C2 is visible at the right edge, one arm extended pointing toward C4, and speaks.
 
 Playback speed
 regular
@@ -315,120 +540,10 @@ Make Sound
 Source
 
 C2
-A mid-teens white male of tall, lean build with short dark brown hair. He wears a black and white sleeveless jersey with "BACARDI GOLD" on the front over a white short-sleeved t-shirt, and grey pants. Lower body and shoes are not visible.
+A cartoon character. Full appearance details unavailable. Wears a dark hat, has a heavy brow and expressive eyes. Seen seated on O2 in Shot 1 and standing in Shots 2-4.
 Tone (optional)
 
-Select one…
-Does this character speak the same as in the overview?
-Same as overview
-It changes here
-What is different here:
-Pitch
-Speaking level
-Speed
-Delivery
-Recorded level
-Mix role
-Clarity
-Speaking level
-
-Raised
-Recorded level
-
-Loud
-Mix role
-
-Foreground
-Clarity
-
-Clear
-Transcription — the words actually heard
-Hey, shitface. What are you doing at our table?
-Mark, never guess:
-[unintelligible]
-[inaudible]
-[uncertain: word]
-Voice changes during this event
-Relationship / ordering (optional)
-at the beginning of the shot
-Quick add:
-Off-screen
-at the beginning of the shot
-near the end of the shot
-throughout the shot
-Caption sentence
-Regenerate
-At the beginning of the shot, C2 speaks at a raised speaking level, heard clearly at a loud recorded level in the foreground: "Hey, shitface. What are you doing at our table?"
-Speech
-#2
-Make Sound
-
-
-
-Source
-
-C1
-A mid-teens white male of average build with short wavy brown hair and rectangular glasses. He wears a bright blue short-sleeved polo shirt with a small yellow logo on the chest, a white wristband on his left wrist, and grey and white plaid shorts. Lower body and shoes are not visible.
-Tone (optional)
-
-Select one…
-Does this character speak the same as in the overview?
-Same as overview
-It changes here
-What is different here:
-Pitch
-Speaking level
-Speed
-Delivery
-Recorded level
-Mix role
-Clarity
-Pitch
-
-Mid
-Speaking level
-
-Raised
-Recorded level
-
-Moderate
-Mix role
-
-Foreground
-Clarity
-
-Clear
-Transcription — the words actually heard
-It's not your table.
-Mark, never guess:
-[unintelligible]
-[inaudible]
-[uncertain: word]
-Voice changes during this event
-Relationship / ordering (optional)
-beneath C1's speech without masking him; near the end of the shot…
-
-Quick add:
-Off-screen
-at the beginning of the shot
-near the end of the shot
-throughout the shot
-Caption sentence · edited
-Regenerate
-C1 says in a flat, annoyed tone: "It's not your table."
-Speech
-#3
-Make Sound
-
-
-
-Source
-
-C3
-A mid-teens white male of tall, lean build with short light brown hair. He wears a red and white vertically striped short-sleeved jersey with "Santo" on the front, and dark shorts. Lower body and shoes are not visible.
-Tone (optional)
-
-Select one…
+irritated
 Does this character speak the same as in the overview?
 Same as overview
 It changes here
@@ -445,53 +560,32 @@ Pitch
 High
 Speaking level
 
-Shouted
+Raised
+Speed
+
+Normal
+Delivery
+
+Flat
 Recorded level
 
 Loud
 Mix role
 
-Foreground
+Supporting
 Clarity
 
 Clear
 Transcription — the words actually heard
-If you don't get up, I'm gonna put you in the trash like the garbage that you are.
+Because it's meant for big people like him.
 Mark, never guess:
 [unintelligible]
 [inaudible]
 [uncertain: word]
 Voice changes during this event
 Relationship / ordering (optional)
-throughout the shot
-Quick add:
-Off-screen
-at the beginning of the shot
-near the end of the shot
-throughout the shot
-Caption sentence · edited
-Regenerate
-Throughout the shot, C3 speaks at a shouting speaking level, with a high pitch, heard clearly at a loud recorded level in the foreground: "If you don't get up, I'm gonna put you in the trash like the garbage that you are."
-Sound
-#4
-Make Speech
+beneath C1's speech without masking him; near the end of the shot…
 
-
-
-Source
-
-C2
-A mid-teens white male of tall, lean build with short dark brown hair. He wears a black and white sleeveless jersey with "BACARDI GOLD" on the front over a white short-sleeved t-shirt, and grey pants. Lower body and shoes are not visible.
-Recorded level
-
-Quiet
-Mix role
-
-Background
-What the sound is like
-screeching of chair movement on floor
-Relationship / ordering (optional)
-near the end of the shot
 Quick add:
 Off-screen
 at the beginning of the shot
@@ -499,9 +593,41 @@ near the end of the shot
 throughout the shot
 Caption sentence
 Regenerate
-C2 produces screeching of chair movement on floor, heard at a quiet recorded level in the background, near the end of the shot.
+C2 speaks in a irritated tone at a raised speaking level, with a high pitch and a flat delivery, heard clearly at a loud recorded level in the supporting: "Because it's meant for big people like him."
 Speech
-#5
+Other sound
+Draft from events (the Final Audio text below is what ships)
+C2 speaks in a irritated tone at a raised speaking level, with a high pitch and a flat delivery, heard clearly at a loud recorded level in the supporting: "Because it's meant for big people like him."
+
+Final Audio text
+Regenerate from events
+C2 speaks in a irritated tone at a raised speaking level, with a high pitch and a flat delivery, heard clearly at a loud recorded level in the supporting: "Because it's meant for big people like him."
+
+Shot 4of 7
+00:00:05.0–00:00:09.4
+(4.4s)
+shot & visuals locked
+Cut into this shot
+Hard cut
+
+Camera
+Wide shot, low angle, locked static.
+
+Scene
+Outdoor setting with a flat brown hilltop and a bright blue sky. O1 is centered, seen from behind. C4 is seen facing the camera with his right hand on the handle bars of O1. A yellow circular animated character with a red spiral graphic and white speech-bubble teeth appears to the left of O1's rear wheel, animating from a plain yellow circle into a face with teeth across the shot. C3 enters from the far left, square-headed, black suit, colorful polka dots on a white face, large sunglasses, one hand raised in a presenting gesture. C1 is visible at the far right, round-headed, orange hard hat with yellow stripes, orange high-visibility vest, expression flat and unimpressed. Text overlay at the bottom reads "THE SUSPENSION ON THE BIKE WAS CRYING" in bold red letters with white outline. Then changes to "I WONDER WHY" in bold white letters with a dark outline later in the shot.
+
+Movements
+C4 moves from standing to the right of O1 to sitting on O1. C4 sits on O1 facing away, body still, no visible movement from this angle. C1 speaks with no visible mouth movement confirmable from behind. The yellow circular character near O1's rear wheel animates from a blank circle into a face with a red spiral graphic and two white speech-bubble teeth, growing more defined across the shot. C3 slides in from the left edge, one hand raised open toward the center. C3 is visible at the right edge, head tilted slightly, eyes narrowed, expression flat.
+
+Playback speed
+regular
+
+Audio
+editable
+Describe every audible event in the order it happens — speech with an exact transcription in double quotes, plus non-speech sounds. No sub-shot timestamps.
+
+Speech
+#1
 Make Sound
 
 
@@ -509,10 +635,10 @@ Make Sound
 Source
 
 C1
-A mid-teens white male of average build with short wavy brown hair and rectangular glasses. He wears a bright blue short-sleeved polo shirt with a small yellow logo on the chest, a white wristband on his left wrist, and grey and white plaid shorts. Lower body and shoes are not visible.
+A cartoon character. Full appearance details unavailable. Wears an orange jumpsuit, orange and yellow helmet, multicolored socks, and white gloves. Seen seated on O1 in multiple shots and standing beside it. Lower body and shoes are not visible in some shots.
 Tone (optional)
 
-Select one…
+amused
 Does this character speak the same as in the overview?
 Same as overview
 It changes here
@@ -529,18 +655,24 @@ Pitch
 Mid
 Speaking level
 
-Raised
+Normal
+Speed
+
+Normal
+Delivery
+
+Ordinary
 Recorded level
 
 Moderate
 Mix role
 
-Foreground
+Supporting
 Clarity
 
 Clear
 Transcription — the words actually heard
-I'd like to see you try.
+The suspension on the bike was crying.
 Mark, never guess:
 [unintelligible]
 [inaudible]
@@ -556,25 +688,59 @@ near the end of the shot
 throughout the shot
 Caption sentence
 Regenerate
-C1 speaks at a raised speaking level, heard clearly at a moderate recorded level in the foreground: "I'd like to see you try."
-Sound
-#6
-Make Speech
+C1 speaks in a amused tone at a normal speaking level, with a mid pitch and an ordinary delivery, heard clearly at a moderate recorded level in the supporting: "The suspension on the bike was crying."
+Speech
+#2
+Make Sound
 
 
 
 Source
 
-Unidentified sound
-Audible, but the source cannot be identified
+C3
+A cartoon character. Full appearance details unavailable. Square-headed figure in a black suit with colorful polka dots on a white face and large sunglasses. Appears in Shot 5.
+Tone (optional)
+
+amused
+Does this character speak the same as in the overview?
+Same as overview
+It changes here
+What is different here:
+Pitch
+Speaking level
+Speed
+Delivery
+Recorded level
+Mix role
+Clarity
+Pitch
+
+Mid
+Speaking level
+
+Normal
+Speed
+
+Normal
+Delivery
+
+Ordinary
 Recorded level
 
 Moderate
 Mix role
 
 Supporting
-What the sound is like
-big boom
+Clarity
+
+Clear
+Transcription — the words actually heard
+I wonder why.
+Mark, never guess:
+[unintelligible]
+[inaudible]
+[uncertain: word]
+Voice changes during this event
 Relationship / ordering (optional)
 beneath C1's speech without masking him; near the end of the shot…
 
@@ -585,17 +751,46 @@ near the end of the shot
 throughout the shot
 Caption sentence
 Regenerate
-An unidentified sound produces big boom, heard at a moderate recorded level in the supporting.
+C3 speaks in a amused tone at a normal speaking level, heard clearly at a moderate recorded level in the supporting: "I wonder why."
 Sound
-#7
+#3
 Make Speech
 
 
 
 Source
 
-Room ambience
-General indoor ambience
+O1
+A large red cartoon bicycle or tricycle, seen from multiple angles across shots.
+Recorded level
+
+Quiet
+Mix role
+
+Supporting
+What the sound is like
+teeth chattering sound
+Relationship / ordering (optional)
+beneath C1's speech without masking him; near the end of the shot…
+
+Quick add:
+Off-screen
+at the beginning of the shot
+near the end of the shot
+throughout the shot
+Caption sentence
+Regenerate
+O1 produces teeth chattering sound, heard at a quiet recorded level in the supporting.
+Sound
+#4
+Make Speech
+
+
+
+Source
+
+C3
+A cartoon character. Full appearance details unavailable. Square-headed figure in a black suit with colorful polka dots on a white face and large sunglasses. Appears in Shot 5.
 Recorded level
 
 Moderate
@@ -603,7 +798,101 @@ Mix role
 
 Background
 What the sound is like
-people chattering
+a laughing sound
+Relationship / ordering (optional)
+Off-screen after the speech.
+Quick add:
+Off-screen
+at the beginning of the shot
+near the end of the shot
+throughout the shot
+Caption sentence
+Regenerate
+Off-screen after the speech, C3 produces a laughing sound, heard at a moderate recorded level in the background.
+Speech
+Other sound
+Draft from events (the Final Audio text below is what ships)
+C1 speaks in a amused tone at a normal speaking level, with a mid pitch and an ordinary delivery, heard clearly at a moderate recorded level in the supporting: "The suspension on the bike was crying." C3 speaks in a amused tone at a normal speaking level, heard clearly at a moderate recorded level in the supporting: "I wonder why." O1 produces teeth chattering sound, heard at a quiet recorded level in the supporting. Off-screen after the speech, C3 produces a laughing sound, heard at a moderate recorded level in the background.
+
+Final Audio text
+Regenerate from events
+C1 speaks in a amused tone at a normal speaking level, with a mid pitch and an ordinary delivery, heard clearly at a moderate recorded level in the supporting: "The suspension on the bike was crying." C3 speaks in a amused tone at a normal speaking level, heard clearly at a moderate recorded level in the supporting: "I wonder why." O1 produces teeth chattering sound, heard at a quiet recorded level in the supporting. Off-screen after the speech, C3 produces a laughing sound, heard at a moderate recorded level in the background.
+
+Shot 5of 7
+00:00:09.4–00:00:13.3
+(3.9s)
+shot & visuals locked
+Cut into this shot
+Hard cut
+
+Camera
+Wide shot, low angle, locked static. / Medium-wide shot, eye-level, locked static.
+
+Scene
+C1 is present, to the left of O1, facing the bike. Text overlay reads "I WONDER WHY" in bold white letters with black outline at the bottom center. Then changes to "THE BIKE IS" in the same style partway through the shot. C3's position relative to O1 changes across the shot. In the first two frames the character stands to the left and behind of O1, one hand on the handlebar area, facing left toward the bike. C1 has moved to the far right of C1 and crouches near the rear wheel. In the fourth and fifth frames the character is seated on O1, both hands on the handlebars. Text overlay reads "SO BIG LIKE YOU CAN'T" in the first two frames. "EVEN WHEN YOU GET ON IT" in the third and fourth frames, and "YOU'RE LIKE FEET" in the fifth frame. The fifth frame's overlay text appears to belong to the next shot's dialogue.
+
+Movements
+C1 stands to the left of O1, leaning toward it with both hands braced near the front wheel area. The expression shifts across frames, body posture staying low and forward-leaning throughout. C1 starts standing to the right of O1 with one hand on the handlebar area, eyes wide, and speaks as the expression shifts between an open-mouthed distressed look and a broader animated talking pose. C1 then moves to the right side of O1 near the rear wheel, crouching low, mouth open in a grin, continuing to speak. C1 then climbs up and sits on O1's seat, both hands gripping the handlebars, teeth showing, expression shifting from a wide grin to a strained grimace across the final two frames.
+
+Playback speed
+regular
+
+Audio
+editable
+Describe every audible event in the order it happens — speech with an exact transcription in double quotes, plus non-speech sounds. No sub-shot timestamps.
+
+Speech
+#1
+Make Sound
+
+
+
+Source
+
+C1
+A cartoon character. Full appearance details unavailable. Wears an orange jumpsuit, orange and yellow helmet, multicolored socks, and white gloves. Seen seated on O1 in multiple shots and standing beside it. Lower body and shoes are not visible in some shots.
+Tone (optional)
+
+casual
+Does this character speak the same as in the overview?
+Same as overview
+It changes here
+What is different here:
+Pitch
+Speaking level
+Speed
+Delivery
+Recorded level
+Mix role
+Clarity
+Pitch
+
+Mid
+Speaking level
+
+Normal
+Speed
+
+Normal
+Delivery
+
+Ordinary
+Recorded level
+
+Moderate
+Mix role
+
+Foreground
+Clarity
+
+Clear
+Transcription — the words actually heard
+big": "the bike is so big. Like you can't even when you get on it
+Mark, never guess:
+[unintelligible]
+[inaudible]
+[uncertain: word]
+Voice changes during this event
 Relationship / ordering (optional)
 beneath C1's speech without masking him; near the end of the shot…
 
@@ -612,14 +901,286 @@ Off-screen
 at the beginning of the shot
 near the end of the shot
 throughout the shot
+Caption sentence · edited
+Regenerate
+C1 speaks in a casual tone at a normal speaking level, with a mid pitch and an ordinary delivery, heard clearly at a moderate recorded level in the foreground: "big': 'the bike is so big. Like you can't even when you get on it".
+Sound
+#2
+Make Speech
+
+
+
+Source
+
+C3
+A cartoon character. Full appearance details unavailable. Square-headed figure in a black suit with colorful polka dots on a white face and large sunglasses. Appears in Shot 5.
+Recorded level
+
+Quiet
+Mix role
+
+Background
+What the sound is like
+a laughing sound
+Relationship / ordering (optional)
+Off-screen
+Quick add:
+Off-screen
+at the beginning of the shot
+near the end of the shot
+throughout the shot
+Caption sentence · edited
+Regenerate
+Off-screen, C3 produces a laughing sound, heard at a quiet recorded level in the background.
+Sound
+#3
+Make Speech
+
+
+
+Source
+
+O1
+A large red cartoon bicycle or tricycle, seen from multiple angles across shots.
+Recorded level
+
+Quiet
+Mix role
+
+Background
+What the sound is like
+A thud 
+Relationship / ordering (optional)
+When C1 gets on the bike
+Quick add:
+Off-screen
+at the beginning of the shot
+near the end of the shot
+throughout the shot
 Caption sentence
 Regenerate
-Room ambience produces people chattering, heard at a moderate recorded level in the background.
+When C1 gets on the bike, O1 produces A thud, heard at a quiet recorded level in the background.
 Speech
 Other sound
 Draft from events (the Final Audio text below is what ships)
-At the beginning of the shot, C2 speaks at a raised speaking level, heard clearly at a loud recorded level in the foreground: "Hey, shitface. What are you doing at our table?" C1 says in a flat, annoyed tone: "It's not your table." Throughout the shot, C3 speaks at a shouting speaking level, with a high pitch, heard clearly at a loud recorded level in the foreground: "If you don't get up, I'm gonna put you in the trash like the garbage that you are." C2 produces screeching of chair movement on floor, heard at a quiet recorded level in the background, near the end of the shot. C1 speaks at a raised speaking level, heard clearly at a moderate recorded level in the foreground: "I'd like to see you try." An unidentified sound produces big boom, heard at a moderate recorded level in the supporting. Room ambience produces people chattering, heard at a moderate recorded level in the background.
+C1 speaks in a casual tone at a normal speaking level, with a mid pitch and an ordinary delivery, heard clearly at a moderate recorded level in the foreground: "big': 'the bike is so big. Like you can't even when you get on it". Off-screen, C3 produces a laughing sound, heard at a quiet recorded level in the background. When C1 gets on the bike, O1 produces A thud, heard at a quiet recorded level in the background.
 
 Final Audio text
 Regenerate from events
-At the beginning of the shot, C2 speaks at a raised speaking level, heard clearly at a loud recorded level in the foreground: "Hey, shitface. What are you doing at our table?" C1 says in a flat, annoyed tone: "It's not your table." Throughout the shot, C3 speaks at a shouting speaking level, with a high pitch, heard clearly at a loud recorded level in the foreground: "If you don't get up, I'm gonna put you in the trash like the garbage that you are." C2 produces screeching of chair movement on floor, heard at a quiet recorded level in the background, near the end of the shot. C1 speaks at a raised speaking level, heard clearly at a moderate recorded level in the foreground: "I'd like to see you try." An unidentified sound produces big boom, heard at a moderate recorded level in the supporting. Room ambience produces people chattering, heard at a moderate recorded level in the background.
+C1 speaks in a casual tone at a normal speaking level, with a mid pitch and an ordinary delivery, heard clearly at a moderate recorded level in the foreground: "big': 'the bike is so big. Like you can't even when you get on it". Off-screen, C3 produces a laughing sound, heard at a quiet recorded level in the background. When C1 gets on the bike, O1 produces A thud, heard at a quiet recorded level in the background.
+
+Shot 6of 7
+00:00:13.3–00:00:15.7
+(2.4s)
+shot & visuals locked
+Cut into this shot
+Hard cut
+
+Camera
+Close-up shot, low angle, locked static.
+
+Scene
+The upper portion of a large red object dominates the top of the frame. Blue sky and rounded green treetops are visible below it. A dark road surface runs across the lower-middle of the frame and a dirt-colored ground strip sits at the bottom. Text overlay reads "YOU'RE LIKE FEET" in bold white letters with a black outline, centered near the bottom. No characters are visible, only the underside and wheel area of O1 is visible at upper center. Extreme close-up of a cartoon foot and lower leg, grey with a black upper section, hanging in the air above a dark grey road strip. Green bushes behind it, brown tree trunk at the far left edge, brown dirt ground at the bottom. Red and black shapes at the top of the frame are the underside of a character's body above. Text overlay at the bottom reads "DON'T TOUCH THE GROUND" in bold white letters with a black outline. Text overlay reads "DON'T TOUCH THE GROUND" in bold white letters with black outline, then changes to "LIKE YOU'RE ELEVATED" in the same style.
+
+Movements
+No characters are visible in the keyframes. The large red object fills the upper portion of the frame. A gray rounded shape, consistent with a wheel or boot, hangs down from the red mass at upper center and shifts slightly leftward across the shot. Dropping lower toward the green treetops by the third keyframe before returning to roughly its original position. The cartoon foot hangs in the air, not making contact with the road or ground below. It shifts position slightly, swinging forward and angling downward, but never reaching the ground.
+
+Playback speed
+regular
+
+Audio
+editable
+Describe every audible event in the order it happens — speech with an exact transcription in double quotes, plus non-speech sounds. No sub-shot timestamps.
+
+Speech
+#1
+Make Sound
+
+
+
+Source
+
+C1
+A cartoon character. Full appearance details unavailable. Wears an orange jumpsuit, orange and yellow helmet, multicolored socks, and white gloves. Seen seated on O1 in multiple shots and standing beside it. Lower body and shoes are not visible in some shots.
+Tone (optional)
+
+casual
+Does this character speak the same as in the overview?
+Same as overview
+It changes here
+What is different here:
+Pitch
+Speaking level
+Speed
+Delivery
+Recorded level
+Mix role
+Clarity
+Pitch
+
+Mid
+Speaking level
+
+Normal
+Speed
+
+Normal
+Delivery
+
+Ordinary
+Recorded level
+
+Loud
+Mix role
+
+Supporting
+Clarity
+
+Clear
+Transcription — the words actually heard
+You're like feet don't touch the ground. Like you're elevated
+Mark, never guess:
+[unintelligible]
+[inaudible]
+[uncertain: word]
+Voice changes during this event
+Relationship / ordering (optional)
+throughout the shot
+Quick add:
+Off-screen
+at the beginning of the shot
+near the end of the shot
+throughout the shot
+Caption sentence
+Regenerate
+Throughout the shot, C1 speaks in a casual tone at a normal speaking level, with a mid pitch and an ordinary delivery, heard clearly at a loud recorded level in the supporting: "You're like feet don't touch the ground. Like you're elevated".
+Sound
+#2
+Make Speech
+
+
+
+Source
+
+C1
+A cartoon character. Full appearance details unavailable. Wears an orange jumpsuit, orange and yellow helmet, multicolored socks, and white gloves. Seen seated on O1 in multiple shots and standing beside it. Lower body and shoes are not visible in some shots.
+Recorded level
+
+Moderate
+Mix role
+
+Background
+What the sound is like
+A swooping whoosh sound 
+Relationship / ordering (optional)
+when the foot in the shot goes back and forth.
+Quick add:
+Off-screen
+at the beginning of the shot
+near the end of the shot
+throughout the shot
+Caption sentence
+Regenerate
+When the foot in the shot goes back and forth, C1 produces A swooping whoosh sound, heard at a moderate recorded level in the background.
+Speech
+Other sound
+Draft from events (the Final Audio text below is what ships)
+Throughout the shot, C1 speaks in a casual tone at a normal speaking level, with a mid pitch and an ordinary delivery, heard clearly at a loud recorded level in the supporting: "You're like feet don't touch the ground. Like you're elevated". When the foot in the shot goes back and forth, C1 produces A swooping whoosh sound, heard at a moderate recorded level in the background.
+
+Final Audio text
+Regenerate from events
+Throughout the shot, C1 speaks in a casual tone at a normal speaking level, with a mid pitch and an ordinary delivery, heard clearly at a loud recorded level in the supporting: "You're like feet don't touch the ground. Like you're elevated". When the foot in the shot goes back and forth, C1 produces A swooping whoosh sound, heard at a moderate recorded level in the background.
+
+Shot 7of 7
+00:00:15.7–00:00:16.0
+(0.3s)
+shot & visuals locked
+Cut into this shot
+Hard cut
+
+Camera
+Close-up, eye-level, locked static.
+
+Scene
+The shot then opens to a close-up of C4 against a plain white background above a grey horizontal band and a warm beige-pink surface below. Text overlay changes to "AND THEN IMAGINE ME" in the same style.
+
+Movements
+C4 stands facing the camera, both hands pressed to the sides of the face. Eyes wide and oval as C4 speaks.
+
+Playback speed
+regular
+
+Audio
+editable
+Describe every audible event in the order it happens — speech with an exact transcription in double quotes, plus non-speech sounds. No sub-shot timestamps.
+
+Speech
+#1
+Make Sound
+
+
+
+Source
+
+C4
+A cartoon character. Full appearance details unavailable. Round pale yellow head, black spiky hair, large oval eyes, both hands pressed to the sides of the face, wearing a dark red top. Appears in Shot 10.
+Tone (optional)
+
+casual
+Does this character speak the same as in the overview?
+Same as overview
+It changes here
+What is different here:
+Pitch
+Speaking level
+Speed
+Delivery
+Recorded level
+Mix role
+Clarity
+Pitch
+
+Mid
+Speaking level
+
+Normal
+Speed
+
+Normal
+Delivery
+
+Ordinary
+Recorded level
+
+Moderate
+Mix role
+
+Supporting
+Clarity
+
+Clear
+Transcription — the words actually heard
+And then
+Mark, never guess:
+[unintelligible]
+[inaudible]
+[uncertain: word]
+Voice changes during this event
+Relationship / ordering (optional)
+[mid-sentence cut]
+Quick add:
+Off-screen
+at the beginning of the shot
+near the end of the shot
+throughout the shot
+Caption sentence
+Regenerate
+C4 speaks in a casual tone at a normal speaking level, with a mid pitch, heard clearly at a moderate recorded level in the supporting, [mid-sentence cut]: "And then".
+Speech
+Other sound
+Draft from events (the Final Audio text below is what ships)
+C4 speaks in a casual tone at a normal speaking level, with a mid pitch, heard clearly at a moderate recorded level in the supporting, [mid-sentence cut]: "And then".
+
+Final Audio text
+Regenerate from events
+C4 speaks in a casual tone at a normal speaking level, with a mid pitch, heard clearly at a moderate recorded level in the supporting, [mid-sentence cut]: "And then".

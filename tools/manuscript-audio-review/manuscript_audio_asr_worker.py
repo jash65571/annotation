@@ -122,7 +122,7 @@ class Transcriber:
         self._audio_cache = {audio_path: (audio, sample_rate)}
         return audio, sample_rate
 
-    def transcribe(self, audio_path, start=None, end=None):
+    def transcribe(self, audio_path, start=None, end=None, options=None):
         audio, sample_rate = self._load_audio(audio_path)
 
         offset = 0.0
@@ -135,10 +135,18 @@ class Transcriber:
         else:
             clip = audio
 
+        # Accuracy knobs (faster-whisper 1.x). Defaults match whisper's
+        # proven values; callers may tighten them (e.g. strict mode for
+        # reruns: no conditioning on previous text + a repetition penalty
+        # suppress the long hallucination chains whisper emits on quiet or
+        # degraded audio).
+        options = dict(options or {})
+        options.setdefault("word_timestamps", True)
+        options.setdefault("vad_filter", False)
+
         segments, info = self.model.transcribe(
             clip,
-            word_timestamps=True,
-            vad_filter=False,
+            **options,
         )
 
         out_segments = build_segment_payload(list(segments), offset=offset)
@@ -197,6 +205,7 @@ def serve(model_name, compute_type):
                 request["audio_path"],
                 start=request.get("start"),
                 end=request.get("end"),
+                options=request.get("options"),
             )
         except Exception as exc:  # noqa: BLE001 -- fail soft per request
             result = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
@@ -205,10 +214,18 @@ def serve(model_name, compute_type):
         sys.stdout.flush()
 
 
-def run_one_shot(audio_path, model_name, compute_type, start, end):
+def run_one_shot(audio_path, model_name, compute_type, start, end, strict=False):
+    options = None
+    if strict:
+        options = {
+            "condition_on_previous_text": False,
+            "repetition_penalty": 1.15,
+        }
     try:
         transcriber = Transcriber(model_name, compute_type=compute_type)
-        result = transcriber.transcribe(audio_path, start=start, end=end)
+        result = transcriber.transcribe(
+            audio_path, start=start, end=end, options=options
+        )
     except Exception as exc:  # noqa: BLE001 -- fail soft, report to caller
         result = {
             "status": "failed",
@@ -227,6 +244,13 @@ def main():
     parser.add_argument("--compute-type", default="int8")
     parser.add_argument("--start", type=float, default=None)
     parser.add_argument("--end", type=float, default=None)
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="anti-hallucination mode: no conditioning on previous text, "
+        "repetition penalty 1.15 (recommended for the primary pass and "
+        "reruns on quiet/degraded audio)",
+    )
     args = parser.parse_args()
 
     if args.serve:
@@ -238,7 +262,12 @@ def main():
         sys.exit(1)
 
     run_one_shot(
-        Path(args.audio_path), args.model, args.compute_type, args.start, args.end
+        Path(args.audio_path),
+        args.model,
+        args.compute_type,
+        args.start,
+        args.end,
+        strict=args.strict,
     )
 
 
